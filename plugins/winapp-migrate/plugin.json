@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "winapp-migrate",
+  "version": "0.2.0",
+  "description": "Migration pipelines for moving existing Windows applications to WinUI 3 and the Windows App SDK. Currently supports C# UWP applications.",
+  "author": {
+    "name": "qiutongMS",
+    "url": "https://github.com/qiutongMS/winapp-migrate"
+  },
+  "homepage": "https://github.com/qiutongMS/winapp-migrate",
+  "repository": "https://github.com/qiutongMS/winapp-migrate",
+  "license": "MIT",
+  "keywords": [
+    "windows",
+    "migration",
+    "uwp",
+    "winui",
+    "winui3",
+    "windows app sdk",
+    "xaml",
+    "desktop app"
+  ]
+}

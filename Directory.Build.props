@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Copyright>Copyright (C) Microsoft Corporation and Contributors</Copyright>
     <Company>Microsoft Corporation</Company>
-    <VersionPrefix>0.1.1</VersionPrefix>
+    <VersionPrefix>0.2.0</VersionPrefix>
     <NeutralLanguage>en-US</NeutralLanguage>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

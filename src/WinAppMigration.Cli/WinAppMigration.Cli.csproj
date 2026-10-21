@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pipelines\Uwp\UwpMigration.Contracts\UwpMigration.Contracts.csproj" />
+    <ProjectReference Include="..\Pipelines\Uwp\UwpMigration.Mechanical\UwpMigration.Mechanical.csproj" />
+    <PackageReference Include="System.CommandLine" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <AssemblyName>winapp-migrate</AssemblyName>
+    <RootNamespace>WinAppMigration.Cli</RootNamespace>
+    <Description>Migration pipelines for moving applications to WinUI 3 and the Windows App SDK.</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
