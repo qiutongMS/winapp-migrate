@@ -540,12 +540,25 @@ public sealed class UwpEnforcementRunner
         var report = await MigrationReportStore.LoadAsync(
             workspace.ReportPath,
             cancellationToken);
+        var plan = workspace.Input.StatePlan;
         report.Validation.SourceBaseline.Status = summary.SourceStatus;
-        report.Validation.SourceBaseline.States = [.. summary.SourceStates];
+        report.Validation.SourceBaseline.States = plan.States.Select(state =>
+            new MigrationValidationState
+            {
+                Id = state.Id,
+                Status = state.Source.Status,
+                Reason = state.Source.Reason
+            }).ToList();
         report.Validation.SourceBaseline.Reason =
             summary.SourceStatus == "captured" ? null : summary.Reason;
         report.Validation.TargetReplay.Status = summary.TargetStatus;
-        report.Validation.TargetReplay.States = [.. summary.TargetStates];
+        report.Validation.TargetReplay.States = plan.States.Select(state =>
+            new MigrationValidationState
+            {
+                Id = state.Id,
+                Status = state.Target.Status,
+                Reason = state.Target.Reason
+            }).ToList();
         report.Validation.TargetReplay.Reason =
             summary.TargetStatus == "passed" ? null : summary.Reason;
         report.Validation.ParityStatus = summary.ParityStatus;
@@ -906,9 +919,9 @@ public sealed class UwpEnforcementRunner
                 target, build, replay, attempts, fingerprint, cancellationToken);
         var summary = new PipelineValidationSummary(
             report.Validation.SourceBaseline.Status,
-            report.Validation.SourceBaseline.States,
+            report.Validation.SourceBaseline.States.Select(state => state.Id).ToArray(),
             report.Validation.TargetReplay.Status,
-            report.Validation.TargetReplay.States,
+            report.Validation.TargetReplay.States.Select(state => state.Id).ToArray(),
             report.Validation.ParityStatus,
             report.Validation.Reason);
         var mechanicalReady =

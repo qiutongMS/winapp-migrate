@@ -3,6 +3,7 @@
 
 using System.CommandLine;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using UwpMigration.Contracts;
 using WinAppMigration.Enforcement;
@@ -431,6 +432,40 @@ public sealed partial class RunnerAcceptanceTests
 
         Assert.AreEqual("passed", snapshot.Status);
         Assert.IsNull(snapshot.Frontier);
+        var report = JsonSerializer.Deserialize(
+            await File.ReadAllTextAsync(fixture.Path("migration-report.json")),
+            MigrateJsonContext.Default.MigrationReport)!;
+        Assert.AreEqual("state-1", report.Validation.SourceBaseline.States.Single().Id);
+        Assert.AreEqual("captured", report.Validation.SourceBaseline.States.Single().Status);
+        Assert.AreEqual("passed", report.Validation.TargetReplay.States.Single().Status);
+    }
+
+    [TestMethod]
+    public async Task Assess_AcceptsObjectValidationStatesFromSemanticSnapshot()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var reportPath = fixture.Path("migration-report.json");
+        var report = JsonNode.Parse(await File.ReadAllTextAsync(reportPath))!.AsObject();
+        report["validation"]!["sourceBaseline"]!["status"] = "captured";
+        report["validation"]!["sourceBaseline"]!["states"] = new JsonArray(
+            new JsonObject
+            {
+                ["id"] = "state-1",
+                ["status"] = "captured"
+            });
+        report["validation"]!["targetReplay"]!["states"] = new JsonArray(
+            new JsonObject
+            {
+                ["id"] = "state-1",
+                ["status"] = "unverified",
+                ["reason"] = "A fresh runner-controlled replay is required."
+            });
+        await File.WriteAllTextAsync(reportPath, report.ToJsonString());
+
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+
+        Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
+        Assert.AreEqual("build", snapshot.Frontier?.Kind);
     }
 
     [TestMethod]

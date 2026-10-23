@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation and Contributors. All rights reserved.
 // Licensed under the MIT License.
 
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace UwpMigration.Contracts;
@@ -576,11 +577,105 @@ public sealed class MigrationValidationPhase
     public required string EvidenceRoot { get; set; }
 
     [JsonPropertyName("states")]
-    public List<string> States { get; set; } = [];
+    public List<MigrationValidationState> States { get; set; } = [];
 
     [JsonPropertyName("reason")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; set; }
+}
+
+[JsonConverter(typeof(MigrationValidationStateJsonConverter))]
+public sealed class MigrationValidationState
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("status")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("reason")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; set; }
+}
+
+public sealed class MigrationValidationStateJsonConverter
+    : JsonConverter<MigrationValidationState>
+{
+    public override MigrationValidationState Read(
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            return new MigrationValidationState
+            {
+                Id = reader.GetString()
+                    ?? throw new JsonException("Validation state ID must not be null.")
+            };
+        }
+        if (reader.TokenType != JsonTokenType.StartObject)
+        {
+            throw new JsonException(
+                "Validation state must be a state ID string or an object.");
+        }
+
+        string? id = null;
+        string? status = null;
+        string? reason = null;
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName)
+                throw new JsonException("Validation state contains an invalid token.");
+            var property = reader.GetString();
+            if (!reader.Read())
+                throw new JsonException("Validation state property has no value.");
+            switch (property)
+            {
+                case "id":
+                    id = reader.TokenType == JsonTokenType.String
+                        ? reader.GetString()
+                        : throw new JsonException("Validation state ID must be a string.");
+                    break;
+                case "status":
+                    status = reader.TokenType is JsonTokenType.String or JsonTokenType.Null
+                        ? reader.GetString()
+                        : throw new JsonException("Validation state status must be a string or null.");
+                    break;
+                case "reason":
+                    reason = reader.TokenType is JsonTokenType.String or JsonTokenType.Null
+                        ? reader.GetString()
+                        : throw new JsonException("Validation state reason must be a string or null.");
+                    break;
+                default:
+                    reader.Skip();
+                    break;
+            }
+        }
+        if (string.IsNullOrWhiteSpace(id))
+            throw new JsonException("Validation state object requires a non-empty ID.");
+        return new MigrationValidationState
+        {
+            Id = id,
+            Status = status,
+            Reason = reason
+        };
+    }
+
+    public override void Write(
+        Utf8JsonWriter writer,
+        MigrationValidationState value,
+        JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("id", value.Id);
+        if (value.Status is not null)
+            writer.WriteString("status", value.Status);
+        if (value.Reason is not null)
+            writer.WriteString("reason", value.Reason);
+        writer.WriteEndObject();
+    }
 }
 
 public sealed class MigrationProject
