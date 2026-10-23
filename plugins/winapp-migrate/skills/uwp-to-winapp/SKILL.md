@@ -7,7 +7,7 @@ description: "Use immediately when migrating, porting, or converting a C# UWP ap
 
 Preserve the app; do not redesign it. Keep every page, control, resource, helper, navigation path, and user-visible behavior unless authoritative platform evidence proves there is no WinUI 3 desktop equivalent. Report unsupported behavior explicitly; never omit it silently.
 
-This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.4`. WinApp CLI remains a separate build, launch, diagnosis, and UI-automation tool.
+This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.4`. WinApp CLI remains a separate implementation tool, but every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp enforce` boundary.
 
 ## Tool and contract compatibility
 
@@ -15,8 +15,8 @@ Treat three capabilities as independent:
 
 | Capability | Required contract | Current compatibility truth |
 |---|---|---|
-| Mechanical UWP migration | `winapp-migrate uwp` with `migrate`, `verify`, and `decide-project-item`; `migration-report.json` schema `1.4` | The preview `winapp-migrate` build from this repository owns this capability. WinApp CLI does not. |
-| Build, register, launch, diagnose, and automate | `winapp run` with `--no-launch`, `--no-build`, `--detach`, and `--json`, plus the required `winapp ui` operations | WinApp CLI 0.7+ can supply these capabilities when its local help lists them. |
+| UWP migration and enforcement | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, and `enforce`; migration report schema `1.4` plus enforcement evidence schema `1.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its process boundary. |
+| Build, register, launch, diagnose, and automate | Runner-mediated WinApp CLI `run` and `ui` capabilities | WinApp CLI 0.7+ can supply these capabilities. The runner resolves it from `--winapp`, then `WINAPP_MIGRATE_WINAPP_PATH`, then PATH; it is valid for the raw executable to be absent from the agent's PATH. |
 | Static WinUI diagnostics | A project `PackageReference` to `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` with `PrivateAssets="all"` | The analyzer is a separate preview/`0.x` NuGet package. WinApp CLI does not inject it, and this plugin does not bundle its DLL. |
 
 Run these checks before changing the source or target:
@@ -28,18 +28,14 @@ winapp-migrate uwp --help
 winapp-migrate uwp migrate --help
 winapp-migrate uwp verify --help
 winapp-migrate uwp decide-project-item --help
-winapp --version
-winapp --help
-winapp run --help
-winapp ui --help
+winapp-migrate uwp enforce --help
 ```
 
 Verify from the actual output that:
 
-1. `winapp-migrate uwp` exposes `migrate`, `verify`, and `decide-project-item`;
-2. `winapp` exposes `run` and `ui`;
-3. `winapp run --help` lists `--no-launch`, `--no-build`, `--detach`, and `--json`;
-4. the required UI subcommands are present before planning automated evidence.
+1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, and `enforce`;
+2. `winapp-migrate uwp enforce --help` exposes `configure`, `run`, `diagnose`, `ui`, `record-failure`, `record-diagnosis`, `assess`, and `sync-report`;
+3. the configured WinApp CLI satisfies the runner contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
 
 Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.4`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
 
@@ -61,9 +57,9 @@ If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is avai
 
 ## Ownership
 
-- `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, and its mechanically owned schema `1.4` report fields.
+- `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, enforcement attestations, retry budgets, closure gates, and its mechanically owned schema `1.4` report fields.
 - This skill owns semantic decisions, dependency-contract preservation, target implementation, and behavioral validation.
-- WinApp CLI owns build, registration, launch, crash diagnostics, and UI automation only. Its success does not prove mechanical or behavioral migration completeness.
+- WinApp CLI owns the underlying build, registration, launch, crash diagnostics, and UI automation. The runner owns every target invocation and its provenance; source baseline capture may still use WinApp CLI directly.
 - The analyzer reports static WinUI risks during ordinary builds. It does not create the migration report and does not replace runtime replay.
 
 Do not duplicate `winapp-migrate uwp` checks with ad hoc extension lists or repository-wide searches when current schema `1.4` evidence already covers them. An empty migration TODO list still does not guarantee a buildable, runnable, or behaviorally equivalent app.
@@ -92,7 +88,21 @@ Follow [Behavioral validation](references/behavioral-validation.md) to create an
 
 Before editing, capture startup and the fast-path primary sentinel, or every expanded-path seam sentinel. Capture remaining source states before implementing or validating their corresponding target feature. Complete the bounded source-recovery and evidence-fallback process before declaring a state unavailable.
 
+After persisting the state plan and before starting source capture, run
+`winapp-migrate uwp enforce assess "<target>"`. This atomically installs the
+balanced policy when no policy exists, starts the durable source-oracle budget,
+and reports its deadline. Install a custom policy with `enforce configure`
+before this first assessment when needed. Do not postpone the first assessment
+until source capture is complete, because that would leave the source phase
+outside the workflow clock.
+
 If usable source evidence still cannot be obtained, record the affected states as `unverified`; never infer parity from source code or build success. Treat a newly observed source window as a successful launch even when the launch command's output transport remains pending. Complete exact-window cleanup after each source-capture session before editing the target.
+
+Immediately after the required source states are captured and persisted, run
+`winapp-migrate uwp enforce assess "<target>"` again. Require the snapshot to
+enter `mechanical-stabilization` before target implementation begins; this
+observation closes the source unit and starts the mechanical clock. Do not
+perform target work between changing the source statuses and this assessment.
 
 ## 3. Build the first viable slice
 
@@ -126,39 +136,135 @@ dotnet add "<target.csproj>" package Microsoft.Windows.SDK.BuildTools.WinUIAnaly
 
 Ensure the resulting project reference has `PrivateAssets="all"`. With central package management, keep the version in the repository's package version file and keep `PrivateAssets` on the project reference. Do not copy or reference an analyzer DLL from this plugin or a local checkout.
 
-If NuGet cannot resolve the package, continue only when the rest of the build can proceed, retain the restore evidence, and tell the user that analyzer checks did not run. Do not claim an analyzer-enabled build.
+If NuGet cannot resolve the package, retain the restore evidence and report the
+blocked analyzer prerequisite. You may continue bounded implementation
+diagnosis manually, but the enforcement runner must not attest or close the
+build. Do not claim an analyzer-enabled build.
 
-For the packaged target, the standard build and registration command is:
+For the packaged target, let the enforcement runner build/register and then
+start the detached canonical replay:
 
 ```powershell
-winapp run "<target.csproj>" --no-launch --json
+winapp-migrate uwp enforce run "<target>"
 ```
 
-`--no-launch` builds, prepares deployment, and registers a packaged app without starting it. It is not a build-only switch for an unpackaged target. Capture the JSON result, diagnostics, and exit code in a new iteration directory under `<target>\.migration-evidence\builds`.
+Pass `--configuration`, `--architecture`, `--runtime`, `--framework`, and
+repeatable `--property Name=Value` arguments when defaults are not correct.
+The runner forwards the same values to WinApp CLI's `--no-launch --json` build
+and `--no-build --detach --json` replay. It writes raw output, grouped
+diagnostics, target fingerprints, and versioned attestations under
+`<target>\.migration-evidence\enforcement`; do not duplicate that bookkeeping.
+Never invoke raw `winapp run` for the target. A raw target invocation has no
+runner attestation and its output cannot satisfy a closure gate.
 
-On failure, read the complete error set, group it by root cause, and fix every governed occurrence in one pass. Do not build after every file or diagnostic. Target three grouped builds—initial convergence, root-cause correction, and final confirmation—but allow another when the previous result exposes a genuinely new signature.
+On failure, read the current enforcement state and grouped build diagnostics,
+then fix every governed occurrence of the active root cause in one pass. Do
+not build after every file or diagnostic.
 
-If the same signature survives two builds, stop speculative edits and inspect the complete type, project-item, generated-code, and call-site context. Record expanded-path root causes in the semantic finding ledger. Build success closes only compile-time completion conditions.
+An unchanged failed target cannot be built again. The persisted stage/slice
+time and operation budgets also survive new CLI invocations; `stage-budget`
+means stop and inspect the measured budget decision, not rerun the command.
+Configure budgets before operations with `enforce configure --write-default`
+or `--policy <file>` (both also take `<target>`). After semantic convergence
+starts, corrections remain in that stage and reuse the active slice's budget.
+The initial analyzer-attested build is charged to mechanical stabilization,
+not target bootstrap; the initial replay is charged to target bootstrap.
+Balanced policy grants at most one measured-progress extension independently
+per stage or semantic slice (`maximumProgressExtensionsPerUnit`), subject to
+the unchanged stage and workflow hard deadlines. Source oracle allows no
+target operations; mechanical stabilization allows builds only; bootstrap
+allows replay and runtime-failure diagnosis/hypothesis, never UI automation.
+Closure allows only final replay/UI justified by `--discriminating-evidence`;
+report sync is not a counted external operation. Custom ceilings cannot enable
+operations incompatible with their stage.
+Stop speculative edits and inspect the complete
+type, project-item, generated-code, and call-site context. Record expanded-path
+root causes in the semantic finding ledger. Build success closes only
+compile-time completion conditions.
 
 Do not spend turns clearing advisory diagnostics unrelated to migration success.
 
 ## 5. Prove the architecture, then expand coverage
 
-After the first successful analyzer-enabled build/register, launch the existing output without rebuilding:
+After the runner returns a successful detached-launch attestation, replay the
+active sentinel immediately. Control existence and process survival are not
+sufficient.
+
+If the sentinel fails, it becomes the active migration frontier. For a
+foreground target diagnostic, use only:
 
 ```powershell
-winapp run "<target.csproj>" --no-build --detach --json
+winapp-migrate uwp enforce diagnose "<target>"
 ```
 
-Pass the same configuration, architecture, framework, and relevant MSBuild properties used by the build when they differ from defaults. Replay the active sentinel immediately. Control existence and process survival are not sufficient.
+The runner preserves stdout and stderr under
+`<target>\.migration-evidence\enforcement\diagnostics`. If the failed canonical
+replay already recorded the runtime attempt, do not record it a second time.
+For a failure first observed during a later UI action, persist its evidence and
+record one stable signature:
 
-If the sentinel fails, it becomes the active migration frontier. Pause broader coverage, create or update its finding, return to the implementation and build steps, and correct the shared root cause. For startup or action-triggered process exits, follow the runtime diagnosis in [Behavioral validation](references/behavioral-validation.md). An unavailable pointer-input comparison is missing comparison evidence, not an external blocker for an app-owned crash.
+```powershell
+winapp-migrate uwp enforce record-failure "<target>" runtime "<signature>" --state "<state-id>" --evidence "<target-relative-path>"
+```
 
-After every sentinel passes, expand progressively to remaining feature paths and source states. Group features that share a dependency or architecture boundary and replay each group before moving to an independent group.
+Before any target rebuild or replay, compare the failing source and target
+paths. Start at the source handler, constructor, navigation callback, or
+transition corresponding to the failed action; read its comments, guards,
+exception workarounds, ordering, and lifecycle assumptions before interpreting
+native stack noise. Persist the source/target diff and record one falsifiable
+hypothesis and one discriminating test:
+
+```powershell
+winapp-migrate uwp enforce record-diagnosis "<target>" "<signature>" `
+  --state "<state-id>" `
+  --source-location "<path:line>" `
+  --target-location "<path:line>" `
+  --source-invariant "<behavior or workaround to preserve>" `
+  --hypothesis "<single falsifiable cause>" `
+  --test "<one change or observation that distinguishes the cause>" `
+  --evidence "<fresh-target-relative-diagnosis-path>"
+```
+
+The runner exposes `diagnosis-required` until this source-first diagnosis is
+complete and fresh, then `change-required` until the target fingerprint changes.
+Do not overwrite a completed diagnosis or record another for the same signature
+and fingerprint. Then pause broader coverage, create or update the finding,
+apply only the change required by the discriminating test, and correct the
+shared root cause. For startup or action-triggered process exits, follow
+[Behavioral validation](references/behavioral-validation.md).
+An unavailable pointer-input comparison is missing comparison evidence, not
+an external blocker for an app-owned crash.
+
+After every sentinel passes, expand progressively to remaining feature paths
+and source states. Use optional schema `1.0` `slice`, `dependencies` (slice IDs),
+and `criticality` fields to group states by dependency or architecture boundary.
+The runner selects only the first dependency-ready incomplete slice. Required
+blocked work stops; optional debt never verifies a state or unlocks a dependent
+slice. Follow snapshot `activeSlice`, `activeStateIds`, and `budget`. Whenever
+state evidence completes a slice, persist the state-plan update and immediately
+run `enforce assess` before editing the next slice. That assessment records the
+completion and starts the next slice's independent clock and counters.
 
 ## 6. Falsify and finalize
 
-After all target changes, start one fresh no-build process from the canonical initial state. Replay the primary sentinel followed by every runnable planned state. Persist the run identity, returned PID, initial HWND, launch time, target fingerprint, and final evidence.
+After all target changes, run the following command with the same
+build-selection options:
+
+```powershell
+winapp-migrate uwp enforce run "<target>" --force-replay --discriminating-evidence "<new-target-relative-evidence>"
+```
+
+Fresh discriminating evidence must justify a repeated replay. Touching,
+renaming, or reusing the same evidence content is not progress.
+`--force-replay` cannot bypass diagnosis, change-required, or stage budgets.
+
+From that fresh canonical process, replay the primary sentinel followed by
+every runnable planned state. Persist state evidence after the recorded replay
+start; obtain target window-specific evidence through
+`winapp-migrate uwp enforce ui "<target>" --discriminating-evidence
+"<new-target-relative-evidence>" -- <ui-arguments>` during closure rather than
+invoking raw `winapp ui` or inventing an HWND from launch output. Each closure
+UI operation needs explicit fresh justification.
 
 This final pass attempts to disprove completion. Do not reuse a development process or old evidence. Reopen a finding when the clean sequence changes the signature or fails.
 
@@ -170,8 +276,19 @@ Before claiming completion:
 - the current build is analyzer-enabled and successful;
 - the primary sentinel and every runnable target state pass in one fresh canonical sequence;
 - mechanically owned schema `1.4` evidence remains current according to `winapp-migrate uwp verify`;
-- the schema `1.0` state plan, semantic findings, and report validation summary agree.
+- `winapp-migrate uwp enforce assess "<target>"` reports every closure gate as passed.
 
-Update only semantically owned report fields documented by schema `1.4`. Never fabricate or manually repair `winapp-migrate uwp`-owned mechanical evidence. Runtime parity and migration completion are separate claims: paired source/target evidence may establish parity while required migration work remains, and completed target work may coexist with `parityStatus: unverified` when source evidence is unavailable.
+After updating state and finding evidence, run:
+
+```powershell
+winapp-migrate uwp enforce sync-report "<target>"
+```
+
+Do not hand-edit its derived validation summary.
+Never fabricate or manually repair `winapp-migrate uwp`-owned mechanical
+evidence. Runtime parity and migration completion are separate claims: paired
+source/target evidence may establish parity while required migration work
+remains, and completed target work may coexist with `parityStatus: unverified`
+when source evidence is unavailable.
 
 Report unresolved behavior, unavailable analyzer checks, `winapp-migrate uwp` limitations, and behavioral-validation status. Do not claim parity from build success or process launch.

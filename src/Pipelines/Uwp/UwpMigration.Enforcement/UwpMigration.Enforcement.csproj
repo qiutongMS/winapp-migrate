@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\WinAppMigration.Enforcement\WinAppMigration.Enforcement.csproj" />
+    <ProjectReference Include="..\UwpMigration.Contracts\UwpMigration.Contracts.csproj" />
+    <ProjectReference Include="..\UwpMigration.Mechanical\UwpMigration.Mechanical.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

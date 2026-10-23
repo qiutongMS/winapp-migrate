@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Pipelines\Uwp\UwpMigration.Contracts\UwpMigration.Contracts.csproj" />
+    <ProjectReference Include="..\Pipelines\Uwp\UwpMigration.Enforcement\UwpMigration.Enforcement.csproj" />
     <ProjectReference Include="..\Pipelines\Uwp\UwpMigration.Mechanical\UwpMigration.Mechanical.csproj" />
     <PackageReference Include="System.CommandLine" />
   </ItemGroup>

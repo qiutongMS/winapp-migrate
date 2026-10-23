@@ -53,7 +53,28 @@ Use this schema `1.0` shape:
 
 Update the file after every attempted source capture, target replay, and comparison. Evidence entries are paths relative to `<target>`. Record implementation defects and runtime signatures in the separate [semantic finding ledger](semantic-migration-protocol.md) and link them to stable state IDs.
 
+Optional schema `1.0` fields on each state are `slice` (defaults to its state
+ID), `dependencies` (slice IDs, defaults to empty), and `criticality`
+(`required`, the default, or `optional`). States in one slice share criticality;
+their dependencies are combined, must exist, and must be acyclic. Follow only
+the first dependency-ready incomplete slice in the enforcement snapshot.
+Required source states need captured evidence before target work. Required
+blocked/unverified states remain incomplete; optional debt is never verification
+and cannot unlock dependent slices.
+
 Set `source.status` to `captured`, `blocked`, or `unverified`; `target.status` to `passed`, `blocked`, `unverified`, or `failed`; and `comparison.status` to `verified`, `blocked`, `unverified`, or `failed`. Keep `not-run` only until the phase is attempted, and provide `reason` for every status other than `captured`, `passed`, or `verified`.
+
+After writing the state plan and before launching the source, start the durable
+workflow clock:
+
+```powershell
+winapp-migrate uwp enforce assess "<target>"
+```
+
+This persists the balanced policy when none exists and begins the
+source-oracle budget. If the migration needs a custom policy, install it with
+`enforce configure` before this assessment. Starting assessment only after
+source capture would leave that phase unbudgeted.
 
 For state-changing behavior, plan a transition rather than only a destination. Verify changed values, selection, collections, navigation state, or visible content. Include cancel/back restoration and alternate modifier-key paths when they produce different source behavior.
 
@@ -101,51 +122,158 @@ Use `blocked` only for a known external prerequisite such as unavailable permiss
 
 After source capture, close the exact source HWND through its UIA Close element and confirm it disappears. If it has no UIA Close element, stop only the exact source PID returned by `winapp run`. Never clean up by broad process name.
 
+After persisting the completed required source states, immediately run
+`winapp-migrate uwp enforce assess "<target>"` again and require
+`mechanical-stabilization` before target implementation. The assessment closes
+the source unit and starts the mechanical budget; doing target work first would
+leave that time charged to the wrong phase.
+
 ## 3. Build/register and replay WinUI 3
 
 The target project must reference `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` with `PrivateAssets="all"`. The package is not bundled with this plugin and is not injected by WinApp CLI.
 
-Build and register the packaged target without launching:
+Build/register the packaged target and start its detached canonical replay
+through the enforcement runner:
 
 ```powershell
-winapp run "<target.csproj>" --no-launch --json
+winapp-migrate uwp enforce run "<target>"
 ```
 
-Preserve the JSON result, diagnostics, and exit code. This is the standard target convergence build. Do not substitute a wrapper script or a copied analyzer DLL.
+Pass `--configuration`, `--architecture`, `--framework`, `--runtime`, and
+repeatable `--property Name=Value` arguments when required. The runner
+forwards the same selection to its `--no-launch --json` build and
+`--no-build --detach --json` replay, and preserves raw output, grouped
+diagnostics, exit codes, fingerprints, and attestations. Do not substitute a
+wrapper script or copied analyzer DLL. Replay the active sentinel before
+peripheral features.
 
-After the build succeeds, launch the existing output without rebuilding:
+For the target, never invoke raw `winapp run`, `winapp build`, or `winapp ui`.
+Those calls bypass target fingerprinting, retry accounting, replay identity,
+and evidence provenance, so their output cannot close a state. Source baseline
+capture remains outside this target-only boundary.
+
+If the detached app exits, turns blank, or never exposes a usable window, run
+one foreground diagnostic launch through the runner:
 
 ```powershell
-winapp run "<target.csproj>" --no-build --detach --json
+winapp-migrate uwp enforce diagnose "<target>"
 ```
 
-Pass the same configuration, architecture, framework, runtime, and relevant MSBuild properties used by the build. Replay the active sentinel before peripheral features.
+The runner invokes `--no-build --debug-output`, writes stdout and stderr under
+`.migration-evidence/enforcement/diagnostics`, and records a diagnostic
+attestation. Derive a stable signature from the exception or HRESULT, the first
+app-owned stack frame, and the WinUI triage verdict. A failed canonical replay
+already records its runtime attempt; do not duplicate it. When a later target
+UI action first exposes the failure, persist that action evidence and use
+`winapp-migrate uwp enforce record-failure`.
 
-If the detached app exits, turns blank, or never exposes a usable window, run one foreground diagnostic launch:
+Before changing the target, diagnose source semantics in this order:
 
-```powershell
-winapp run "<target.csproj>" --no-build --debug-output
-```
+1. Map the failing target action to the corresponding source handler,
+   constructor, navigation callback, or state transition.
+2. Compare the complete source and target paths, including nearby comments,
+   guards, catches, dispatcher ordering, initialization order, and lifecycle
+   assumptions. Treat preserved source workarounds as behavioral contracts
+   until disproved.
+3. State one source invariant, one falsifiable hypothesis, and one
+   discriminating test. Do not batch unrelated fixes or move to media/native
+   stack speculation while an app-owned source/target difference remains.
+4. Persist a compact source/target diff or investigation note under the target
+   evidence root, created after the recorded failure.
+5. Record the diagnosis before another build or replay:
 
-`--debug-output` cannot combine with `--detach` or `--json`. Record a crash signature consisting of the exception or HRESULT, the first app-owned stack frame, and the WinUI triage verdict, then create or update its semantic finding.
+   ```powershell
+   winapp-migrate uwp enforce record-diagnosis "<target>" "<signature>" `
+     --state "<state-id>" `
+     --source-location "<path:line>" `
+     --target-location "<path:line>" `
+     --source-invariant "<behavior or workaround to preserve>" `
+     --hypothesis "<single falsifiable cause>" `
+     --test "<one discriminating change or observation>" `
+     --evidence "<fresh-target-relative-diagnosis-path>"
+   ```
+
+The runner's `failure-diagnosis` gate exposes `diagnosis-required` and rejects
+missing, incomplete, out-of-root, or pre-failure evidence. Diagnosis is bound to
+the failing signature, state/slice, and target fingerprint; a completed record
+cannot be overwritten or repeated for that signature/fingerprint. It then
+exposes `change-required` until the target fingerprint changes. Apply only the change required by the recorded test,
+then use runner-controlled build and replay. A changed target fingerprint does
+not excuse an undiagnosed runtime failure.
 
 If diagnostics terminate without an app-owned cause, allow one focused temporary instrumentation pass at the narrowest existing app-owned constructors, handlers, and transition helpers. Remove all temporary instrumentation before the final analyzer-enabled build and clean replay.
 
-When the target exits only while a semantic action is driven through `winapp ui invoke`, or a native crash stack is dominated by `UIAutomationCore` without an app-owned frame, test the same control once with `winapp ui click` after a clean launch.
+Drive target UI through the current runner-attested canonical replay:
+
+```powershell
+winapp-migrate uwp enforce ui "<target>" -- list-windows --json
+winapp-migrate uwp enforce ui "<target>" -- inspect -w <hwnd> -d 8 --json
+winapp-migrate uwp enforce ui "<target>" -- invoke "<semantic-name>" -w <hwnd> --json
+winapp-migrate uwp enforce ui "<target>" -- screenshot -w <hwnd> --focus --json -o "<evidence-path>.png"
+```
+
+The target UI command refuses to run without a fresh canonical replay. When
+the target exits only while an `invoke` action runs, or a native crash stack is
+dominated by `UIAutomationCore` without an app-owned frame, test the same
+control once with runner-mediated `click` after a clean launch.
 
 If `invoke` fails while pointer input succeeds, inspect the complete downstream path for overlapping fire-and-forget tasks, reentrant navigation, frame replacement, overlay removal, or disposal while UI Automation is still returning. Serialize and await app-owned transitions, prevent re-entry, and remove visual-tree elements only after the action and required exit transition complete.
 
 If pointer input cannot run because the host lacks an interactive desktop or click support, record that limitation only for the input-method comparison. Keep the invoke-triggered app defect `failed`; do not mark it `blocked`.
 
-Group all locations explained by one signature into one correction. For the same signature, allow at most two correction-and-probe cycles. Each cycle must state one root-cause hypothesis the next probe can disprove. If unchanged after the second cycle, stop speculative edits and retain the failure evidence.
+Group all locations explained by one signature into one correction. A failed
+build cannot repeat on an unchanged target, and replay/debug/hypothesis work
+cannot be repeated without the required new target or discriminating evidence.
+Each correction cycle must state one root-cause hypothesis the next probe can
+disprove. Persisted stage/slice operation ceilings and wall-clock limits survive
+new invocations. Follow `budget` and `stage-budget` decisions; assertions of
+near-completion never qualify for a measured-progress extension. The balanced
+`maximumProgressExtensionsPerUnit: 1` permits one independently per stage and
+per semantic slice, never a second for the same unit; stage and total workflow
+hard limits remain unchanged. The initial build belongs to mechanical
+stabilization, the initial replay to target bootstrap, and later semantic
+corrective builds/replays to their active slice. Stage-specific operation
+ceilings cannot enable incompatible work: source oracle has no target
+operations, mechanical stabilization only builds, and bootstrap no UI
+automation or diagnosis/hypothesis without a runtime failure. Closure permits
+only explicitly justified final replay/UI with `--discriminating-evidence`;
+report synchronization is not a counted external operation.
+Configure the strict policy before operations with
+`winapp-migrate uwp enforce configure "<target>" --write-default` or
+`--policy <file>`. See the repository README for defaults and hard-limit debt
+behavior. Corrections made after semantic convergence do not restart
+mechanical stabilization.
 
 Only when mechanical evidence, build diagnostics, WinUI triage, resource resolution, and generated XAML provide no actionable cause may you bisect XAML. Disable approximately half of one root subtree per probe, change only that dimension, and stop after four probes. Restore the complete page before applying the root-cause fix.
 
 Reuse the running app during development replay. Restart only when a state requires clean startup, prior actions cannot be reversed, or a correction requires a new process. Development observations are provisional.
 
-After progressive coverage, close the development process and start one fresh no-build process. Replay the primary sentinel first, then every runnable state in order. Only this final falsification pass may set target states to `passed` and resolve runtime findings.
+After progressive coverage, close the development process and run the
+following command with the same build-selection options:
 
-Before the first final action, persist a stable run ID, launch command, returned primary PID, initial HWND, target fingerprint, and launch time. Include the run ID and actual HWND in every final action, tree, screenshot, and health record. Evidence from a replacement process cannot complete the earlier run.
+```powershell
+winapp-migrate uwp enforce run "<target>" --force-replay --discriminating-evidence "<new-target-relative-evidence>"
+```
+
+The evidence must be new, fresh discriminating content, not a touched or renamed
+copy. Force replay bypasses neither no-progress guards nor stage budgets.
+
+Replay the primary sentinel first, then every runnable state in order. Only
+evidence created after this recorded replay start may set target states to
+`passed` and resolve runtime findings.
+
+After a state-plan update completes the active slice, immediately run
+`winapp-migrate uwp enforce assess "<target>"` before working on the next
+slice. This persists the completion event and starts the next slice's budget;
+do not batch an unobserved phase transition with the next slice's edits.
+
+The replay attestation persists the stable run ID, launch command, returned
+primary PID, target fingerprint, and launch time. Discover the actual HWND
+through `winapp-migrate uwp enforce ui`; during closure, pass fresh
+`--discriminating-evidence` for each justified UI operation. Include the HWND
+with the run ID in final action, tree, screenshot, and health evidence. Do not
+infer an HWND from launch JSON. Evidence from a replacement process cannot
+complete the earlier run.
 
 ## 4. Compare semantically
 

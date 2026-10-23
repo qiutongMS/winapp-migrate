@@ -3,6 +3,7 @@
 
 using System.CommandLine;
 using UwpMigration.Mechanical;
+using WinAppMigration.Enforcement;
 
 namespace WinAppMigration.Cli.Pipelines.Uwp;
 
@@ -10,12 +11,14 @@ internal sealed class UwpCommand : Command
 {
     public UwpCommand(
         MechanicalMigration.Engine engine,
-        IMsBuildProjectItemEvaluator msBuildProjectItemEvaluator)
+        IMsBuildProjectItemEvaluator msBuildProjectItemEvaluator,
+        IEnforcementProcessRunner enforcementProcessRunner)
         : base("uwp", "Migrate a C# UWP application to WinUI 3.")
     {
         Subcommands.Add(new MigrateCommand(engine));
         Subcommands.Add(new MigrateVerifyCommand(msBuildProjectItemEvaluator));
         Subcommands.Add(
             new MigrateProjectItemDecisionCommand(msBuildProjectItemEvaluator));
+        Subcommands.Add(new UwpEnforceCommand(enforcementProcessRunner));
     }
 }

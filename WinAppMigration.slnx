@@ -1,12 +1,15 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/WinAppMigration.Cli/WinAppMigration.Cli.csproj" />
+    <Project Path="src/WinAppMigration.Enforcement/WinAppMigration.Enforcement.csproj" />
   </Folder>
   <Folder Name="/src/Pipelines/Uwp/">
     <Project Path="src/Pipelines/Uwp/UwpMigration.Contracts/UwpMigration.Contracts.csproj" />
+    <Project Path="src/Pipelines/Uwp/UwpMigration.Enforcement/UwpMigration.Enforcement.csproj" />
     <Project Path="src/Pipelines/Uwp/UwpMigration.Mechanical/UwpMigration.Mechanical.csproj" />
   </Folder>
   <Folder Name="/tests/Pipelines/Uwp/">
+    <Project Path="tests/Pipelines/Uwp/UwpMigration.Enforcement.Tests/UwpMigration.Enforcement.Tests.csproj" />
     <Project Path="tests/Pipelines/Uwp/UwpMigration.Mechanical.Tests/UwpMigration.Mechanical.Tests.csproj" />
   </Folder>
 </Solution>
