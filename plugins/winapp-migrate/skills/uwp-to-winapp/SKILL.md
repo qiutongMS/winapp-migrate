@@ -15,7 +15,7 @@ Treat three capabilities as independent:
 
 | Capability | Required contract | Current compatibility truth |
 |---|---|---|
-| UWP migration and enforcement | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, and `enforce`; migration report schema `1.4` plus enforcement evidence schema `1.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its process boundary. |
+| UWP migration and enforcement | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, and `enforce`; migration report schema `1.4`, enforcement evidence schema `1.0`, workflow progress schema `2.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its process boundary. |
 | Build, register, launch, diagnose, and automate | Runner-mediated WinApp CLI `run` and `ui` capabilities | WinApp CLI 0.7+ can supply these capabilities. The runner resolves it from `--winapp`, then `WINAPP_MIGRATE_WINAPP_PATH`, then PATH; it is valid for the raw executable to be absent from the agent's PATH. |
 | Static WinUI diagnostics | A project `PackageReference` to `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` with `PrivateAssets="all"` | The analyzer is a separate preview/`0.x` NuGet package. WinApp CLI does not inject it, and this plugin does not bundle its DLL. |
 
@@ -171,10 +171,15 @@ The initial analyzer-attested build is charged to mechanical stabilization,
 not target bootstrap; the initial replay is charged to target bootstrap.
 Balanced policy grants at most one measured-progress extension independently
 per stage or semantic slice (`maximumProgressExtensionsPerUnit`), subject to
-the unchanged stage and workflow hard deadlines. Source oracle allows no
+the stage's cumulative active-time ceiling and workflow wall-clock deadline.
+Switching accounts closes the old activation epoch; reentry preserves counts,
+extensions, and blocked status without charging inactive time. Schema `1.0`
+progress imports only when its continuous account history is unambiguous;
+otherwise preserve the artifacts and report the fail-closed import error.
+Source oracle allows no
 target operations; mechanical stabilization allows builds only; bootstrap
 allows replay and runtime-failure diagnosis/hypothesis, never UI automation.
-Closure allows only final replay/UI justified by `--discriminating-evidence`;
+Closure allows a bounded revalidation build and final replay/UI justified by `--discriminating-evidence`;
 report sync is not a counted external operation. Custom ceilings cannot enable
 operations incompatible with their stage.
 Stop speculative edits and inspect the complete
@@ -238,12 +243,22 @@ an external blocker for an app-owned crash.
 After every sentinel passes, expand progressively to remaining feature paths
 and source states. Use optional schema `1.0` `slice`, `dependencies` (slice IDs),
 and `criticality` fields to group states by dependency or architecture boundary.
-The runner selects only the first dependency-ready incomplete slice. Required
+The runner selects only the first dependency-ready semantically unresolved slice. Required
 blocked work stops; optional debt never verifies a state or unlocks a dependent
 slice. Follow snapshot `activeSlice`, `activeStateIds`, and `budget`. Whenever
 state evidence completes a slice, persist the state-plan update and immediately
 run `enforce assess` before editing the next slice. That assessment records the
-completion and starts the next slice's independent clock and counters.
+resolution and activates the next slice's independent budget account.
+A target change makes resolved evidence stale without returning those slices
+to semantic implementation work. Closure selects stale resolved evidence with
+a `revalidate` frontier; failed comparisons, runtime regressions, and open
+findings can reopen semantic work before terminal completion.
+Inspect snapshot `disposition`, not just the legacy `status`: `pause-replan`
+is a nonterminal soft-budget decision; `continue-with-debt` is nonterminal.
+`complete`, `blocked-required`, `total-budget-exhausted`, and
+`infrastructure-failure` are immutable terminal outcomes and reject every
+operation. `retryable` on an infrastructure failure does not authorize
+retrying that same terminal run; this release provides no reset facility.
 
 ## 6. Falsify and finalize
 
@@ -257,6 +272,8 @@ winapp-migrate uwp enforce run "<target>" --force-replay --discriminating-eviden
 Fresh discriminating evidence must justify a repeated replay. Touching,
 renaming, or reusing the same evidence content is not progress.
 `--force-replay` cannot bypass diagnosis, change-required, or stage budgets.
+Finish this falsification pass before report synchronization makes a fully
+passed closure terminal; do not request more target operations afterward.
 
 From that fresh canonical process, replay the primary sentinel followed by
 every runnable planned state. Persist state evidence after the recorded replay

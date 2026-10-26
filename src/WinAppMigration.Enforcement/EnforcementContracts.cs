@@ -405,6 +405,9 @@ public sealed class EnforcementSnapshot
     [JsonPropertyName("workflow")]
     public WorkflowProgress? Workflow { get; set; }
 
+    [JsonPropertyName("disposition")]
+    public RunDisposition? Disposition { get; set; }
+
     [JsonPropertyName("status")]
     public required string Status { get; set; }
 
@@ -487,6 +490,7 @@ public sealed record EnforcementEvaluationInput
     public AttemptLedger Attempts { get; init; } = new();
     public EnforcementPolicy Policy { get; init; } = EnforcementPolicy.Balanced();
     public WorkflowProgress? Progress { get; init; }
+    public RunDisposition? PersistedDisposition { get; init; }
     public required PipelineValidationSummary ReportValidation { get; init; }
     public int MaximumSignatureAttempts { get; init; } = 2;
     public DateTimeOffset GeneratedAt { get; init; } = DateTimeOffset.UtcNow;

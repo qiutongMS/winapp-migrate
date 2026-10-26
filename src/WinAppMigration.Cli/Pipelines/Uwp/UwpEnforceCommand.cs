@@ -62,7 +62,7 @@ internal sealed class UwpEnforceCommand : Command
     private sealed class AssessCommand : Command
     {
         internal AssessCommand()
-            : base("assess", "Resume the durable five-stage workflow without external tools. Reports active slice, stage-budget decisions, deadlines and semantic operation counts.")
+            : base("assess", "Observe the durable five-stage workflow without external tools. Reports semantic resolution, evidence freshness, active-account stage-budget decisions and immutable terminal run dispositions.")
         {
             var target = TargetArgument();
             var attempts = AttemptsOption();
@@ -85,7 +85,7 @@ internal sealed class UwpEnforceCommand : Command
         internal RunCommand(IEnforcementProcessRunner processRunner)
             : base(
                 "run",
-                "Run the next build (mechanical-stabilization) and initial replay (target-bootstrap); semantic corrections retain their slice budget.")
+                "Run the next build/replay; semantic corrections retain their slice account, closure revalidates stale evidence, and terminal runs reject operations.")
         {
             var target = TargetArgument();
             var winApp = new Option<string?>("--winapp")

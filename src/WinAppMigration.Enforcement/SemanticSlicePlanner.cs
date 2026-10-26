@@ -10,7 +10,10 @@ public sealed record SemanticSlice(
     IReadOnlyList<string> Dependencies,
     bool Complete,
     bool Blocked,
-    string Reason);
+    string Reason)
+{
+    public bool Resolved { get; init; } = Complete;
+}
 
 public static class SemanticSlicePlanner
 {
@@ -87,7 +90,8 @@ public static class SemanticSlicePlanner
     }
 
     public static IReadOnlyList<SemanticSlice> Assess(
-        DirectoryInfo root, StatePlanDocument plan, ReplayAttestation? freshReplay)
+        DirectoryInfo root, StatePlanDocument plan, ReplayAttestation? freshReplay,
+        WorkflowProgress? progress = null)
     {
         return plan.States.GroupBy(SliceId, StringComparer.Ordinal)
             .Select(group =>
@@ -102,16 +106,23 @@ public static class SemanticSlicePlanner
                     reasons.All(reason => reason is null),
                     states.Any(state => state.Source.Status == "blocked" ||
                         state.Target.Status == "blocked" || state.Comparison.Status == "blocked"),
-                    reasons.FirstOrDefault(reason => reason is not null) ?? $"Slice {group.Key} is verified.");
+                    reasons.FirstOrDefault(reason => reason is not null) ?? $"Slice {group.Key} is verified.")
+                {
+                    Resolved = reasons.All(reason => reason is null) ||
+                        progress?.Slices.Any(slice => slice.SliceId == group.Key && slice.Resolved) == true &&
+                        !states.Any(state => state.Target.Status is "failed" or "blocked" ||
+                            state.Comparison.Status is "failed" or "blocked")
+                };
             }).ToArray();
     }
 
     public static SemanticSlice? Select(
         IReadOnlyList<SemanticSlice> slices, IReadOnlyList<WorkflowDebt> debt) =>
-        slices.FirstOrDefault(slice => !slice.Complete &&
+        slices.FirstOrDefault(slice => !slice.Resolved &&
             (slice.Criticality == StateCriticality.Required || !debt.Any(item => item.SliceId == slice.Id)) &&
             slice.Dependencies.All(dependency => slices.Any(
-                candidate => candidate.Id == dependency && candidate.Complete)));
+                candidate => candidate.Id == dependency && candidate.Resolved &&
+                    !debt.Any(item => item.SliceId == dependency))));
 
     private static string? StateReason(
         DirectoryInfo root, MigrationState state, ReplayAttestation? replay)

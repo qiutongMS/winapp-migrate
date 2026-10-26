@@ -9,7 +9,10 @@ namespace WinAppMigration.Enforcement;
 public sealed record EnforcementProcessResult(
     int ExitCode,
     string Output,
-    string Error);
+    string Error)
+{
+    public bool InfrastructureFailure { get; init; }
+}
 
 public interface IEnforcementProcessRunner
 {
@@ -91,7 +94,7 @@ public sealed class EnforcementProcessRunner : IEnforcementProcessRunner
             return new EnforcementProcessResult(
                 -1,
                 string.Empty,
-                exception.Message);
+                exception.Message) { InfrastructureFailure = true };
         }
     }
 

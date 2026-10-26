@@ -84,7 +84,7 @@ public sealed partial class EnforcementEvaluatorTests
                 Kind = "runtime",
                 TargetFingerprint = input.TargetFingerprint,
                 Signature = "runtime:0x800f1000",
-                RecordedAt = DateTimeOffset.UtcNow,
+                RecordedAt = LifecycleNow,
                 StateId = "state-1",
                 Evidence = ["evidence.txt"]
             }
@@ -104,10 +104,10 @@ public sealed partial class EnforcementEvaluatorTests
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
-        var recordedAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var recordedAt = LifecycleNow.AddSeconds(-1);
         File.SetLastWriteTimeUtc(
             fixture.Path("evidence.txt"),
-            DateTimeOffset.UtcNow.UtcDateTime);
+            LifecycleNow.UtcDateTime);
         input.Attempts.Attempts =
         [
             new()
@@ -119,7 +119,7 @@ public sealed partial class EnforcementEvaluatorTests
                 Evidence = ["evidence.txt"],
                 Diagnosis = new FailureDiagnosis
                 {
-                    RecordedAt = DateTimeOffset.UtcNow,
+                    RecordedAt = LifecycleNow,
                     SourceLocations = ["OuterNavPage.xaml.cs:100"],
                     TargetLocations = ["OuterNavPage.xaml.cs:90"],
                     SourceInvariant = "Preserve the selection workaround.",
@@ -140,7 +140,7 @@ public sealed partial class EnforcementEvaluatorTests
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
-        var recordedAt = DateTimeOffset.UtcNow;
+        var recordedAt = LifecycleNow;
         File.SetLastWriteTimeUtc(
             fixture.Path("evidence.txt"),
             recordedAt.AddSeconds(-1).UtcDateTime);
@@ -466,7 +466,7 @@ public sealed partial class EnforcementEvaluatorTests
             Kind = "build",
             TargetFingerprint = fingerprint,
             Signature = signature,
-            RecordedAt = DateTimeOffset.UtcNow
+            RecordedAt = LifecycleNow
         };
 
     private sealed class EvaluatorFixture : IDisposable
@@ -486,10 +486,10 @@ public sealed partial class EnforcementEvaluatorTests
 
         internal EnforcementEvaluationInput ClosedInput()
         {
-            var replayStarted = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var replayStarted = LifecycleNow.AddMinutes(-1);
             File.SetLastWriteTimeUtc(
                 Path("evidence.txt"),
-                DateTimeOffset.UtcNow.UtcDateTime);
+                LifecycleNow.UtcDateTime);
             var plan = new StatePlanDocument
             {
                 States =
@@ -520,6 +520,7 @@ public sealed partial class EnforcementEvaluatorTests
             return new EnforcementEvaluationInput
             {
                 TargetRoot = _root,
+                GeneratedAt = LifecycleNow,
                 TargetFingerprint = fingerprint,
                 MechanicalReady = true,
                 MechanicalReason = "passed",

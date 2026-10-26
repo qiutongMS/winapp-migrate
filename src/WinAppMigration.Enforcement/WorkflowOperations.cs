@@ -15,7 +15,7 @@ public static class WorkflowOperations
         WorkflowStage.TargetBootstrap => operation is WorkflowOperation.Replay or
             WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis,
         WorkflowStage.SemanticConvergence => Enum.IsDefined(operation),
-        WorkflowStage.Closure => operation is WorkflowOperation.Replay or WorkflowOperation.UiAction,
+        WorkflowStage.Closure => operation is WorkflowOperation.Build or WorkflowOperation.Replay or WorkflowOperation.UiAction,
         _ => false
     };
 
@@ -23,6 +23,7 @@ public static class WorkflowOperations
         EnforcementEvaluationInput input, EnforcementSnapshot snapshot,
         IReadOnlyList<string> evidence, out string reason)
     {
+        if (WorkflowDispositions.RejectTerminal(snapshot, out reason)) return false;
         reason = "Valid workflow artifacts are required before recording discriminating progress.";
         if (snapshot.Workflow is null) return false;
         var previous = snapshot.Workflow.Operations.Where(item =>
@@ -39,10 +40,16 @@ public static class WorkflowOperations
         EnforcementEvaluationInput input, EnforcementSnapshot snapshot, WorkflowOperation operation,
         IReadOnlyList<string> evidence, string? signature, out string reason)
     {
+        if (WorkflowDispositions.RejectTerminal(snapshot, out reason)) return false;
         reason = "Valid enforcement artifacts and a permitted stage budget are required.";
         if (snapshot.Workflow is null ||
             snapshot.Gates.First(gate => gate.Id == "enforcement-artifacts").Status != "passed")
             return false;
+        if (snapshot.Disposition?.Kind == "continue-with-debt")
+        {
+            reason = "Deferred work cannot consume operations; observe again to select independent dependency-ready work.";
+            return false;
+        }
         var prerequisite = snapshot.Gates.FirstOrDefault(gate =>
             gate.Id is "source-oracle" or "mechanical" && gate.Status != "passed");
         if (prerequisite is not null)
@@ -64,7 +71,8 @@ public static class WorkflowOperations
             reason = "Bootstrap diagnosis/hypothesis operations require a bootstrap runtime failure.";
             return false;
         }
-        if (snapshot.Workflow.Stage == WorkflowStage.Closure && evidence.Count == 0)
+        if (snapshot.Workflow.Stage == WorkflowStage.Closure &&
+            operation is WorkflowOperation.Replay or WorkflowOperation.UiAction && evidence.Count == 0)
         {
             reason = "Final closure replay/UI operations require explicit discriminating evidence justification.";
             return false;
@@ -127,12 +135,16 @@ public static class WorkflowOperations
         snapshot.Budget = budget;
         if (budget.Decision is not ("within-budget" or "extension-granted"))
         {
+            if (budget.Decision == "continue-with-debt" && snapshot.ActiveSlice is not null &&
+                !progress.Debt.Any(debt => debt.SliceId == snapshot.ActiveSlice))
+                progress.Debt.Add(new WorkflowDebt { SliceId = snapshot.ActiveSlice, Reason = budget.Reason });
+            WorkflowDispositions.Update(snapshot, input.Policy, now);
             reason = budget.Reason;
             return false;
         }
         progress.StartedAt ??= now;
         progress.OperationsStartedAt ??= now;
-        unit.StartedAt ??= now;
+        WorkflowController.Activate(progress, unit, now, input.TargetFingerprint);
         unit.Operations.Increment(operation);
         progress.Operations.Add(new WorkflowOperationRecord
         {
@@ -141,6 +153,8 @@ public static class WorkflowOperations
             EvidenceFingerprint = evidenceFingerprint, Signature = signature
         });
         progress.LastObservedAt = now;
+        snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now, required);
+        WorkflowDispositions.Update(snapshot, input.Policy, now);
         return true;
     }
 

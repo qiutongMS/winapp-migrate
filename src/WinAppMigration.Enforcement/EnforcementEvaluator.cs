@@ -19,6 +19,25 @@ public static class EnforcementEvaluator
         EnforcementEvaluationInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
+        if (WorkflowDispositions.Terminal(input) is { } terminal)
+        {
+            var frozenStage = input.Progress?.Stage ?? WorkflowStage.SourceOracle;
+            return new EnforcementSnapshot
+            {
+                GeneratedAt = input.GeneratedAt,
+                Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(frozenStage.ToString()),
+                Stage = frozenStage, ActiveSlice = input.Progress?.ActiveSliceId,
+                Workflow = input.Progress, Disposition = terminal,
+                Status = terminal.Kind == "complete" ? "passed" : "blocked",
+                TargetFingerprint = input.TargetFingerprint,
+                Frontier = new EnforcementFrontier
+                {
+                    Kind = "run-terminal",
+                    Reason = $"Workflow is terminal ({terminal.Kind}/{terminal.ReasonCode}); no operations are permitted."
+                },
+                Build = input.Build, Replay = input.Replay
+            };
+        }
         var gates = new List<EnforcementGate>();
         AddGate(
             gates,
@@ -41,7 +60,8 @@ public static class EnforcementEvaluator
             out var findingFrontier);
         AddGate(gates, "findings", findingsValid, findingReason);
 
-        var workflowError = input.ArtifactError ?? WorkflowValidation.EvidenceArtifactError(input.Attempts, input.Build, input.Replay) ??
+        var workflowError = input.ArtifactError ?? WorkflowValidation.DispositionError(input.PersistedDisposition) ??
+            WorkflowValidation.EvidenceArtifactError(input.Attempts, input.Build, input.Replay) ??
             WorkflowValidation.DiagnosticError(input.Diagnostic) ??
             WorkflowValidation.PolicyError(input.Policy) ??
             WorkflowValidation.ProgressError(input.Progress, input.Policy, input.GeneratedAt);
@@ -140,7 +160,7 @@ public static class EnforcementEvaluator
                 input.TargetFingerprint));
 
         var slices = planValid
-            ? SemanticSlicePlanner.Assess(input.TargetRoot, input.StatePlan!, replayFresh ? input.Replay : null)
+            ? SemanticSlicePlanner.Assess(input.TargetRoot, input.StatePlan!, replayFresh ? input.Replay : null, input.Progress)
             : [];
         slices = ApplyFindingWork(slices, input.FindingLedger);
         if (artifactsValid)
@@ -149,7 +169,7 @@ public static class EnforcementEvaluator
             slices = slices.Select((slice, index) => activeFailures.Any(attempt =>
                 attempt.SliceId == slice.Id || slice.States.Any(state => state.Id == attempt.StateId) ||
                 attempt.SliceId is null && attempt.StateId is null && index == 0)
-                ? slice with { Complete = false, Reason = "An active runtime failure requires source-first diagnosis and validated correction." }
+                ? slice with { Complete = false, Resolved = false, Reason = "An active runtime failure requires source-first diagnosis and validated correction." }
                 : slice).ToArray();
         }
         var activeSlice = SemanticSlicePlanner.Select(slices, input.Progress?.Debt ?? []);
@@ -252,7 +272,7 @@ public static class EnforcementEvaluator
         }
         var complete = gates.All(gate => gate.Status == "passed") && frontier is null;
         var stage = workflow?.Progress.Stage ?? input.Progress?.Stage ?? WorkflowStage.SourceOracle;
-        return new EnforcementSnapshot
+        var snapshot = new EnforcementSnapshot
         {
             GeneratedAt = input.GeneratedAt,
             Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(stage.ToString()),
@@ -268,6 +288,8 @@ public static class EnforcementEvaluator
             Build = input.Build,
             Replay = input.Replay
         };
+        WorkflowDispositions.Update(snapshot, input.Policy, input.GeneratedAt);
+        return snapshot;
     }
 
     private static bool FindingCollectionsValid(SemanticFindingLedger? ledger) =>
@@ -289,7 +311,7 @@ public static class EnforcementEvaluator
                     slice.States.Any(state => finding.StateIds.Contains(state.Id, StringComparer.Ordinal))).ToList()
             };
             return ValidateFindings(relevant, null, out var reason, out _)
-                ? slice : slice with { Complete = false, Reason = reason };
+                ? slice : slice with { Complete = false, Resolved = false, Reason = reason };
         }).ToArray();
     }
 

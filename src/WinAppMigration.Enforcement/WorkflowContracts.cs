@@ -115,7 +115,7 @@ public sealed record EnforcementPolicy
         new() { Builds = 3, Replays = 2, DiagnosticRuns = 1, Hypotheses = 1, UiActions = 40 });
     [JsonRequired, JsonPropertyName("closure")]
     public StageBudgetPolicy Closure { get; set; } = DefaultStage(15, 25,
-        new() { Replays = 1, UiActions = 10 });
+        new() { Builds = 1, Replays = 1, UiActions = 10 });
 
     public static EnforcementPolicy Balanced() => new();
 
@@ -140,6 +140,9 @@ public sealed record EnforcementPolicy
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowUnitProgress
 {
+    [JsonPropertyName("accountId")]
+    public string AccountId => JsonNamingPolicy.KebabCaseLower.ConvertName(Stage.ToString()) +
+        (SliceId is null ? string.Empty : $":{SliceId}");
     [JsonRequired, JsonPropertyName("stage")]
     public WorkflowStage Stage { get; set; }
     [JsonPropertyName("sliceId")]
@@ -154,6 +157,56 @@ public sealed record WorkflowUnitProgress
     public string? BlockedReason { get; set; }
     [JsonRequired, JsonPropertyName("operations")]
     public OperationCounts Operations { get; set; } = new();
+    [JsonPropertyName("epochs")]
+    public List<WorkflowActivationEpoch> Epochs { get; set; } = [];
+
+    public double ActiveMinutes(DateTimeOffset now) =>
+        Epochs.Sum(epoch => Math.Max(0, ((epoch.ExitedAt ?? now) - epoch.EnteredAt).TotalMinutes));
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record WorkflowActivationEpoch
+{
+    [JsonRequired, JsonPropertyName("enteredAt")]
+    public DateTimeOffset EnteredAt { get; init; }
+    [JsonPropertyName("exitedAt")]
+    public DateTimeOffset? ExitedAt { get; set; }
+    [JsonPropertyName("exitReason")]
+    public string? ExitReason { get; set; }
+    [JsonRequired, JsonPropertyName("targetFingerprint")]
+    public required string TargetFingerprint { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record WorkflowSliceProgress
+{
+    [JsonRequired, JsonPropertyName("sliceId")]
+    public required string SliceId { get; init; }
+    [JsonRequired, JsonPropertyName("resolved")]
+    public bool Resolved { get; set; }
+    [JsonRequired, JsonPropertyName("evidenceFresh")]
+    public bool EvidenceFresh { get; set; }
+    [JsonPropertyName("evidenceTargetFingerprint")]
+    public string? EvidenceTargetFingerprint { get; set; }
+    [JsonPropertyName("evidenceGeneration")]
+    public string? EvidenceGeneration { get; set; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record RunDisposition
+{
+    [JsonRequired, JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+    [JsonRequired, JsonPropertyName("reasonCode")]
+    public required string ReasonCode { get; init; }
+    [JsonRequired, JsonPropertyName("terminal")]
+    public bool Terminal { get; init; }
+    [JsonRequired, JsonPropertyName("retryable")]
+    public bool Retryable { get; init; }
+    [JsonRequired, JsonPropertyName("allowedOperations")]
+    public List<WorkflowOperation> AllowedOperations { get; init; } = [];
+    [JsonRequired, JsonPropertyName("finalization")]
+    public required string Finalization { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -202,7 +255,7 @@ public sealed record WorkflowDebt
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowProgress
 {
-    public const string CurrentSchemaVersion = "1.0";
+    public const string CurrentSchemaVersion = "2.0";
 
     [JsonRequired, JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -232,6 +285,10 @@ public sealed record WorkflowProgress
     public List<WorkflowOperationRecord> Operations { get; set; } = [];
     [JsonRequired, JsonPropertyName("debt")]
     public List<WorkflowDebt> Debt { get; set; } = [];
+    [JsonPropertyName("slices")]
+    public List<WorkflowSliceProgress> Slices { get; set; } = [];
+    [JsonPropertyName("disposition")]
+    public RunDisposition? Disposition { get; set; }
 }
 
 public sealed class WorkflowBudgetSnapshot
@@ -244,6 +301,8 @@ public sealed class WorkflowBudgetSnapshot
     public required string Decision { get; init; }
     [JsonPropertyName("reason")]
     public required string Reason { get; init; }
+    [JsonPropertyName("reasonCode")]
+    public string ReasonCode { get; init; } = "within-budget";
     [JsonPropertyName("elapsedMinutes")]
     public double ElapsedMinutes { get; init; }
     [JsonPropertyName("totalElapsedMinutes")]

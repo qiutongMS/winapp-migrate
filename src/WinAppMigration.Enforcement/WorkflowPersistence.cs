@@ -30,6 +30,11 @@ public static class WorkflowPersistence
     {
         var error = WorkflowValidation.PolicyError(policy);
         if (error is not null) throw new InvalidDataException(error);
+        var (state, stateError) = await EnforcementStore.TryLoadAsync<EnforcementSnapshot>(
+            target, EnforcementStore.StatePath, cancellationToken);
+        if (stateError is not null) throw new InvalidDataException(stateError);
+        if (state?.Disposition is { Terminal: true })
+            throw new InvalidDataException("Workflow is terminal; policy configuration is not permitted.");
         var (progress, loadError) = await EnforcementStore.TryLoadAsync<WorkflowProgress>(
             target, EnforcementStore.ProgressPath, cancellationToken);
         if (loadError is not null) throw new InvalidDataException(loadError);
@@ -40,8 +45,10 @@ public static class WorkflowPersistence
                 target, EnforcementStore.PolicyPath, cancellationToken);
             error = policyError ?? WorkflowValidation.PolicyError(existing);
             if (error is not null) throw new InvalidDataException(error);
-            error = WorkflowValidation.ProgressError(progress, existing!, DateTimeOffset.UtcNow);
+            (progress, error) = ImportProgress(progress, existing!, DateTimeOffset.UtcNow);
             if (error is not null) throw new InvalidDataException(error);
+            if (progress?.Disposition is { Terminal: true })
+                throw new InvalidDataException("Workflow is terminal; policy configuration is not permitted.");
         }
         var legacyPaths = new[]
         {
@@ -66,8 +73,9 @@ public static class WorkflowPersistence
 
     public static async Task<(EnforcementPolicy Policy, WorkflowProgress? Progress, string? Error)> LoadAsync(
         DirectoryInfo target, BuildAttestation? build, ReplayAttestation? replay, AttemptLedger attempts,
-        string fingerprint, CancellationToken cancellationToken)
+        string fingerprint, CancellationToken cancellationToken, DateTimeOffset? generatedAt = null)
     {
+        var now = generatedAt ?? DateTimeOffset.UtcNow;
         var (policy, policyError) = await EnforcementStore.TryLoadAsync<EnforcementPolicy>(
             target, EnforcementStore.PolicyPath, cancellationToken);
         var (progress, progressError) = await EnforcementStore.TryLoadAsync<WorkflowProgress>(
@@ -76,28 +84,77 @@ public static class WorkflowPersistence
             policyError = "Persisted workflow progress requires its persisted policy.";
         policy ??= EnforcementPolicy.Balanced();
         var error = policyError ?? progressError ?? WorkflowValidation.PolicyError(policy) ??
-            WorkflowValidation.ProgressError(progress, policy, DateTimeOffset.UtcNow);
+            ImportError();
         if (error is not null) return (policy, progress, error);
+        string? ImportError()
+        {
+            (progress, var importError) = ImportProgress(progress, policy, now);
+            return importError;
+        }
         var (diagnostic, diagnosticError) = await EnforcementStore.TryLoadAsync<DiagnosticRunAttestation>(
             target, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
         diagnosticError ??= WorkflowValidation.DiagnosticError(diagnostic);
         if (diagnosticError is not null)
             return (policy, progress, diagnosticError);
         if (progress is null)
-            progress = ImportLegacy(policy, fingerprint, build, replay, diagnostic, attempts);
+        {
+            var legacy = ImportLegacy(policy, fingerprint, build, replay, diagnostic, attempts, now);
+            (progress, error) = ImportProgress(legacy, policy, now);
+            if (error is not null) return (policy, progress, error);
+        }
         await EnforcementStore.WriteAtomicAsync(target, EnforcementStore.PolicyPath, policy, cancellationToken);
         return (policy, progress, null);
     }
 
+    public static (WorkflowProgress? Progress, string? Error) ImportProgress(
+        WorkflowProgress? progress, EnforcementPolicy policy, DateTimeOffset now)
+    {
+        if (progress is null) return (null, null);
+        if (progress.SchemaVersion == WorkflowProgress.CurrentSchemaVersion)
+            return (progress, WorkflowValidation.ProgressError(progress, policy, now));
+        if (progress.SchemaVersion != "1.0")
+            return (progress, $"Unsupported workflow progress schema {progress.SchemaVersion}; supported schemas are 1.0 (explicit import) and 2.0.");
+        if (progress.Units is null || progress.Units.Count != 1 ||
+            progress.Units.Any(unit => unit is null || unit.Epochs is null || unit.Epochs.Count > 0 ||
+                unit.Stage != progress.Stage || unit.SliceId !=
+                    (progress.Stage == WorkflowStage.SemanticConvergence ? progress.ActiveSliceId : null)) ||
+            progress.Slices is null || progress.Slices.Count > 0 || progress.Disposition is not null)
+            return (progress, "Cannot safely import workflow progress schema 1.0: exactly one reconstructable budget unit is required; missing/multiple/switched units or lifecycle fields lack reconstructable activation epochs. Preserve the original artifacts; do not reset budgets.");
+        var imported = progress with
+        {
+            SchemaVersion = WorkflowProgress.CurrentSchemaVersion,
+            Units = progress.Units.Select(unit => unit with
+            {
+                Operations = unit.Operations is null ? null! : unit.Operations with { },
+                Epochs = [new WorkflowActivationEpoch
+                {
+                    EnteredAt = unit.StartedAt ?? default,
+                    TargetFingerprint = progress.LastTargetFingerprint
+                }]
+            }).ToList(),
+            Slices = (progress.CompletedSliceIds ?? []).Select(id => new WorkflowSliceProgress
+            {
+                SliceId = id, Resolved = true, EvidenceFresh = false
+            }).ToList(),
+            Disposition = new RunDisposition
+            {
+                Kind = "continue", ReasonCode = "schema-1-imported", Terminal = false,
+                Retryable = true, Finalization = "not-ready"
+            }
+        };
+        var error = WorkflowValidation.ProgressError(imported, policy, now);
+        return error is null ? (imported, null) : (progress, $"Cannot safely import workflow progress schema 1.0: {error}");
+    }
+
     private static WorkflowProgress? ImportLegacy(
         EnforcementPolicy policy, string fingerprint, BuildAttestation? build,
-        ReplayAttestation? replay, DiagnosticRunAttestation? diagnostic, AttemptLedger attempts)
+        ReplayAttestation? replay, DiagnosticRunAttestation? diagnostic, AttemptLedger attempts, DateTimeOffset now)
     {
         if (build is null && replay is null && diagnostic is null && attempts.Attempts.Count == 0)
             return null;
-        var now = DateTimeOffset.UtcNow;
         var progress = new WorkflowProgress
         {
+            SchemaVersion = "1.0",
             PolicyFingerprint = WorkflowValidation.PolicyFingerprint(policy),
             LastTargetFingerprint = fingerprint,
             LastObservedAt = now,

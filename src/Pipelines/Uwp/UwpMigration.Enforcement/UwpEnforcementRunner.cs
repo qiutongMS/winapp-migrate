@@ -10,10 +10,12 @@ namespace UwpMigration.Enforcement;
 public sealed class UwpEnforcementRunner
 {
     private readonly IEnforcementProcessRunner _processRunner;
+    private readonly TimeProvider _timeProvider;
 
-    public UwpEnforcementRunner(IEnforcementProcessRunner processRunner)
+    public UwpEnforcementRunner(IEnforcementProcessRunner processRunner, TimeProvider? timeProvider = null)
     {
         _processRunner = processRunner;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public static async Task<EnforcementSnapshot> AssessAsync(
@@ -49,8 +51,13 @@ public sealed class UwpEnforcementRunner
         var workspace = await LoadWorkspaceAsync(
             target,
             options.MaximumSignatureAttempts,
-            cancellationToken);
+            cancellationToken, _timeProvider);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
+        if (WorkflowDispositions.RejectTerminal(snapshot, out _))
+        {
+            await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
+            return snapshot;
+        }
         if (options.DiscriminatingEvidence.Count > 0 && snapshot.Workflow is not null)
         {
             if (!WorkflowOperations.TryObserveEvidence(workspace.Input, snapshot,
@@ -72,18 +79,18 @@ public sealed class UwpEnforcementRunner
                 await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
                 return snapshot;
             }
-            await RunBuildAsync(workspace, options, cancellationToken);
+            await RunBuildAsync(workspace, snapshot, options, cancellationToken);
             workspace = await LoadWorkspaceAsync(
                 target,
                 options.MaximumSignatureAttempts,
-                cancellationToken);
+                cancellationToken, _timeProvider);
             snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         }
 
         var shouldReplay =
             snapshot.Frontier?.Kind == "replay" ||
             options.ForceReplay &&
-            snapshot.Frontier?.Kind is null or "state" or "finding" or "report-sync" &&
+            snapshot.Frontier?.Kind is null or "state" or "revalidate" or "finding" or "report-sync" &&
             snapshot.Gates.Any(gate =>
                 gate.Id == "fresh-build" &&
                 gate.Status == "passed");
@@ -95,11 +102,11 @@ public sealed class UwpEnforcementRunner
                 await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
                 return snapshot;
             }
-            await RunReplayAsync(workspace, options, cancellationToken);
+            await RunReplayAsync(workspace, snapshot, options, cancellationToken);
             workspace = await LoadWorkspaceAsync(
                 target,
                 options.MaximumSignatureAttempts,
-                cancellationToken);
+                cancellationToken, _timeProvider);
             snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         }
 
@@ -186,6 +193,7 @@ public sealed class UwpEnforcementRunner
         }
 
         var current = EnforcementEvaluator.Evaluate(workspace.Input);
+        await RequireNonterminalAsync(workspace.Target, current, cancellationToken);
         if (current.Workflow is null)
             throw new InvalidDataException("Valid workflow policy and progress are required.");
         if (current.Stage == WorkflowStage.SemanticConvergence && stateId is not null &&
@@ -199,16 +207,15 @@ public sealed class UwpEnforcementRunner
             attempt.Kind == kind && attempt.TargetFingerprint == workspace.Fingerprint &&
             attempt.Signature == normalizedSignature && (kind == "runtime" || attempt.Diagnosis is not null)))
             throw new InvalidDataException("A runtime failure tuple cannot be re-recorded or rebound; complete its source-first diagnosis and change the target.");
-        current.Workflow.StartedAt ??= DateTimeOffset.UtcNow;
-        current.Workflow.OperationsStartedAt ??= DateTimeOffset.UtcNow;
-        WorkflowController.CurrentUnit(current.Workflow, current.ActiveSlice).StartedAt ??= current.Workflow.StartedAt;
+        current.Workflow.StartedAt ??= workspace.Input.GeneratedAt;
+        current.Workflow.OperationsStartedAt ??= workspace.Input.GeneratedAt;
         await WriteSnapshotAsync(workspace.Target, current, cancellationToken);
         workspace.Attempts.Attempts.Add(new EnforcementAttempt
         {
             Kind = kind,
             TargetFingerprint = workspace.Fingerprint,
             Signature = normalizedSignature,
-            RecordedAt = DateTimeOffset.UtcNow,
+            RecordedAt = workspace.Input.GeneratedAt,
             StateId = stateId,
             SliceId = sliceId,
             Evidence = [.. evidence]
@@ -275,6 +282,7 @@ public sealed class UwpEnforcementRunner
             target,
             maximumSignatureAttempts,
             cancellationToken);
+        await RequireNonterminalAsync(workspace.Target, EnforcementEvaluator.Evaluate(workspace.Input), cancellationToken);
         if (!string.IsNullOrWhiteSpace(workspace.Input.ArtifactError))
         {
             throw new InvalidDataException(workspace.Input.ArtifactError);
@@ -374,8 +382,9 @@ public sealed class UwpEnforcementRunner
         var workspace = await LoadWorkspaceAsync(
             target,
             options.MaximumSignatureAttempts,
-            cancellationToken);
+            cancellationToken, _timeProvider);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
+        await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
         var freshBuild = snapshot.Gates.First(gate =>
             gate.Id == "fresh-build");
         if (freshBuild.Status != "passed")
@@ -400,13 +409,12 @@ public sealed class UwpEnforcementRunner
         var arguments = BuildDiagnosticArguments(
             workspace.TargetProject,
             options);
-        var startedAt = DateTimeOffset.UtcNow;
-        var result = await _processRunner.RunAsync(
-            options.WinAppExecutable,
-            workspace.Target,
+        var startedAt = _timeProvider.GetUtcNow();
+        var result = await InvokeProcessAsync(
+            workspace, snapshot, options.WinAppExecutable,
             arguments,
             cancellationToken);
-        var completedAt = DateTimeOffset.UtcNow;
+        var completedAt = _timeProvider.GetUtcNow();
         await WriteProcessOutputAsync(
             workspace.Target,
             stdout,
@@ -444,7 +452,7 @@ public sealed class UwpEnforcementRunner
             await RecordAttemptAsync(workspace, "runtime", signature,
                 snapshot.ActiveStateIds.FirstOrDefault(), [stdout, stderr], cancellationToken);
         }
-        var updated = await LoadWorkspaceAsync(target, options.MaximumSignatureAttempts, cancellationToken);
+        var updated = await LoadWorkspaceAsync(target, options.MaximumSignatureAttempts, cancellationToken, _timeProvider);
         await WriteSnapshotAsync(updated.Target, EnforcementEvaluator.Evaluate(updated.Input), cancellationToken);
         return attestation;
     }
@@ -478,8 +486,9 @@ public sealed class UwpEnforcementRunner
         var workspace = await LoadWorkspaceAsync(
             target,
             maximumSignatureAttempts: 2,
-            cancellationToken);
+            cancellationToken, _timeProvider);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
+        await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
         var replayGate = snapshot.Gates.First(gate =>
             gate.Id == "canonical-replay");
         if (replayGate.Status != "passed")
@@ -491,9 +500,8 @@ public sealed class UwpEnforcementRunner
                 discriminatingEvidence, null, cancellationToken))
             throw new InvalidDataException(snapshot.Frontier!.Reason);
 
-        var result = await _processRunner.RunAsync(
-            winAppExecutable,
-            workspace.Target,
+        var result = await InvokeProcessAsync(
+            workspace, snapshot, winAppExecutable,
             ["ui", .. arguments],
             cancellationToken);
         return new WinAppInvocationResult(
@@ -524,6 +532,7 @@ public sealed class UwpEnforcementRunner
                 "A valid state plan is required before synchronizing the report.");
         }
         var current = EnforcementEvaluator.Evaluate(workspace.Input);
+        await RequireNonterminalAsync(workspace.Target, current, cancellationToken);
         if (current.Gates.First(gate => gate.Id == "state-plan").Status !=
             "passed")
         {
@@ -579,6 +588,7 @@ public sealed class UwpEnforcementRunner
 
     private async Task RunBuildAsync(
         Workspace workspace,
+        EnforcementSnapshot snapshot,
         UwpEnforcementOptions options,
         CancellationToken cancellationToken)
     {
@@ -590,13 +600,12 @@ public sealed class UwpEnforcementRunner
             workspace.TargetProject,
             options,
             "--no-launch");
-        var startedAt = DateTimeOffset.UtcNow;
-        var result = await _processRunner.RunAsync(
-            options.WinAppExecutable,
-            workspace.Target,
+        var startedAt = _timeProvider.GetUtcNow();
+        var result = await InvokeProcessAsync(
+            workspace, snapshot, options.WinAppExecutable,
             arguments,
             cancellationToken);
-        var completedAt = DateTimeOffset.UtcNow;
+        var completedAt = _timeProvider.GetUtcNow();
         await WriteProcessOutputAsync(
             workspace.Target,
             stdout,
@@ -656,10 +665,10 @@ public sealed class UwpEnforcementRunner
 
     private async Task RunReplayAsync(
         Workspace workspace,
+        EnforcementSnapshot snapshot,
         UwpEnforcementOptions options,
         CancellationToken cancellationToken)
     {
-        var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         var id = CreateId("replay");
         var directory = $"{EnforcementStore.EnforcementDirectory}/replays/{id}";
         var stdout = $"{directory}/launch.json";
@@ -669,13 +678,12 @@ public sealed class UwpEnforcementRunner
             options,
             "--no-build",
             "--detach");
-        var startedAt = DateTimeOffset.UtcNow;
-        var result = await _processRunner.RunAsync(
-            options.WinAppExecutable,
-            workspace.Target,
+        var startedAt = _timeProvider.GetUtcNow();
+        var result = await InvokeProcessAsync(
+            workspace, snapshot, options.WinAppExecutable,
             arguments,
             cancellationToken);
-        var completedAt = DateTimeOffset.UtcNow;
+        var completedAt = _timeProvider.GetUtcNow();
         await WriteProcessOutputAsync(
             workspace.Target,
             stdout,
@@ -732,7 +740,7 @@ public sealed class UwpEnforcementRunner
         }
     }
 
-    private static async Task RecordAttemptAsync(
+    private async Task RecordAttemptAsync(
         Workspace workspace,
         string kind,
         string signature,
@@ -746,7 +754,7 @@ public sealed class UwpEnforcementRunner
             Kind = kind,
             TargetFingerprint = workspace.Fingerprint,
             Signature = signature,
-            RecordedAt = DateTimeOffset.UtcNow,
+            RecordedAt = _timeProvider.GetUtcNow(),
             StateId = stateId ?? snapshot.ActiveStateIds.FirstOrDefault(),
             SliceId = snapshot.ActiveSlice,
             Evidence = [.. evidence]
@@ -826,7 +834,8 @@ public sealed class UwpEnforcementRunner
     private static async Task<Workspace> LoadWorkspaceAsync(
         DirectoryInfo requestedTarget,
         int maximumSignatureAttempts,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeProvider? timeProvider = null)
     {
         if (maximumSignatureAttempts is < 1 or > 10)
         {
@@ -905,18 +914,23 @@ public sealed class UwpEnforcementRunner
         var (diagnostic, diagnosticError) =
             await EnforcementStore.TryLoadAsync<DiagnosticRunAttestation>(
                 target, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
+        var (persistedState, stateError) = await EnforcementStore.TryLoadAsync<EnforcementSnapshot>(
+            target, EnforcementStore.StatePath, cancellationToken);
+        stateError ??= WorkflowValidation.DispositionError(persistedState?.Disposition);
         var artifactError = buildError ?? replayError ?? attemptsError ??
-            diagnosticError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
+            diagnosticError ?? stateError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
             WorkflowValidation.DiagnosticError(diagnostic);
-        if (artifactError is null && RuntimeFailureRecovery.Recover(attempts, replay, diagnostic,
+        if (persistedState?.Disposition is not { Terminal: true } && artifactError is null &&
+            RuntimeFailureRecovery.Recover(attempts, replay, diagnostic,
                 statePlan?.States?.FirstOrDefault(state => state is not null && !string.IsNullOrWhiteSpace(state.Id))))
             await EnforcementStore.WriteAtomicAsync(target, EnforcementStore.AttemptLedgerPath, attempts, cancellationToken);
         var policy = EnforcementPolicy.Balanced();
+        var generatedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
         WorkflowProgress? progress = null;
         string? workflowError = null;
         if (artifactError is null)
             (policy, progress, workflowError) = await WorkflowPersistence.LoadAsync(
-                target, build, replay, attempts, fingerprint, cancellationToken);
+                target, build, replay, attempts, fingerprint, cancellationToken, generatedAt);
         var summary = new PipelineValidationSummary(
             report.Validation.SourceBaseline.Status,
             report.Validation.SourceBaseline.States.Select(state => state.Id).ToArray(),
@@ -948,8 +962,10 @@ public sealed class UwpEnforcementRunner
             Attempts = attempts,
             Policy = policy,
             Progress = progress,
+            PersistedDisposition = persistedState?.Disposition,
             ReportValidation = summary,
-            MaximumSignatureAttempts = maximumSignatureAttempts
+            MaximumSignatureAttempts = maximumSignatureAttempts,
+            GeneratedAt = generatedAt
         };
         return new Workspace(
             target,
@@ -1016,6 +1032,95 @@ public sealed class UwpEnforcementRunner
             cancellationToken);
     }
 
+    private static async Task RequireNonterminalAsync(
+        DirectoryInfo target, EnforcementSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        if (!WorkflowDispositions.RejectTerminal(snapshot, out var reason)) return;
+        await WriteSnapshotAsync(target, snapshot, cancellationToken);
+        throw new InvalidDataException(reason);
+    }
+
+    private async Task<EnforcementProcessResult> InvokeProcessAsync(
+        Workspace workspace, EnforcementSnapshot snapshot, string executable,
+        IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        var deadline = snapshot.Workflow!.StartedAt!.Value.AddMinutes(workspace.Input.Policy.TotalHardMinutes);
+        using var budgetCancellation = new CancellationTokenSource(Timeout.InfiniteTimeSpan, _timeProvider);
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, budgetCancellation.Token);
+        try
+        {
+            var remaining = deadline - _timeProvider.GetUtcNow();
+            if (remaining <= TimeSpan.Zero)
+                budgetCancellation.Cancel();
+            else
+                budgetCancellation.CancelAfter(remaining);
+            if (_timeProvider.GetUtcNow() >= deadline)
+                budgetCancellation.Cancel();
+            linkedCancellation.Token.ThrowIfCancellationRequested();
+            var result = await _processRunner.RunAsync(
+                executable, workspace.Target, arguments, linkedCancellation.Token);
+            if (budgetCancellation.IsCancellationRequested || _timeProvider.GetUtcNow() >= deadline)
+            {
+                budgetCancellation.Cancel();
+                budgetCancellation.Token.ThrowIfCancellationRequested();
+            }
+            linkedCancellation.Token.ThrowIfCancellationRequested();
+            if (result.InfrastructureFailure)
+                throw new IOException(result.Error);
+            return result;
+        }
+        catch (OperationCanceledException exception)
+        {
+            var observedAt = _timeProvider.GetUtcNow();
+            if (!budgetCancellation.IsCancellationRequested && observedAt < deadline)
+                throw;
+            await PersistProcessTerminalAsync(workspace, snapshot, observedAt, true,
+                "Total workflow hard limit expired; the controlled operation was stopped.");
+            throw new InvalidDataException(snapshot.Frontier!.Reason, exception);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+            InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            var observedAt = _timeProvider.GetUtcNow();
+            var expired = budgetCancellation.IsCancellationRequested || observedAt >= deadline;
+            await PersistProcessTerminalAsync(workspace, snapshot, observedAt, expired, expired
+                ? "Total workflow hard limit expired; the controlled operation was stopped."
+                : exception.Message);
+            if (expired)
+                throw new InvalidDataException(snapshot.Frontier!.Reason, exception);
+            throw;
+        }
+    }
+
+    private static async Task PersistProcessTerminalAsync(
+        Workspace workspace, EnforcementSnapshot snapshot, DateTimeOffset observedAt, bool totalExpired, string reason)
+    {
+        var kind = totalExpired ? "total-budget-exhausted" : "infrastructure-failure";
+        var progress = snapshot.Workflow!;
+        progress.LastObservedAt = observedAt;
+        snapshot.GeneratedAt = observedAt;
+        WorkflowController.CloseActiveEpochs(progress, observedAt, $"terminal:{kind}");
+        var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
+        var required = snapshot.Stage != WorkflowStage.SemanticConvergence ||
+            workspace.Input.StatePlan?.States.Any(state =>
+                SemanticSlicePlanner.SliceId(state) == snapshot.ActiveSlice &&
+                state.Criticality == StateCriticality.Required) != false;
+        snapshot.Budget = WorkflowBudgets.Evaluate(workspace.Input.Policy, progress, unit, observedAt, required);
+        var budgetGate = snapshot.Gates.First(gate => gate.Id == "stage-budget");
+        budgetGate.Status = snapshot.Budget.Decision is "within-budget" or "extension-granted" ? "passed" : "blocked";
+        budgetGate.Reason = snapshot.Budget.Reason;
+        snapshot.Disposition = new RunDisposition
+        {
+            Kind = kind, ReasonCode = totalExpired ? "total-hard-limit" : "process-invocation-failed",
+            Terminal = true, Retryable = !totalExpired, Finalization = totalExpired ? "blocked" : "failed"
+        };
+        snapshot.Status = "blocked";
+        snapshot.Frontier = new EnforcementFrontier { Kind = kind, Reason = reason };
+        progress.Disposition = snapshot.Disposition;
+        await WriteSnapshotAsync(workspace.Target, snapshot, CancellationToken.None);
+    }
+
     private static async Task<bool> BeginOperationAsync(
         Workspace workspace, EnforcementSnapshot snapshot, WorkflowOperation operation,
         IReadOnlyList<string> evidence, string? signature, CancellationToken cancellationToken)
@@ -1025,7 +1130,7 @@ public sealed class UwpEnforcementRunner
             snapshot.Status = snapshot.Budget?.Decision == "continue-with-debt" ? "continue-with-debt" : "blocked";
             snapshot.Frontier = new EnforcementFrontier
             {
-                Kind = snapshot.Budget?.Decision is "stage-budget" or "blocked-required" or "continue-with-debt"
+                Kind = snapshot.Budget?.Decision is "stage-budget" or "blocked-required" or "continue-with-debt" or "total-budget-exhausted"
                     ? "stage-budget" : "evidence-required",
                 Reason = reason,
                 SliceId = snapshot.ActiveSlice,

@@ -115,7 +115,6 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow(WorkflowStage.MechanicalStabilization, WorkflowOperation.UiAction)]
     [DataRow(WorkflowStage.TargetBootstrap, WorkflowOperation.Build)]
     [DataRow(WorkflowStage.TargetBootstrap, WorkflowOperation.UiAction)]
-    [DataRow(WorkflowStage.Closure, WorkflowOperation.Build)]
     [DataRow(WorkflowStage.Closure, WorkflowOperation.DiagnosticRun)]
     [DataRow(WorkflowStage.Closure, WorkflowOperation.Hypothesis)]
     public async Task Policy_IncompatibleStageCeilingsFailBeforeInvocation(
@@ -139,6 +138,9 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow("counts")]
     [DataRow("null-units")]
     [DataRow("invalid-event")]
+    [DataRow("null-epoch")]
+    [DataRow("overlapping-epochs")]
+    [DataRow("missing-disposition")]
     public async Task Progress_InvalidPersistedProgressFailsArtifactGate(string mutation)
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -146,9 +148,14 @@ public sealed partial class RunnerAcceptanceTests
         var node = JsonSerializer.SerializeToNode(assessed.Workflow, EnforcementStore.JsonOptions)!.AsObject();
         switch (mutation)
         {
-            case "schema": node["schemaVersion"] = "2.0"; break;
+            case "schema": node["schemaVersion"] = "3.0"; break;
             case "counts": node["units"]![0]!["operations"]!["builds"] = 1; break;
             case "null-units": node["units"] = null; break;
+            case "null-epoch": node["units"]![0]!["epochs"]![0] = null; break;
+            case "overlapping-epochs":
+                node["units"]![0]!["epochs"]!.AsArray().Add(node["units"]![0]!["epochs"]![0]!.DeepClone());
+                break;
+            case "missing-disposition": node.Remove("disposition"); break;
             case "invalid-event":
                 node["events"] = new JsonArray(new JsonObject
                 {
@@ -349,8 +356,7 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        progress.StartedAt = DateTimeOffset.UtcNow.AddMinutes(-26);
-        progress.Units.Single(unit => unit.Stage == WorkflowStage.SemanticConvergence).StartedAt = progress.StartedAt;
+        AgeWorkflow(progress, 26);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
         var snapshot = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
         Assert.AreEqual("blocked-required", snapshot.Budget?.Decision);
@@ -444,8 +450,7 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        progress.StartedAt = DateTimeOffset.UtcNow.AddMinutes(-16);
-        progress.Units.Single(unit => unit.Stage == WorkflowStage.SemanticConvergence).StartedAt = progress.StartedAt;
+        AgeWorkflow(progress, 16);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
         var expired = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
         Assert.AreEqual("stage-budget", expired.Budget?.Decision);
@@ -466,13 +471,13 @@ public sealed partial class RunnerAcceptanceTests
         using var fixture = await RunnerFixture.CreateAsync();
         var process = new InterruptingProcessRunner();
         var runner = new UwpEnforcementRunner(process);
-        for (var index = 0; index < 3; index++)
-            await Assert.ThrowsExactlyAsync<IOException>(() =>
-                runner.RunAsync(fixture.Root, new UwpEnforcementOptions()));
+        await Assert.ThrowsExactlyAsync<IOException>(() =>
+            runner.RunAsync(fixture.Root, new UwpEnforcementOptions()));
         var snapshot = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
-        Assert.AreEqual("stage-budget", snapshot.Frontier?.Kind);
-        Assert.AreEqual(3, process.CallCount);
-        Assert.AreEqual(3, snapshot.Budget!.TotalOperations.Builds);
+        Assert.AreEqual("infrastructure-failure", snapshot.Disposition?.Kind);
+        Assert.IsTrue(snapshot.Disposition!.Terminal);
+        Assert.AreEqual(1, process.CallCount);
+        Assert.AreEqual(1, snapshot.Workflow!.Operations.Count);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.ConfigurePolicyAsync(fixture.Root, EnforcementPolicy.Balanced()));
     }
@@ -523,7 +528,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(WorkflowStage.TargetBootstrap, snapshot.Stage);
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             runner.DiagnoseAsync(fixture.Root, new UwpEnforcementOptions()));
-        StringAssert.Contains(exception.Message, "bootstrap runtime failure");
+        StringAssert.Contains(exception.Message, "terminal");
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             runner.InvokeUiAsync(fixture.Root, "winapp", ["list"]));
         Assert.AreEqual(2, process.CallCount);
@@ -570,7 +575,7 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
-        var closed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        var closed = await UwpEnforcementRunner.AssessAsync(fixture.Root);
         Assert.AreEqual(WorkflowStage.Closure, closed.Stage);
         Assert.AreEqual(2, closed.Workflow!.Operations.Count);
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
@@ -600,6 +605,9 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsTrue(progress.Operations.Skip(2).All(operation => operation.Stage == WorkflowStage.Closure &&
             operation.EvidenceFingerprint is not null));
         Assert.AreEqual(4, process.CallCount);
+        await fixture.VerifyStateAsync();
+        var complete = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        Assert.AreEqual("complete", complete.Disposition?.Kind);
     }
 
     [TestMethod]
@@ -711,6 +719,26 @@ public sealed partial class RunnerAcceptanceTests
         await RecordRuntimeFailureAsync(fixture);
         await File.WriteAllTextAsync(fixture.Path(".migration-evidence/diagnosis.txt"), "Source and target inspected; guard removal discriminates.");
         await RecordDiagnosisAsync(fixture);
+    }
+
+    private static void AgeWorkflow(WorkflowProgress progress, int minutes)
+    {
+        progress.StartedAt = progress.StartedAt?.AddMinutes(-minutes);
+        progress.OperationsStartedAt = progress.OperationsStartedAt?.AddMinutes(-minutes);
+        progress.LastObservedAt = progress.LastObservedAt.AddMinutes(-minutes);
+        foreach (var unit in progress.Units)
+        {
+            unit.StartedAt = unit.StartedAt?.AddMinutes(-minutes);
+            unit.ExtensionGrantedAt = unit.ExtensionGrantedAt?.AddMinutes(-minutes);
+            unit.BlockedAt = unit.BlockedAt?.AddMinutes(-minutes);
+            unit.Epochs = unit.Epochs.Select(epoch => epoch with
+            {
+                EnteredAt = epoch.EnteredAt.AddMinutes(-minutes),
+                ExitedAt = epoch.ExitedAt?.AddMinutes(-minutes)
+            }).ToList();
+        }
+        progress.Events = progress.Events.Select(item => item with { RecordedAt = item.RecordedAt.AddMinutes(-minutes) }).ToList();
+        progress.Operations = progress.Operations.Select(item => item with { RecordedAt = item.RecordedAt.AddMinutes(-minutes) }).ToList();
     }
 
     private static Task<EnforcementSnapshot> RecordDiagnosisAsync(RunnerFixture fixture) =>

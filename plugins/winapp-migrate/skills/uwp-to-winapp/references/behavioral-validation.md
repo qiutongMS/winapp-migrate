@@ -57,10 +57,15 @@ Optional schema `1.0` fields on each state are `slice` (defaults to its state
 ID), `dependencies` (slice IDs, defaults to empty), and `criticality`
 (`required`, the default, or `optional`). States in one slice share criticality;
 their dependencies are combined, must exist, and must be acyclic. Follow only
-the first dependency-ready incomplete slice in the enforcement snapshot.
+the first dependency-ready semantically unresolved slice in the enforcement snapshot.
 Required source states need captured evidence before target work. Required
 blocked/unverified states remain incomplete; optional debt is never verification
 and cannot unlock dependent slices.
+Target changes invalidate evidence freshness without reopening resolved
+implementation work. Closure revalidates stale resolved slices; genuine
+comparison/runtime failures or open findings may reopen semantic work before
+the run becomes terminal. Follow snapshot `disposition`: terminal outcomes
+cannot be resumed by more operations or new target changes.
 
 Set `source.status` to `captured`, `blocked`, or `unverified`; `target.status` to `passed`, `blocked`, `unverified`, or `failed`; and `comparison.status` to `verified`, `blocked`, `unverified`, or `failed`. Keep `not-run` only until the phase is attempted, and provide `reason` for every status other than `captured`, `passed`, or `verified`.
 

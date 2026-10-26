@@ -109,16 +109,19 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Workflow_ClosureReopensSemanticAfterTargetChange()
+    public void Workflow_ClosureTargetChangeRevalidatesWithoutSemanticReopen()
     {
         using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
+        var input = fixture.ClosedInput() with
+        {
+            ReportValidation = new PipelineValidationSummary("captured", ["state-1"], "unverified", [], "unverified", "pending")
+        };
         var closed = EnforcementEvaluator.Evaluate(input);
         var reopened = EnforcementEvaluator.Evaluate(input with
         {
             Progress = closed.Workflow, TargetFingerprint = "corrected"
         });
-        Assert.AreEqual(WorkflowStage.SemanticConvergence, reopened.Stage);
+        Assert.AreEqual(WorkflowStage.Closure, reopened.Stage);
         Assert.AreEqual("build", reopened.Frontier?.Kind);
     }
 
@@ -194,7 +197,7 @@ public sealed partial class EnforcementEvaluatorTests
         var input = ExpiredInput(fixture, 1);
         input.Progress!.StartedAt = input.GeneratedAt.AddMinutes(-151);
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("blocked-required", snapshot.Budget?.Decision);
+        Assert.AreEqual("total-budget-exhausted", snapshot.Budget?.Decision);
         StringAssert.Contains(snapshot.Budget!.Reason, "Total workflow hard limit");
     }
 
@@ -354,9 +357,9 @@ public sealed partial class EnforcementEvaluatorTests
         var blocked = EnforcementEvaluator.Evaluate(input);
         input.StatePlan!.States[0].Target.Status = "passed";
         var late = EnforcementEvaluator.Evaluate(input with { Progress = blocked.Workflow });
-        Assert.AreEqual("blocked-required", late.Budget?.Decision);
+        Assert.AreEqual(blocked.Disposition, late.Disposition);
         Assert.AreEqual(WorkflowStage.SemanticConvergence, late.Stage);
-        Assert.AreEqual("stage-budget", late.Frontier?.Kind);
+        Assert.AreEqual("run-terminal", late.Frontier?.Kind);
         Assert.IsNotNull(late.Workflow!.Units[0].BlockedAt);
     }
 
@@ -372,15 +375,15 @@ public sealed partial class EnforcementEvaluatorTests
         var next = EnforcementEvaluator.Evaluate(input with { Progress = extended.Workflow });
         Assert.AreEqual("second", next.ActiveSlice);
         var second = next.Workflow!.Units.Single(unit => unit.SliceId == "second");
-        second.StartedAt = input.GeneratedAt.AddMinutes(-16);
         var extendedAgain = EnforcementEvaluator.Evaluate(input with
         {
-            Progress = next.Workflow, TargetFingerprint = "another-correction"
+            Progress = next.Workflow, TargetFingerprint = "another-correction",
+            GeneratedAt = input.GeneratedAt.AddMinutes(16)
         });
         Assert.AreEqual("extension-granted", extendedAgain.Budget?.Decision);
         Assert.AreEqual(1, extendedAgain.Budget!.ExtensionsUsed);
         Assert.AreEqual(2, extendedAgain.Workflow!.Units.Count(unit => unit.ExtensionGrantedAt is not null));
-        Assert.IsNull(WorkflowValidation.ProgressError(extendedAgain.Workflow, input.Policy, input.GeneratedAt));
+        Assert.IsNull(WorkflowValidation.ProgressError(extendedAgain.Workflow, input.Policy, input.GeneratedAt.AddMinutes(16)));
     }
 
     [TestMethod]
@@ -430,7 +433,10 @@ public sealed partial class EnforcementEvaluatorTests
     public void Diagnosis_ClosureRuntimeFailureReopensSemanticSlice()
     {
         using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
+        var input = fixture.ClosedInput() with
+        {
+            ReportValidation = new PipelineValidationSummary("captured", ["state-1"], "unverified", [], "unverified", "pending")
+        };
         var closure = EnforcementEvaluator.Evaluate(input);
         input.Attempts.Attempts.Add(new EnforcementAttempt
         {
@@ -479,7 +485,7 @@ public sealed partial class EnforcementEvaluatorTests
     [DataRow(WorkflowStage.MechanicalStabilization, 3, 0, 0, 0, 0)]
     [DataRow(WorkflowStage.TargetBootstrap, 0, 2, 1, 1, 0)]
     [DataRow(WorkflowStage.SemanticConvergence, 3, 2, 1, 1, 40)]
-    [DataRow(WorkflowStage.Closure, 0, 1, 0, 0, 10)]
+    [DataRow(WorkflowStage.Closure, 1, 1, 0, 0, 10)]
     public void Policy_BalancedCeilingsAreStageSpecific(
         WorkflowStage stage, int builds, int replays, int diagnostics, int hypotheses, int ui)
     {
@@ -503,7 +509,7 @@ public sealed partial class EnforcementEvaluatorTests
     public void Operations_IncompatibleKindsCannotBeEnabledByCustomCeilings(WorkflowStage stage)
     {
         using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
+        var input = SemanticInput(fixture);
         var snapshot = EnforcementEvaluator.Evaluate(input);
         snapshot.Workflow!.Stage = stage;
         foreach (var operation in Enum.GetValues<WorkflowOperation>().Where(kind =>
@@ -569,6 +575,10 @@ public sealed partial class EnforcementEvaluatorTests
         var snapshot = EnforcementEvaluator.Evaluate(input);
         snapshot.Workflow!.StartedAt = input.GeneratedAt.AddMinutes(-minutes);
         snapshot.Workflow.Units[0].StartedAt = snapshot.Workflow.StartedAt;
+        snapshot.Workflow.Units[0].Epochs[0] = snapshot.Workflow.Units[0].Epochs[0] with
+        {
+            EnteredAt = snapshot.Workflow.StartedAt.Value
+        };
         return input with { Progress = snapshot.Workflow };
     }
 
