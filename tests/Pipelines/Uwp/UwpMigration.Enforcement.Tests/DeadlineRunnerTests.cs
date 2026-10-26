@@ -52,6 +52,9 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var clock = new ManualTimeProvider(DeadlineNow);
+        var policy = EnforcementPolicy.Balanced();
+        policy.MechanicalStabilization.HardMinutes = policy.TotalHardMinutes;
+        await UwpEnforcementRunner.ConfigurePolicyAsync(fixture.Root, policy);
         await SeedDeadlineAsync(fixture, previousMinutes);
         var remaining = TimeSpan.FromMinutes(150 - previousMinutes);
         using var callerCancellation = new CancellationTokenSource();

@@ -160,8 +160,10 @@ public sealed record WorkflowUnitProgress
     [JsonPropertyName("epochs")]
     public List<WorkflowActivationEpoch> Epochs { get; set; } = [];
 
-    public double ActiveMinutes(DateTimeOffset now) =>
-        Epochs.Sum(epoch => Math.Max(0, ((epoch.ExitedAt ?? now) - epoch.EnteredAt).TotalMinutes));
+    public TimeSpan ActiveDuration(DateTimeOffset now) =>
+        TimeSpan.FromTicks(Epochs.Sum(epoch => Math.Max(0, ((epoch.ExitedAt ?? now) - epoch.EnteredAt).Ticks)));
+
+    public double ActiveMinutes(DateTimeOffset now) => ActiveDuration(now).TotalMinutes;
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

@@ -136,10 +136,14 @@ limit or operation ceiling blocks required work durably; optional work is
 reported as `continue-with-debt`. Independent slices may continue, but debt
 never satisfies a dependency or marks a state verified. Total hard expiry
 permits no further controlled operations.
-Before every process invocation the runner rechecks the actual wall-clock
-deadline, and links process cancellation to the remaining global hard budget.
-Expiry durably records `total-budget-exhausted`, including when a process is
-canceled at the deadline. Infrastructure failures close activation epochs at
+Before every process invocation the runner rechecks both the actual global
+wall-clock deadline and the active account's remaining logical hard allowance.
+Process cancellation is bounded by the earlier deadline. Global expiry takes
+precedence if both expire together and durably records `total-budget-exhausted`.
+Required unit expiry records terminal `blocked-required`/`unit-hard-limit`;
+optional semantic unit expiry stops the process and records nonterminal
+`continue-with-debt`. Neither deadline permits a late successful result.
+Infrastructure failures close activation epochs at
 the actual failure time and persist recomputed active/total elapsed budgets.
 
 Each stage/slice separately counts external operations with these balanced ceilings:
