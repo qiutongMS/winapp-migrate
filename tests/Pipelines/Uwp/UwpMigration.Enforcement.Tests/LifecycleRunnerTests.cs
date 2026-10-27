@@ -68,7 +68,6 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     [DataRow("complete")]
     [DataRow("blocked-required")]
-    [DataRow("total-budget-exhausted")]
     [DataRow("infrastructure-failure")]
     public async Task Disposition_PersistedTerminalRejectsAllEntryPointsBeforeFakeProcess(string kind)
     {
@@ -84,16 +83,11 @@ public sealed partial class RunnerAcceptanceTests
         }
         else if (kind == "blocked-required")
         {
-            var policy = EnforcementPolicy.Balanced();
-            policy.MechanicalStabilization.Operations.Builds = 0;
-            await UwpEnforcementRunner.ConfigurePolicyAsync(fixture.Root, policy);
-            terminal = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
-        }
-        else if (kind == "total-budget-exhausted")
-        {
-            var initial = await UwpEnforcementRunner.AssessAsync(fixture.Root);
-            AgeWorkflow(initial.Workflow!, 151);
-            await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, initial.Workflow);
+            var plan = await fixture.LoadAsync<StatePlanDocument>(
+                ".migration-evidence/state-plan.json");
+            plan.States[0].Target.Status = "blocked";
+            await EnforcementStore.WriteAtomicAsync(
+                fixture.Root, ".migration-evidence/state-plan.json", plan);
             terminal = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         }
         else
@@ -170,7 +164,7 @@ public sealed partial class RunnerAcceptanceTests
         else
         {
             var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-            Assert.AreEqual("2.0", progress.SchemaVersion);
+            Assert.AreEqual("3.0", progress.SchemaVersion);
             Assert.AreEqual(initial.Workflow!.StartedAt, progress.StartedAt);
             Assert.AreEqual(initial.Workflow.Units[0].StartedAt, progress.Units[0].Epochs[0].EnteredAt);
         }

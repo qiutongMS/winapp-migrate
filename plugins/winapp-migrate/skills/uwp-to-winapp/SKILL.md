@@ -7,7 +7,7 @@ description: "Use immediately when migrating, porting, or converting a C# UWP ap
 
 Preserve the app; do not redesign it. Keep every page, control, resource, helper, navigation path, and user-visible behavior unless authoritative platform evidence proves there is no WinUI 3 desktop equivalent. Report unsupported behavior explicitly; never omit it silently.
 
-This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.4`. WinApp CLI remains a separate implementation tool, but every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp enforce` boundary.
+This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.4`. WinApp CLI remains a separate implementation tool, but every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp closure` boundary.
 
 ## Tool and contract compatibility
 
@@ -15,8 +15,8 @@ Treat three capabilities as independent:
 
 | Capability | Required contract | Current compatibility truth |
 |---|---|---|
-| UWP migration and enforcement | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, and `enforce`; migration report schema `1.4`, enforcement evidence schema `1.0`, workflow progress schema `2.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its process boundary. |
-| Build, register, launch, diagnose, and automate | Runner-mediated WinApp CLI `run` and `ui` capabilities | WinApp CLI 0.7+ can supply these capabilities. The runner resolves it from `--winapp`, then `WINAPP_MIGRATE_WINAPP_PATH`, then PATH; it is valid for the raw executable to be absent from the agent's PATH. |
+| UWP migration and closure | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, and `closure`; migration report schema `1.4`, closure evidence schema `1.0`, workflow progress schema `3.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its target-operation boundary. |
+| Build, register, launch, diagnose, and automate | Gateway-mediated WinApp CLI `run` and `ui` capabilities | WinApp CLI 0.7+ can supply these capabilities. The gateway resolves it from `--winapp`, then `WINAPP_MIGRATE_WINAPP_PATH`, then PATH; it is valid for the raw executable to be absent from the agent's PATH. |
 | Static WinUI diagnostics | A project `PackageReference` to `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` with `PrivateAssets="all"` | The analyzer is a separate preview/`0.x` NuGet package. WinApp CLI does not inject it, and this plugin does not bundle its DLL. |
 
 Run these checks before changing the source or target:
@@ -28,14 +28,14 @@ winapp-migrate uwp --help
 winapp-migrate uwp migrate --help
 winapp-migrate uwp verify --help
 winapp-migrate uwp decide-project-item --help
-winapp-migrate uwp enforce --help
+winapp-migrate uwp closure --help
 ```
 
 Verify from the actual output that:
 
-1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, and `enforce`;
-2. `winapp-migrate uwp enforce --help` exposes `configure`, `run`, `diagnose`, `ui`, `record-failure`, `record-diagnosis`, `assess`, and `sync-report`;
-3. the configured WinApp CLI satisfies the runner contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
+1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, and `closure`;
+2. `winapp-migrate uwp closure --help` exposes `assess`, `attest`, `capture`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
+3. the configured WinApp CLI satisfies the gateway contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
 
 Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.4`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
 
@@ -53,13 +53,36 @@ winapp-migrate uwp verify "<target>"
 
 The behavioral state plan remains a separate artifact with schema `1.0`; never upgrade or reject it merely because the migration report uses `1.4`.
 
+### Start or resume closure
+
+For a target with an existing report, inspect the state plan immediately. If a
+valid state plan already exists, the next stateful command must be:
+
+```powershell
+winapp-migrate uwp closure assess "<target>"
+```
+
+Run this initial assessment before source UI capture, broad source or target
+investigation, semantic target edits, or delegating implementation work. It
+resumes the deterministic migration checklist and returns the authoritative
+stage, frontier, disposition, and allowed operations. Elapsed time and operation
+totals are telemetry only. If the state plan is missing, create only that plan
+first, then assess before doing any capture or implementation.
+
+Stop when the disposition is terminal. Otherwise, perform only work consistent
+with the reported frontier and allowed operations. Reassess immediately after
+persisting source-state completion, semantic finding resolution, or other
+evidence that can advance the workflow. Target execution must still use the
+specific `closure attest`, `closure diagnose`, or `closure capture` operation
+compatible with the current stage and evidence frontier.
+
 If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is available, stop before scaffolding or copying application files. Report that deterministic migration is unavailable. Do not replace the missing tool with hand-written namespace replacement, a second scaffold, or a fabricated report.
 
 ## Ownership
 
-- `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, enforcement attestations, retry budgets, closure gates, and its mechanically owned schema `1.4` report fields.
+- `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, canonical closure attestations, evidence freshness, closure gates, and its mechanically owned schema `1.4` report fields.
 - This skill owns semantic decisions, dependency-contract preservation, target implementation, and behavioral validation.
-- WinApp CLI owns the underlying build, registration, launch, crash diagnostics, and UI automation. The runner owns every target invocation and its provenance; source baseline capture may still use WinApp CLI directly.
+- WinApp CLI owns the underlying build, registration, launch, crash diagnostics, and UI automation. The closure gateway owns every target invocation and its provenance; read-only source baseline capture may still use WinApp CLI directly.
 - The analyzer reports static WinUI risks during ordinary builds. It does not create the migration report and does not replace runtime replay.
 
 Do not duplicate `winapp-migrate uwp` checks with ad hoc extension lists or repository-wide searches when current schema `1.4` evidence already covers them. An empty migration TODO list still does not guarantee a buildable, runnable, or behaviorally equivalent app.
@@ -86,22 +109,14 @@ On the expanded path, follow [Semantic migration protocol](references/semantic-m
 
 Follow [Behavioral validation](references/behavioral-validation.md) to create and persist the complete state plan declared by the report. The state plan uses schema `1.0`.
 
-Before editing, capture startup and the fast-path primary sentinel, or every expanded-path seam sentinel. Capture remaining source states before implementing or validating their corresponding target feature. Complete the bounded source-recovery and evidence-fallback process before declaring a state unavailable.
-
-After persisting the state plan and before starting source capture, run
-`winapp-migrate uwp enforce assess "<target>"`. This atomically installs the
-balanced policy when no policy exists, starts the durable source-oracle budget,
-and reports its deadline. Install a custom policy with `enforce configure`
-before this first assessment when needed. Do not postpone the first assessment
-until source capture is complete, because that would leave the source phase
-outside the workflow clock.
+Before editing, capture startup and the fast-path primary sentinel, or every expanded-path seam sentinel. Capture remaining source states before implementing or validating their corresponding target feature. Complete the bounded source-recovery and evidence-fallback process before declaring a state unavailable. The initial assessment required by the closure entry protocol must already be persisted before this capture starts.
 
 If usable source evidence still cannot be obtained, record the affected states as `unverified`; never infer parity from source code or build success. Treat a newly observed source window as a successful launch even when the launch command's output transport remains pending. Complete exact-window cleanup after each source-capture session before editing the target.
 
 Immediately after the required source states are captured and persisted, run
-`winapp-migrate uwp enforce assess "<target>"` again. Require the snapshot to
+`winapp-migrate uwp closure assess "<target>"` again. Require the snapshot to
 enter `mechanical-stabilization` before target implementation begins; this
-observation closes the source unit and starts the mechanical clock. Do not
+observation closes the source unit and activates the target checklist. Do not
 perform target work between changing the source statuses and this assessment.
 
 ## 3. Build the first viable slice
@@ -138,50 +153,43 @@ Ensure the resulting project reference has `PrivateAssets="all"`. With central p
 
 If NuGet cannot resolve the package, retain the restore evidence and report the
 blocked analyzer prerequisite. You may continue bounded implementation
-diagnosis manually, but the enforcement runner must not attest or close the
-build. Do not claim an analyzer-enabled build.
+diagnosis manually, but the closure gateway must not attest or close the build.
+Do not claim an analyzer-enabled build.
 
-For the packaged target, let the enforcement runner build/register and then
+For the packaged target, let the closure gateway build/register and then
 start the detached canonical replay:
 
 ```powershell
-winapp-migrate uwp enforce run "<target>"
+winapp-migrate uwp closure attest "<target>"
 ```
 
 Pass `--configuration`, `--architecture`, `--runtime`, `--framework`, and
 repeatable `--property Name=Value` arguments when defaults are not correct.
-The runner forwards the same values to WinApp CLI's `--no-launch --json` build
+The gateway forwards the same values to WinApp CLI's `--no-launch --json` build
 and `--no-build --detach --json` replay. It writes raw output, grouped
 diagnostics, target fingerprints, and versioned attestations under
 `<target>\.migration-evidence\enforcement`; do not duplicate that bookkeeping.
 Never invoke raw `winapp run` for the target. A raw target invocation has no
-runner attestation and its output cannot satisfy a closure gate.
+canonical gateway attestation and its output cannot satisfy a closure gate.
 
 On failure, read the current enforcement state and grouped build diagnostics,
 then fix every governed occurrence of the active root cause in one pass. Do
 not build after every file or diagnostic.
 
-An unchanged failed target cannot be built again. The persisted stage/slice
-time and operation budgets also survive new CLI invocations; `stage-budget`
-means stop and inspect the measured budget decision, not rerun the command.
-Configure budgets before operations with `enforce configure --write-default`
-or `--policy <file>` (both also take `<target>`). After semantic convergence
-starts, corrections remain in that stage and reuse the active slice's budget.
-The initial analyzer-attested build is charged to mechanical stabilization,
-not target bootstrap; the initial replay is charged to target bootstrap.
-Balanced policy grants at most one measured-progress extension independently
-per stage or semantic slice (`maximumProgressExtensionsPerUnit`), subject to
-the stage's cumulative active-time ceiling and workflow wall-clock deadline.
-Switching accounts closes the old activation epoch; reentry preserves counts,
-extensions, and blocked status without charging inactive time. Schema `1.0`
-progress imports only when its continuous account history is unambiguous;
-otherwise preserve the artifacts and report the fail-closed import error.
-Source oracle allows no
-target operations; mechanical stabilization allows builds only; bootstrap
-allows replay and runtime-failure diagnosis/hypothesis, never UI automation.
-Closure allows a bounded revalidation build and final replay/UI justified by `--discriminating-evidence`;
-report sync is not a counted external operation. Custom ceilings cannot enable
-operations incompatible with their stage.
+An unchanged failed target cannot be built again. Change the governed target
+fingerprint before requesting another build. Repeated replay requires fresh
+discriminating evidence, and repeated diagnosis or hypothesis for the same
+signature and fingerprint is rejected. Elapsed time and aggregate operation
+counts never authorize, cancel, defer, or terminate otherwise valid work.
+Progressive corrections may use as many informative gateway operations as
+needed.
+
+Source oracle allows no target operations; mechanical stabilization allows
+builds only; bootstrap allows replay and runtime-failure diagnosis/hypothesis,
+never UI automation. Closure permits revalidation build/replay/UI only when
+the evidence frontier requires it; repeated replay and closure UI require
+`--discriminating-evidence`. Workflow schema `2.0` is imported to `3.0` while
+preserving operation/evidence history and clearing retired budget state.
 Stop speculative edits and inspect the complete
 type, project-item, generated-code, and call-site context. Record expanded-path
 root causes in the semantic finding ledger. Build success closes only
@@ -191,7 +199,7 @@ Do not spend turns clearing advisory diagnostics unrelated to migration success.
 
 ## 5. Prove the architecture, then expand coverage
 
-After the runner returns a successful detached-launch attestation, replay the
+After the gateway returns a successful detached-launch attestation, replay the
 active sentinel immediately. Control existence and process survival are not
 sufficient.
 
@@ -199,17 +207,18 @@ If the sentinel fails, it becomes the active migration frontier. For a
 foreground target diagnostic, use only:
 
 ```powershell
-winapp-migrate uwp enforce diagnose "<target>"
+winapp-migrate uwp closure diagnose "<target>"
 ```
 
-The runner preserves stdout and stderr under
-`<target>\.migration-evidence\enforcement\diagnostics`. If the failed canonical
+The gateway preserves the WinApp CLI development probe under
+`<target>\.migration-evidence\enforcement\diagnostics`. A diagnostic probe
+never satisfies canonical build, replay, parity, or finalization gates. If the failed canonical
 replay already recorded the runtime attempt, do not record it a second time.
 For a failure first observed during a later UI action, persist its evidence and
 record one stable signature:
 
 ```powershell
-winapp-migrate uwp enforce record-failure "<target>" runtime "<signature>" --state "<state-id>" --evidence "<target-relative-path>"
+winapp-migrate uwp closure record-failure "<target>" runtime "<signature>" --state "<state-id>" --evidence "<target-relative-path>"
 ```
 
 Before any target rebuild or replay, compare the failing source and target
@@ -220,7 +229,7 @@ native stack noise. Persist the source/target diff and record one falsifiable
 hypothesis and one discriminating test:
 
 ```powershell
-winapp-migrate uwp enforce record-diagnosis "<target>" "<signature>" `
+winapp-migrate uwp closure record-diagnosis "<target>" "<signature>" `
   --state "<state-id>" `
   --source-location "<path:line>" `
   --target-location "<path:line>" `
@@ -230,7 +239,7 @@ winapp-migrate uwp enforce record-diagnosis "<target>" "<signature>" `
   --evidence "<fresh-target-relative-diagnosis-path>"
 ```
 
-The runner exposes `diagnosis-required` until this source-first diagnosis is
+The gateway exposes `diagnosis-required` until this source-first diagnosis is
 complete and fresh, then `change-required` until the target fingerprint changes.
 Do not overwrite a completed diagnosis or record another for the same signature
 and fingerprint. Then pause broader coverage, create or update the finding,
@@ -243,22 +252,22 @@ an external blocker for an app-owned crash.
 After every sentinel passes, expand progressively to remaining feature paths
 and source states. Use optional schema `1.0` `slice`, `dependencies` (slice IDs),
 and `criticality` fields to group states by dependency or architecture boundary.
-The runner selects only the first dependency-ready semantically unresolved slice. Required
+The gateway selects only the first dependency-ready semantically unresolved slice. Required
 blocked work stops; optional debt never verifies a state or unlocks a dependent
-slice. Follow snapshot `activeSlice`, `activeStateIds`, and `budget`. Whenever
+slice. Follow snapshot `activeSlice`, `activeStateIds`, and `frontier`. Whenever
 state evidence completes a slice, persist the state-plan update and immediately
-run `enforce assess` before editing the next slice. That assessment records the
-resolution and activates the next slice's independent budget account.
+run `closure assess` before editing the next slice. That assessment records the
+resolution and activates the next dependency-ready slice.
 A target change makes resolved evidence stale without returning those slices
 to semantic implementation work. Closure selects stale resolved evidence with
 a `revalidate` frontier; failed comparisons, runtime regressions, and open
 findings can reopen semantic work before terminal completion.
-Inspect snapshot `disposition`, not just the legacy `status`: `pause-replan`
-is a nonterminal soft-budget decision; `continue-with-debt` is nonterminal.
-`complete`, `blocked-required`, `total-budget-exhausted`, and
-`infrastructure-failure` are immutable terminal outcomes and reject every
-operation. `retryable` on an infrastructure failure does not authorize
-retrying that same terminal run; this release provides no reset facility.
+Inspect snapshot `disposition`, not just the legacy `status`.
+`continue-with-debt` is nonterminal. `complete`, genuinely
+`blocked-required`, and `infrastructure-failure` are durable terminal outcomes
+and reject target operations. Historical `total-hard-limit`,
+`unit-hard-limit`, `operation-ceiling`, and `stage-soft-limit` dispositions are
+retired and resume during schema import.
 
 ## 6. Falsify and finalize
 
@@ -266,19 +275,19 @@ After all target changes, run the following command with the same
 build-selection options:
 
 ```powershell
-winapp-migrate uwp enforce run "<target>" --force-replay --discriminating-evidence "<new-target-relative-evidence>"
+winapp-migrate uwp closure attest "<target>" --force-replay --discriminating-evidence "<new-target-relative-evidence>"
 ```
 
 Fresh discriminating evidence must justify a repeated replay. Touching,
 renaming, or reusing the same evidence content is not progress.
-`--force-replay` cannot bypass diagnosis, change-required, or stage budgets.
+`--force-replay` cannot bypass diagnosis, change-required, or evidence freshness.
 Finish this falsification pass before report synchronization makes a fully
 passed closure terminal; do not request more target operations afterward.
 
 From that fresh canonical process, replay the primary sentinel followed by
 every runnable planned state. Persist state evidence after the recorded replay
 start; obtain target window-specific evidence through
-`winapp-migrate uwp enforce ui "<target>" --discriminating-evidence
+`winapp-migrate uwp closure capture "<target>" --discriminating-evidence
 "<new-target-relative-evidence>" -- <ui-arguments>` during closure rather than
 invoking raw `winapp ui` or inventing an HWND from launch output. Each closure
 UI operation needs explicit fresh justification.
@@ -293,12 +302,12 @@ Before claiming completion:
 - the current build is analyzer-enabled and successful;
 - the primary sentinel and every runnable target state pass in one fresh canonical sequence;
 - mechanically owned schema `1.4` evidence remains current according to `winapp-migrate uwp verify`;
-- `winapp-migrate uwp enforce assess "<target>"` reports every closure gate as passed.
+- `winapp-migrate uwp closure assess "<target>"` reports every closure gate as passed.
 
 After updating state and finding evidence, run:
 
 ```powershell
-winapp-migrate uwp enforce sync-report "<target>"
+winapp-migrate uwp closure finalize "<target>"
 ```
 
 Do not hand-edit its derived validation summary.

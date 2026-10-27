@@ -40,7 +40,22 @@ public static class WorkflowValidation
     {
         if (progress is null) return null;
         if (progress.SchemaVersion != WorkflowProgress.CurrentSchemaVersion)
-            return $"Workflow progress schema {progress.SchemaVersion} must be explicitly imported to schema 2.0 before evaluation.";
+            return $"Workflow progress schema {progress.SchemaVersion} must be explicitly imported to schema {WorkflowProgress.CurrentSchemaVersion} before evaluation.";
+        return ProgressStructureError(progress, policy, now, allowLegacyAuthorization: false);
+    }
+
+    public static string? Schema20ImportError(
+        WorkflowProgress progress, EnforcementPolicy policy, DateTimeOffset now)
+    {
+        if (progress.SchemaVersion != "2.0")
+            return $"Expected workflow progress schema 2.0, found {progress.SchemaVersion}.";
+        return ProgressStructureError(progress, policy, now, allowLegacyAuthorization: true);
+    }
+
+    private static string? ProgressStructureError(
+        WorkflowProgress progress, EnforcementPolicy policy, DateTimeOffset now,
+        bool allowLegacyAuthorization)
+    {
         if (!Enum.IsDefined(progress.Stage) ||
             string.IsNullOrWhiteSpace(progress.PolicyFingerprint) ||
             string.IsNullOrWhiteSpace(progress.LastTargetFingerprint) ||
@@ -53,7 +68,7 @@ public static class WorkflowValidation
             progress.UnresolvedRequiredStates is null || progress.Slices is null ||
             progress.LastObservedAt < progress.StartedAt || now < progress.LastObservedAt)
             return "Workflow progress has an unsupported schema or invalid fields/timestamps.";
-        if (progress.OperationsStartedAt is not null &&
+        if (allowLegacyAuthorization && progress.OperationsStartedAt is not null &&
             progress.PolicyFingerprint != PolicyFingerprint(policy))
             return "Enforcement policy is immutable once workflow operations have started.";
         if (progress.Units.Any(unit => unit is null || !Enum.IsDefined(unit.Stage) ||
@@ -61,9 +76,12 @@ public static class WorkflowValidation
                 !CountsValid(unit.Operations, int.MaxValue) ||
                 unit.StartedAt is null || unit.StartedAt < progress.StartedAt || unit.StartedAt > now ||
                 unit.ExtensionGrantedAt > progress.LastObservedAt || unit.ExtensionGrantedAt < unit.StartedAt ||
-                unit.ExtensionGrantedAt is not null && policy.MaximumProgressExtensionsPerUnit == 0 ||
+                unit.ExtensionGrantedAt is not null && (!allowLegacyAuthorization ||
+                    policy.MaximumProgressExtensionsPerUnit == 0) ||
                 unit.BlockedAt > progress.LastObservedAt || unit.BlockedAt < unit.StartedAt ||
                 (unit.BlockedAt is not null) != !string.IsNullOrWhiteSpace(unit.BlockedReason) ||
+                !allowLegacyAuthorization &&
+                    (unit.BlockedAt is not null || unit.BlockedReason is not null) ||
                 unit.Epochs is null || unit.Epochs.Count == 0 ||
                 unit.Epochs.Any(epoch => epoch is null ||
                     string.IsNullOrWhiteSpace(epoch.TargetFingerprint) ||
@@ -74,7 +92,7 @@ public static class WorkflowValidation
                 unit.Epochs.Zip(unit.Epochs.Skip(1)).Any(pair =>
                     pair.First.ExitedAt is null || pair.First.ExitedAt > pair.Second.EnteredAt)) ||
             progress.Units.GroupBy(unit => (unit.Stage, unit.SliceId)).Any(group => group.Count() > 1))
-            return "Workflow progress contains invalid or duplicate budget units/extensions.";
+            return "Workflow progress contains invalid or duplicate workflow units or retired authorization state.";
         var epochs = progress.Units.SelectMany(unit => unit.Epochs).OrderBy(epoch => epoch.EnteredAt)
             .ThenBy(epoch => epoch.ExitedAt ?? DateTimeOffset.MaxValue).ToArray();
         if (epochs.Count(epoch => epoch.ExitedAt is null) > 1 ||
@@ -83,7 +101,7 @@ public static class WorkflowValidation
             progress.Units.Any(unit => unit.Epochs.Any(epoch => epoch.ExitedAt is null) &&
                 (unit.Stage != progress.Stage ||
                  unit.Stage == WorkflowStage.SemanticConvergence && unit.SliceId != progress.ActiveSliceId)))
-            return "Workflow activation epochs overlap or do not match the active budget account.";
+            return "Workflow activation epochs overlap or do not match the active workflow unit.";
         if (progress.Slices.Any(slice => slice is null || string.IsNullOrWhiteSpace(slice.SliceId) ||
                 slice.EvidenceFresh && (!slice.Resolved ||
                     slice.EvidenceTargetFingerprint != progress.LastTargetFingerprint ||
@@ -93,7 +111,7 @@ public static class WorkflowValidation
                 progress.Slices.Where(slice => slice.Resolved).Select(slice => slice.SliceId)))
             return "Workflow slice resolution or evidence generation is invalid.";
         if (progress.Disposition is null)
-            return "Workflow progress schema 2.0 requires a run disposition.";
+            return $"Workflow progress schema {progress.SchemaVersion} requires a run disposition.";
         if (DispositionError(progress.Disposition) is { } dispositionError)
             return dispositionError;
         if (progress.Disposition is { Terminal: true } && epochs.Any(epoch => epoch.ExitedAt is null))
@@ -122,7 +140,7 @@ public static class WorkflowValidation
                 unit.Stage == operation.Stage && unit.SliceId == operation.SliceId &&
                 unit.Epochs.Any(epoch => epoch.EnteredAt <= operation.RecordedAt &&
                     (epoch.ExitedAt is null || operation.RecordedAt <= epoch.ExitedAt)))))
-            return "Workflow operation records must fall within their budget account's activation epochs.";
+            return "Workflow operation records must fall within their workflow unit's activation epochs.";
         if (progress.Operations.Count > 0 &&
             (progress.StartedAt is null || progress.OperationsStartedAt is null) ||
             progress.Operations.Any(operation => !progress.Units.Any(unit =>
@@ -169,24 +187,43 @@ public static class WorkflowValidation
                     attempt.Diagnosis.TargetLocations is null || attempt.Diagnosis.Evidence is null)))
             return "Attempt artifacts must use schema 1.0 with valid failure tuples and diagnosis collections.";
         if (build is not null && (build.SchemaVersion != BuildAttestation.CurrentSchemaVersion ||
+                build.ArtifactClass != MigrationArtifactClass.CanonicalAttestation ||
+                build.Producer != MigrationArtifactClass.Producer ||
                 string.IsNullOrWhiteSpace(build.Id) || string.IsNullOrWhiteSpace(build.TargetFingerprint) ||
+                build.Command is null || build.Command.Count == 0 ||
                 string.IsNullOrWhiteSpace(build.StandardOutputPath) || string.IsNullOrWhiteSpace(build.StandardErrorPath) ||
                 build.StartedAt == default || build.CompletedAt < build.StartedAt) ||
             replay is not null && (replay.SchemaVersion != ReplayAttestation.CurrentSchemaVersion ||
+                replay.ArtifactClass != MigrationArtifactClass.CanonicalAttestation ||
+                replay.Producer != MigrationArtifactClass.Producer ||
                 string.IsNullOrWhiteSpace(replay.Id) || string.IsNullOrWhiteSpace(replay.RunId) ||
                 string.IsNullOrWhiteSpace(replay.TargetFingerprint) || string.IsNullOrWhiteSpace(replay.BuildAttestationId) ||
+                replay.Command is null || replay.Command.Count == 0 ||
                 string.IsNullOrWhiteSpace(replay.StandardOutputPath) || string.IsNullOrWhiteSpace(replay.StandardErrorPath) ||
                 replay.StartedAt == default || replay.CompletedAt < replay.StartedAt))
-            return "Build and replay artifacts must use schema 1.0 with valid identities, paths and timestamps.";
+            return "Build and replay artifacts must be canonical winapp-migrate attestations using schema 1.0 with valid identities, commands, paths and timestamps.";
         return null;
     }
 
     public static string? DiagnosticError(DiagnosticRunAttestation? diagnostic) =>
         diagnostic is not null && (diagnostic.SchemaVersion != DiagnosticRunAttestation.CurrentSchemaVersion ||
+            diagnostic.ArtifactClass != MigrationArtifactClass.DevelopmentProbe ||
+            diagnostic.Producer != MigrationArtifactClass.Producer ||
             string.IsNullOrWhiteSpace(diagnostic.Id) || string.IsNullOrWhiteSpace(diagnostic.TargetFingerprint) ||
+            diagnostic.Command is null || diagnostic.Command.Count == 0 ||
             string.IsNullOrWhiteSpace(diagnostic.StandardOutputPath) || string.IsNullOrWhiteSpace(diagnostic.StandardErrorPath) ||
             diagnostic.StartedAt == default || diagnostic.CompletedAt < diagnostic.StartedAt)
-            ? "Diagnostic artifacts must use schema 1.0 with valid identities, paths and timestamps." : null;
+            ? "Diagnostic artifacts must be winapp-migrate development probes using schema 1.0 with valid identities, commands, paths and timestamps." : null;
+
+    public static string? UiProbeError(UiDevelopmentProbe? probe) =>
+        probe is not null && (probe.SchemaVersion != UiDevelopmentProbe.CurrentSchemaVersion ||
+            probe.ArtifactClass != MigrationArtifactClass.DevelopmentProbe ||
+            probe.Producer != MigrationArtifactClass.Producer ||
+            string.IsNullOrWhiteSpace(probe.Id) || string.IsNullOrWhiteSpace(probe.TargetFingerprint) ||
+            probe.Command is null || probe.Command.Count == 0 ||
+            string.IsNullOrWhiteSpace(probe.StandardOutputPath) || string.IsNullOrWhiteSpace(probe.StandardErrorPath) ||
+            probe.StartedAt == default || probe.CompletedAt < probe.StartedAt)
+            ? "UI artifacts must be winapp-migrate development probes using schema 1.0 with valid identities, commands, paths and timestamps." : null;
 
     private static bool CountsValid(OperationCounts? counts, int maximum) =>
         counts is not null && Enum.GetValues<WorkflowOperation>().All(operation =>

@@ -488,7 +488,7 @@ public sealed class UwpEnforcementRunner
             throw new InvalidDataException(
                 "A fresh runner-attested build is required before runtime diagnosis.");
         }
-        if (snapshot.Frontier?.Kind is "stage-budget" or "evidence" or "required-blocked" or "change-required")
+        if (snapshot.Frontier?.Kind is "evidence" or "required-blocked" or "change-required")
             throw new InvalidDataException(snapshot.Frontier.Reason);
         var failure = workspace.Attempts.Attempts
             .Where(attempt => attempt.Kind == "runtime" && attempt.TargetFingerprint == workspace.Fingerprint)
@@ -596,9 +596,38 @@ public sealed class UwpEnforcementRunner
                 discriminatingEvidence, null, cancellationToken))
             throw new InvalidDataException(snapshot.Frontier!.Reason);
 
+        var id = CreateId("ui-probe");
+        var directory = $"{EnforcementStore.EnforcementDirectory}/probes/{id}";
+        var stdout = $"{directory}/stdout.log";
+        var stderr = $"{directory}/stderr.log";
+        var command = new List<string> { "ui" };
+        command.AddRange(arguments);
+        var startedAt = _timeProvider.GetUtcNow();
         var result = await InvokeProcessAsync(
             workspace, snapshot, winAppExecutable,
-            ["ui", .. arguments],
+            command,
+            cancellationToken);
+        var completedAt = _timeProvider.GetUtcNow();
+        await WriteProcessOutputAsync(
+            workspace.Target,
+            stdout,
+            stderr,
+            result,
+            cancellationToken);
+        await EnforcementStore.WriteAtomicAsync(
+            workspace.Target,
+            EnforcementStore.UiProbePath,
+            new UiDevelopmentProbe
+            {
+                Id = id,
+                TargetFingerprint = workspace.Fingerprint,
+                StartedAt = startedAt,
+                CompletedAt = completedAt,
+                Command = [winAppExecutable, .. command],
+                ExitCode = result.ExitCode,
+                StandardOutputPath = stdout,
+                StandardErrorPath = stderr
+            },
             cancellationToken);
         return new WinAppInvocationResult(
             result.ExitCode,
@@ -1018,7 +1047,9 @@ public sealed class UwpEnforcementRunner
         var artifactError = buildError ?? replayError ?? attemptsError ??
             diagnosticError ?? stateError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
             WorkflowValidation.DiagnosticError(diagnostic);
-        if (persistedState?.Disposition is not { Terminal: true } && artifactError is null &&
+        if ((persistedState?.Disposition is not { Terminal: true } ||
+             WorkflowDispositions.IsRetiredAuthorization(persistedState.Disposition)) &&
+            artifactError is null &&
             RuntimeFailureRecovery.Recover(attempts, replay, diagnostic,
                 statePlan?.States?.FirstOrDefault(state => state is not null && !string.IsNullOrWhiteSpace(state.Id))))
             await EnforcementStore.WriteAtomicAsync(target, EnforcementStore.AttemptLedgerPath, attempts, cancellationToken);
@@ -1142,99 +1173,49 @@ public sealed class UwpEnforcementRunner
         Workspace workspace, EnforcementSnapshot snapshot, string executable,
         IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
-        var progress = snapshot.Workflow!;
-        var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
-        var now = _timeProvider.GetUtcNow();
-        var totalDeadline = progress.StartedAt!.Value.AddMinutes(workspace.Input.Policy.TotalHardMinutes);
-        var unitDeadline = now.Add(TimeSpan.FromMinutes(workspace.Input.Policy.For(unit.Stage).HardMinutes) -
-            unit.ActiveDuration(now));
-        var deadline = totalDeadline <= unitDeadline ? totalDeadline : unitDeadline;
-        var remaining = deadline - _timeProvider.GetUtcNow();
-        using var budgetCancellation = new CancellationTokenSource(
-            remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero, _timeProvider);
-        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken, budgetCancellation.Token);
         try
         {
-            if (_timeProvider.GetUtcNow() >= deadline)
-                budgetCancellation.Cancel();
-            linkedCancellation.Token.ThrowIfCancellationRequested();
             var result = await _processRunner.RunAsync(
-                executable, workspace.Target, arguments, linkedCancellation.Token);
-            if (budgetCancellation.IsCancellationRequested || _timeProvider.GetUtcNow() >= deadline)
-            {
-                budgetCancellation.Cancel();
-                budgetCancellation.Token.ThrowIfCancellationRequested();
-            }
-            linkedCancellation.Token.ThrowIfCancellationRequested();
+                executable, workspace.Target, arguments, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             if (result.InfrastructureFailure)
                 throw new IOException(result.Error);
             return result;
         }
-        catch (OperationCanceledException exception)
-        {
-            var observedAt = _timeProvider.GetUtcNow();
-            if (!budgetCancellation.IsCancellationRequested && observedAt < deadline)
-                throw;
-            await PersistProcessStopAsync(workspace, snapshot, observedAt, true);
-            throw new InvalidDataException(snapshot.Frontier!.Reason, exception);
-        }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
             InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            var observedAt = _timeProvider.GetUtcNow();
-            var expired = budgetCancellation.IsCancellationRequested || observedAt >= deadline;
-            await PersistProcessStopAsync(workspace, snapshot, observedAt, expired, exception.Message);
-            if (expired)
-                throw new InvalidDataException(snapshot.Frontier!.Reason, exception);
+            await PersistInfrastructureFailureAsync(
+                workspace, snapshot, _timeProvider.GetUtcNow(), exception.Message);
             throw;
         }
     }
 
-    private static async Task PersistProcessStopAsync(
-        Workspace workspace, EnforcementSnapshot snapshot, DateTimeOffset observedAt, bool hardExpired,
-        string? infrastructureReason = null)
+    private static async Task PersistInfrastructureFailureAsync(
+        Workspace workspace, EnforcementSnapshot snapshot, DateTimeOffset observedAt,
+        string infrastructureReason)
     {
         var progress = snapshot.Workflow!;
         progress.LastObservedAt = observedAt;
         snapshot.GeneratedAt = observedAt;
         var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
-        var required = snapshot.Stage != WorkflowStage.SemanticConvergence ||
-            workspace.Input.StatePlan?.States.Any(state =>
-                SemanticSlicePlanner.SliceId(state) == snapshot.ActiveSlice &&
-                state.Criticality == StateCriticality.Required) != false;
-        var totalExpired = observedAt >= progress.StartedAt!.Value.AddMinutes(workspace.Input.Policy.TotalHardMinutes);
-        var kind = !hardExpired ? "infrastructure-failure" : totalExpired ? "total-budget-exhausted" :
-            required ? "blocked-required" : "continue-with-debt";
-        var terminal = kind != "continue-with-debt";
-        WorkflowController.CloseActiveEpochs(progress, observedAt,
-            terminal ? $"terminal:{kind}" : "optional-deferred");
-        snapshot.Budget = WorkflowBudgets.Evaluate(workspace.Input.Policy, progress, unit, observedAt, required);
-        var reason = hardExpired
-            ? $"{snapshot.Budget.Reason} The controlled operation was stopped."
-            : infrastructureReason!;
-        if (!terminal && snapshot.ActiveSlice is not null &&
-            !progress.Debt.Any(debt => debt.SliceId == snapshot.ActiveSlice))
-            progress.Debt.Add(new WorkflowDebt { SliceId = snapshot.ActiveSlice, Reason = reason });
+        const string kind = "infrastructure-failure";
+        WorkflowController.CloseActiveEpochs(progress, observedAt, $"terminal:{kind}");
+        snapshot.Budget = WorkflowBudgets.Evaluate(
+            workspace.Input.Policy, progress, unit, observedAt);
         var budgetGate = snapshot.Gates.First(gate => gate.Id == "stage-budget");
-        budgetGate.Status = snapshot.Budget.Decision is "within-budget" or "extension-granted" ? "passed" : "blocked";
+        budgetGate.Status = "passed";
         budgetGate.Reason = snapshot.Budget.Reason;
         snapshot.Disposition = new RunDisposition
         {
             Kind = kind,
-            ReasonCode = kind switch
-            {
-                "total-budget-exhausted" => "total-hard-limit",
-                "blocked-required" => "unit-hard-limit",
-                "continue-with-debt" => "optional-debt",
-                _ => "process-invocation-failed"
-            },
-            Terminal = terminal,
-            Retryable = kind is "infrastructure-failure" or "continue-with-debt",
-            Finalization = !terminal ? "debt" : kind == "infrastructure-failure" ? "failed" : "blocked"
+            ReasonCode = "process-invocation-failed",
+            Terminal = true,
+            Retryable = true,
+            Finalization = "failed"
         };
-        snapshot.Status = terminal ? "blocked" : "continue-with-debt";
-        snapshot.Frontier = new EnforcementFrontier { Kind = kind, Reason = reason };
+        snapshot.Status = "blocked";
+        snapshot.Frontier = new EnforcementFrontier { Kind = kind, Reason = infrastructureReason };
         progress.Disposition = snapshot.Disposition;
         await WriteSnapshotAsync(workspace.Target, snapshot, CancellationToken.None);
     }
@@ -1248,8 +1229,8 @@ public sealed class UwpEnforcementRunner
             snapshot.Status = snapshot.Budget?.Decision == "continue-with-debt" ? "continue-with-debt" : "blocked";
             snapshot.Frontier = new EnforcementFrontier
             {
-                Kind = snapshot.Budget?.Decision is "stage-budget" or "blocked-required" or "continue-with-debt" or "total-budget-exhausted"
-                    ? "stage-budget" : "evidence-required",
+                Kind = snapshot.Disposition?.Kind == "continue-with-debt"
+                    ? "continue-with-debt" : "evidence-required",
                 Reason = reason,
                 SliceId = snapshot.ActiveSlice,
                 StateIds = snapshot.ActiveStateIds

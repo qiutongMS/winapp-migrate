@@ -122,11 +122,60 @@ public sealed partial class RunnerAcceptanceTests
 
         Assert.AreEqual(2, process.CallCount);
         Assert.AreEqual("state", snapshot.Frontier?.Kind);
+        CollectionAssert.AreEqual(
+            new[] { "run", fixture.ProjectPath, "--no-launch", "--json" },
+            process.Calls[0]);
+        CollectionAssert.AreEqual(
+            new[] { "run", fixture.ProjectPath, "--no-build", "--detach", "--json" },
+            process.Calls[1]);
+        CollectionAssert.AreEqual(
+            new[] { WorkflowOperation.Build, WorkflowOperation.Replay },
+            snapshot.Workflow!.Operations.Select(operation => operation.Kind).ToArray());
+        var build = await fixture.LoadAsync<BuildAttestation>(
+            EnforcementStore.BuildAttestationPath);
+        CollectionAssert.AreEqual(
+            new[] { "winapp" }.Concat(process.Calls[0]).ToArray(),
+            build.Command);
         var replay = await fixture.LoadAsync<ReplayAttestation>(
             EnforcementStore.ReplayAttestationPath);
         Assert.IsTrue(replay.Success);
         Assert.AreEqual(4242, replay.ProcessId);
         Assert.AreEqual("Contoso.App", replay.Aumid);
+        CollectionAssert.AreEqual(
+            new[] { "winapp" }.Concat(process.Calls[1]).ToArray(),
+            replay.Command);
+    }
+
+    [TestMethod]
+    public async Task Assess_RawTargetOutputCannotReplaceGatewayAttestation()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await File.WriteAllTextAsync(
+            fixture.Path(".migration-evidence/raw-winapp-output.json"),
+            """{"AUMID":"Contoso.App","ProcessId":4242}""");
+
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+
+        Assert.AreEqual("build", snapshot.Frontier?.Kind);
+        Assert.AreEqual(
+            "blocked",
+            snapshot.Gates.Single(gate => gate.Id == "fresh-build").Status);
+        Assert.IsEmpty(snapshot.Workflow!.Operations);
+        Assert.IsFalse(File.Exists(fixture.Path(EnforcementStore.BuildAttestationPath)));
+        Assert.IsFalse(File.Exists(fixture.Path(EnforcementStore.ReplayAttestationPath)));
+    }
+
+    [TestMethod]
+    public async Task Assess_SourceBaselineEvidenceDoesNotRequireTargetOperation()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+
+        Assert.AreEqual("passed",
+            snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
+        Assert.IsEmpty(snapshot.Workflow!.Operations);
     }
 
     [TestMethod]
@@ -260,6 +309,10 @@ public sealed partial class RunnerAcceptanceTests
             "stowed exception",
             await File.ReadAllTextAsync(fixture.Path(
                 attestation.StandardErrorPath)));
+        Assert.AreEqual(
+            MigrationArtifactClass.DevelopmentProbe,
+            attestation.ArtifactClass);
+        Assert.AreEqual(MigrationArtifactClass.Producer, attestation.Producer);
         Assert.IsTrue(File.Exists(fixture.Path(
             EnforcementStore.DiagnosticAttestationPath)));
     }
@@ -356,6 +409,19 @@ public sealed partial class RunnerAcceptanceTests
         CollectionAssert.AreEqual(
             new[] { "ui", "list", "--json" },
             process.Calls[2]);
+        var probe = await fixture.LoadAsync<UiDevelopmentProbe>(
+            EnforcementStore.UiProbePath);
+        Assert.AreEqual(MigrationArtifactClass.DevelopmentProbe, probe.ArtifactClass);
+        Assert.AreEqual(MigrationArtifactClass.Producer, probe.Producer);
+        Assert.AreEqual((await fixture.LoadAsync<EnforcementSnapshot>(
+            EnforcementStore.StatePath)).TargetFingerprint, probe.TargetFingerprint);
+        CollectionAssert.AreEqual(
+            new[] { "winapp", "ui", "list", "--json" },
+            probe.Command);
+        Assert.AreEqual("ui output",
+            await File.ReadAllTextAsync(fixture.Path(probe.StandardOutputPath)));
+        Assert.AreEqual("ui error",
+            await File.ReadAllTextAsync(fixture.Path(probe.StandardErrorPath)));
     }
 
     [TestMethod]

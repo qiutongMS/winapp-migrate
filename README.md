@@ -19,8 +19,8 @@ src/Pipelines/Uwp/UwpMigration.Mechanical/ Deterministic UWP conversion
 tests/Pipelines/Uwp/                       UWP pipeline tests
 ```
 
-The common Enforcement layer owns phase state, target fingerprints, evidence
-freshness, diagnostic grouping, retry budgets, canonical replay, and closure
+The common closure layer owns phase state, target fingerprints, evidence
+freshness, diagnostic grouping, canonical replay, and closure
 gates. The UWP adapter binds those shared contracts to schema 1.4 and invokes
 released WinApp CLI commands. UWP-specific activation, package, project-item,
 XAML, and C# behavior stays in the UWP pipeline rather than being prematurely
@@ -38,16 +38,13 @@ winapp-migrate uwp create <source> --output <target>
 winapp-migrate uwp migrate <source> --output <target>
 winapp-migrate uwp verify <target>
 winapp-migrate uwp decide-project-item <target> <item> <strategy> <rationale>
-winapp-migrate uwp enforce configure <target> --write-default
-winapp-migrate uwp enforce configure <target> --policy <policy.json>
-winapp-migrate uwp enforce assess <target>
-winapp-migrate uwp enforce wait <target> [--timeout-seconds <seconds>]
-winapp-migrate uwp enforce run <target>
-winapp-migrate uwp enforce diagnose <target>
-winapp-migrate uwp enforce ui <target> -- <winapp-ui-arguments>
-winapp-migrate uwp enforce record-failure <target> <build|runtime> <signature> --evidence <path>
-winapp-migrate uwp enforce record-diagnosis <target> <signature> --source-location <path:line> --target-location <path:line> --source-invariant <text> --hypothesis <text> --test <text> --evidence <path>
-winapp-migrate uwp enforce sync-report <target>
+winapp-migrate uwp closure assess <target>
+winapp-migrate uwp closure attest <target>
+winapp-migrate uwp closure diagnose <target>
+winapp-migrate uwp closure capture <target> -- <winapp-ui-arguments>
+winapp-migrate uwp closure record-failure <target> <build|runtime> <signature> --evidence <path>
+winapp-migrate uwp closure record-diagnosis <target> <signature> --source-location <path:line> --target-location <path:line> --source-invariant <text> --hypothesis <text> --test <text> --evidence <path>
+winapp-migrate uwp closure finalize <target>
 ```
 
 `uwp create` / `uwp migrate` also accept `--package-identity <guid>` to
@@ -56,30 +53,36 @@ to record `target.root` as `.`. Together these options let callers stabilize
 the package identity and relocate the target directory without rewriting
 product artifacts after the migration completes.
 
-`enforce run` invokes `winapp run` first with `--no-launch --json`, then with
+`closure attest` invokes `winapp run` first with `--no-launch --json`, then with
 `--no-build --detach --json` after a successful analyzer-enabled build. It
 persists versioned attestations under `.migration-evidence/enforcement`,
 groups build diagnostics, and refuses to repeat a failed build for an
 unchanged target fingerprint. A repeated replay requires fresh discriminating
 evidence: use `--force-replay --discriminating-evidence <target-relative-file>`;
 configuration, architecture, runtime, framework, and repeatable MSBuild
-properties are forwarded identically to build and replay. The runner does not
+properties are forwarded identically to build and replay. The closure gateway does not
 infer semantic success from a build or process launch: state evidence,
 semantic findings, and the report summary must independently satisfy the
 closure gates.
 
-`enforce diagnose` preserves controlled foreground debug output. A runtime
+`closure diagnose` preserves controlled foreground debug output as a
+fingerprint-bound development probe that cannot satisfy canonical closure
+gates. A runtime
 failure opens a diagnosis frontier that requires fresh source/target locations,
 the preserved source invariant, one falsifiable hypothesis, one discriminating
 test, and target-contained evidence before another build or replay. Target UI
-automation must use `enforce ui`, which requires a fresh canonical replay.
-The runner resolves WinApp CLI from `--winapp`,
+automation must use `closure capture`, which requires a fresh canonical replay.
+The gateway resolves WinApp CLI from `--winapp`,
 `WINAPP_MIGRATE_WINAPP_PATH`, or PATH, in that order, so raw `winapp.exe` need
 not be exposed to the migration agent.
 
-### Durable workflow and budgets
+The former `uwp enforce`, `run`, `ui`, and `sync-report` names remain
+compatibility aliases. `configure` and `wait` are deprecated compatibility
+commands; policy limits and elapsed time no longer control closure.
 
-`enforce assess` resumes the persisted five-stage controller:
+### Durable migration closure
+
+`closure assess` resumes the persisted five-stage controller:
 `source-oracle`, `mechanical-stabilization`, `target-bootstrap`,
 `semantic-convergence`, and `closure`. Snapshot `phase` and `stage` are the
 controller's stage, while `frontier.kind` explains the next action. A semantic
@@ -92,99 +95,40 @@ selects stale resolved slices for revalidation; an actual failed comparison,
 runtime regression, or open semantic finding can reopen semantic work before
 the run becomes terminal.
 For a fresh workflow, source readiness enters mechanical stabilization even
-when report mechanical verification has passed: the initial analyzer-attested
-build is charged there. A fresh build enters target bootstrap, where the initial
-replay is charged. Before semantic convergence, a target change requiring a new
-build returns to mechanical stabilization; existing counters are retained.
+when report mechanical verification has passed. A fresh analyzer-attested
+build enters target bootstrap, and a fresh replay enters semantic convergence
+or closure. Before semantic convergence, a target change requiring a new build
+returns to mechanical stabilization.
 
-The strict schema `1.0` policy and schema `2.0` progress are atomically persisted as
-`.migration-evidence/enforcement/policy.json` and `progress.json`.
-Configure the policy before the first controlled operation or recorded
-failure; subsequent policy changes (including direct file replacement) fail
-closed. `configure --write-default` writes the balanced policy to the target
-and stdout; edit a copy and install it with `configure --policy <file>`.
-Assessment activates a logical stage/slice budget account, including time
-between CLI invocations while that account remains active. Switching accounts
-closes the previous activation epoch. Reentry opens another epoch without
-resetting operation counts, extension usage, or blocked status; inactive time
-is not charged to that account. Active duration is calculated from epochs,
-not persisted as another counter. The workflow total remains wall-clock time.
-Run the first `enforce assess` immediately after the state plan is created and
-before source capture; otherwise the source-oracle phase has not entered the
-durable workflow clock. Run it again immediately after source completion and
-after each slice completion, before beginning work in the next budget unit.
+Progress schema `3.0` is atomically persisted as
+`.migration-evidence/enforcement/progress.json`. Schema `2.0` imports preserve
+operation records, evidence events, slices, fingerprints, and activation
+epochs while clearing retired extension, blocked-budget, and time/count
+terminal state. Safe schema `1.0` histories also import; ambiguous histories
+fail closed without rewriting the original artifact.
 
-External hosts must use `enforce wait` instead of parsing enforcement state or
-calculating workflow deadlines. The command waits for a durable terminal
-disposition, materializes due deadlines through the same product assessment
-path, and writes one versioned JSON observation to stdout. Its optional
-observation timeout does not mutate Runner budgets or dispositions.
-Schema `1.0` progress is explicitly imported only when exactly one continuous
-account can be reconstructed safely. Zero-account histories fail closed rather
-than starting a new epoch. Counts, extension/block
-fields, and the global start are preserved; previously completed slices import
-as resolved with stale evidence. Multiple/switched accounts, unsupported
-schemas, and invalid history fail closed with a precise error, preserving the
-original progress. Pre-controller attestations use the same conservative
-import rule; unavailable activation history is not invented or reset.
+Elapsed time and aggregate operation totals remain observable telemetry but
+never authorize, cancel, defer, or terminate otherwise valid work. There is no
+product wall-clock deadline, progress extension, or fixed per-stage operation
+ceiling. Progressive target changes may use as many informative gateway
+operations as needed. Host wall time, idle timeout, turns, and tokens belong to
+the calling host or benchmark.
 
-| Stage | Soft / hard minutes |
-| --- | --- |
-| source-oracle | 20 / 30 |
-| mechanical-stabilization | 15 / 25 |
-| target-bootstrap | 10 / 15 |
-| semantic-convergence | 15 / 25 **per slice** |
-| closure | 15 / 25 |
+The gateway still rejects waste deterministically: an unchanged failed target
+cannot rebuild; repeated replay needs fresh discriminating evidence; evidence
+content cannot be reused by touching or renaming it; and diagnosis/hypothesis
+cannot repeat for the same signature and target fingerprint. Stage
+compatibility also remains fixed: source oracle permits no target operation,
+mechanical stabilization permits build only, bootstrap requires a runtime
+failure before diagnosis, and closure replay/UI requires explicit fresh
+evidence.
 
-The default total hard limit is 150 minutes, workflow-wide. Each budget unit
-(each stage, and each semantic slice) independently permits **one**
-10-minute measured-progress extension, capped by its account's hard active-time limit
-and the workflow total hard deadline. The strict policy field
-`maximumProgressExtensionsPerUnit` accepts 0 or 1 (balanced default: 1);
-the former `maximumProgressExtensions` name is rejected.
-Progress is derived from target changes, fewer unresolved required states,
-completed diagnosis/slice evidence, or new discriminating evidence—not an
-agent's estimate of completion. Soft expiry returns `stage-budget`. A hard
-limit or operation ceiling blocks required work durably; optional work is
-reported as `continue-with-debt`. Independent slices may continue, but debt
-never satisfies a dependency or marks a state verified. Total hard expiry
-permits no further controlled operations.
-Before every process invocation the runner rechecks both the actual global
-wall-clock deadline and the active account's remaining logical hard allowance.
-Process cancellation is bounded by the earlier deadline. Global expiry takes
-precedence if both expire together and durably records `total-budget-exhausted`.
-Required unit expiry records terminal `blocked-required`/`unit-hard-limit`;
-optional semantic unit expiry stops the process and records nonterminal
-`continue-with-debt`. Neither deadline permits a late successful result.
-Infrastructure failures close activation epochs at
-the actual failure time and persist recomputed active/total elapsed budgets.
-
-Each stage/slice separately counts external operations with these balanced ceilings:
-
-| Stage | Builds | Replays | Diagnostic runs | Hypotheses | UI actions |
-| --- | --- | --- | --- | --- | --- |
-| source-oracle | 0 | 0 | 0 | 0 | 0 |
-| mechanical-stabilization | 3 | 0 | 0 | 0 | 0 |
-| target-bootstrap | 0 | 2 | 1 | 1 | 0 |
-| semantic-convergence (per slice) | 3 | 2 | 1 | 1 | 40 |
-| closure | 1 | 1 | 0 | 0 | 10 |
-
-Bootstrap diagnostic runs/hypotheses require a bootstrap runtime failure.
-Closure permits one revalidation build when a target change invalidated the
-build, plus explicitly justified final replay/UI operations: supply
-new `--discriminating-evidence <path>` to `enforce run --force-replay` or
-`enforce ui <target> --discriminating-evidence <path> -- <UI arguments>`.
-Report synchronization is not a counted external operation. Incompatible
-stage operations are rejected before invocation even under custom policies;
-their ceilings must remain zero. Existing policies with a zero closure-build
-ceiling retain that restriction; policy import never silently expands limits.
-
-Operations are charged **before** invocation, so interruption or a new `run`
-cannot reset ceilings. The snapshot
-includes active slice/state IDs, elapsed time, deadlines, extension decisions,
-per-account ceilings/counts (including `budget.extensionsUsed` for the active
-account), and total operation counts. Stage deadlines project the remaining
-active allowance from the current epoch; they move across inactive gaps.
+Build and replay outputs are classified as canonical attestations. Diagnostic
+and UI outputs are classified as development probes. Both carry target
+fingerprint and producer provenance, but only fresh canonical attestations can
+satisfy build, replay, parity, or finalization gates. Raw target WinApp CLI
+output cannot substitute for a gateway attestation. Read-only source baseline
+capture remains outside this target-only boundary.
 
 State-plan schema `1.0` additively accepts `slice`, `dependencies` (slice IDs),
 and `criticality` (`required` or `optional`) on each state. Defaults are the
@@ -201,16 +145,14 @@ in progress, with stable `kind`, `reasonCode`, `terminal`, `retryable`,
 | Kind | Terminal | Retryable | Finalization |
 | --- | --- | --- | --- |
 | continue | no | yes | not-ready |
-| pause-replan (soft stage limit) | no | yes | not-ready |
 | continue-with-debt | no | yes | debt |
 | complete (all closure gates passed) | yes | no | complete |
-| blocked-required (required hard/operation/dependency limit) | yes | no | blocked |
-| total-budget-exhausted | yes | no | blocked |
+| blocked-required (required dependency or evidence is genuinely blocked) | yes | no | blocked |
 | infrastructure-failure (invalid artifacts or process invocation failure) | yes | yes | failed |
 
-`allowedOperations` lists policy-compatible operation kinds with remaining
-capacity; evidence, freshness, diagnosis, and stage prerequisites still apply.
-Paused, deferred, and terminal dispositions list none. Terminal dispositions
+`allowedOperations` lists stage-compatible operation kinds; evidence,
+freshness, diagnosis, and frontier prerequisites still apply. Deferred and
+terminal dispositions list none. Terminal dispositions
 are immutable on later observations, including after a target change. All
 operational entry points reject a terminal run before invoking external tools;
 `assess` remains observational. Infrastructure `retryable` classifies the

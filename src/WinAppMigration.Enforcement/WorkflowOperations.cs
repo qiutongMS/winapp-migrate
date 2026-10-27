@@ -98,9 +98,6 @@ public static class WorkflowOperations
         var progress = snapshot.Workflow;
         var now = input.GeneratedAt;
         var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
-        var required = snapshot.Stage != WorkflowStage.SemanticConvergence ||
-            input.StatePlan?.States.Any(state => SemanticSlicePlanner.SliceId(state) == snapshot.ActiveSlice &&
-                state.Criticality == StateCriticality.Required) != false;
         var previous = progress.Operations.Where(item =>
             item.Kind == operation && item.TargetFingerprint == input.TargetFingerprint).ToArray();
         string? evidenceFingerprint = null;
@@ -131,17 +128,7 @@ public static class WorkflowOperations
         }
         if (evidenceFingerprint is not null)
             WorkflowController.AddEvent(progress, unit, "discriminating-evidence", evidenceFingerprint, now);
-        var budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now, required, operation);
-        snapshot.Budget = budget;
-        if (budget.Decision is not ("within-budget" or "extension-granted"))
-        {
-            if (budget.Decision == "continue-with-debt" && snapshot.ActiveSlice is not null &&
-                !progress.Debt.Any(debt => debt.SliceId == snapshot.ActiveSlice))
-                progress.Debt.Add(new WorkflowDebt { SliceId = snapshot.ActiveSlice, Reason = budget.Reason });
-            WorkflowDispositions.Update(snapshot, input.Policy, now);
-            reason = budget.Reason;
-            return false;
-        }
+        snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now);
         progress.StartedAt ??= now;
         progress.OperationsStartedAt ??= now;
         WorkflowController.Activate(progress, unit, now, input.TargetFingerprint);
@@ -153,8 +140,8 @@ public static class WorkflowOperations
             EvidenceFingerprint = evidenceFingerprint, Signature = signature
         });
         progress.LastObservedAt = now;
-        snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now, required);
-        WorkflowDispositions.Update(snapshot, input.Policy, now);
+        snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now);
+        WorkflowDispositions.Update(snapshot, now);
         return true;
     }
 

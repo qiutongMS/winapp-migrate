@@ -12,26 +12,6 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class RunnerAcceptanceTests
 {
     [TestMethod]
-    public async Task Wait_MaterializesDeadlineWithoutProcessInvocation()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var clock = new ManualTimeProvider(DeadlineNow);
-        await SeedDeadlineAsync(fixture, 145);
-        clock.OnTimerCreated = () => clock.Advance(TimeSpan.FromMinutes(5));
-        var process = new DelegateProcessRunner(_ =>
-            Task.FromResult(new EnforcementProcessResult(0, "unused", "")));
-        var runner = new UwpEnforcementRunner(process, clock);
-
-        var snapshot = await runner.WaitForTerminalAsync(
-            fixture.Root,
-            timeout: TimeSpan.FromMinutes(10),
-            pollInterval: TimeSpan.FromSeconds(1));
-
-        AssertDeadline(snapshot, DeadlineNow.AddMinutes(5), 5);
-        Assert.AreEqual(0, process.CallCount);
-    }
-
-    [TestMethod]
     public async Task Wait_ObservationTimeoutDoesNotTerminalizeWorkflow()
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -81,12 +61,10 @@ public sealed partial class RunnerAcceptanceTests
     public async Task Cli_WaitWritesSingleVersionedTerminalObservation()
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var clock = new ManualTimeProvider(DeadlineNow);
-        await SeedDeadlineAsync(fixture, 150);
-        await new UwpEnforcementRunner(
-            new DelegateProcessRunner(_ =>
-                Task.FromResult(new EnforcementProcessResult(0, "unused", ""))),
-            clock).WaitForTerminalAsync(fixture.Root);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+        await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
         var command = new UwpEnforceCommand(new FakeProcessRunner());
         var parseResult = command.Parse(["wait", fixture.Root.FullName]);
         var original = Console.Out;
@@ -112,7 +90,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("terminal", observation["status"]!.GetValue<string>());
         Assert.IsTrue(observation["disposition"]!["terminal"]!.GetValue<bool>());
         Assert.AreEqual(
-            "total-hard-limit",
+            "closure-passed",
             observation["disposition"]!["reasonCode"]!.GetValue<string>());
     }
 }

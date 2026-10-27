@@ -32,6 +32,8 @@ public static class EnforcementStore
         ".migration-evidence/enforcement/attempts.json";
     public const string DiagnosticAttestationPath =
         ".migration-evidence/enforcement/diagnostic-attestation.json";
+    public const string UiProbePath =
+        ".migration-evidence/enforcement/ui-probe.json";
     public const string PolicyPath =
         ".migration-evidence/enforcement/policy.json";
     public const string ProgressPath =

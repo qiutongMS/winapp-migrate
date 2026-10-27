@@ -69,17 +69,16 @@ cannot be resumed by more operations or new target changes.
 
 Set `source.status` to `captured`, `blocked`, or `unverified`; `target.status` to `passed`, `blocked`, `unverified`, or `failed`; and `comparison.status` to `verified`, `blocked`, `unverified`, or `failed`. Keep `not-run` only until the phase is attempted, and provide `reason` for every status other than `captured`, `passed`, or `verified`.
 
-After writing the state plan and before launching the source, start the durable
-workflow clock:
+After writing the state plan and before launching the source, persist the
+initial closure assessment:
 
 ```powershell
-winapp-migrate uwp enforce assess "<target>"
+winapp-migrate uwp closure assess "<target>"
 ```
 
-This persists the balanced policy when none exists and begins the
-source-oracle budget. If the migration needs a custom policy, install it with
-`enforce configure` before this assessment. Starting assessment only after
-source capture would leave that phase unbudgeted.
+This establishes the source-oracle checklist frontier before any source or
+target work. Elapsed time and operation totals are telemetry only and never
+authorize or stop migration work.
 
 For state-changing behavior, plan a transition rather than only a destination. Verify changed values, selection, collections, navigation state, or visible content. Include cancel/back restoration and alternate modifier-key paths when they produce different source behavior.
 
@@ -128,24 +127,24 @@ Use `blocked` only for a known external prerequisite such as unavailable permiss
 After source capture, close the exact source HWND through its UIA Close element and confirm it disappears. If it has no UIA Close element, stop only the exact source PID returned by `winapp run`. Never clean up by broad process name.
 
 After persisting the completed required source states, immediately run
-`winapp-migrate uwp enforce assess "<target>"` again and require
+`winapp-migrate uwp closure assess "<target>"` again and require
 `mechanical-stabilization` before target implementation. The assessment closes
-the source unit and starts the mechanical budget; doing target work first would
-leave that time charged to the wrong phase.
+the source unit and activates the target checklist; do not perform target work
+before this transition is persisted.
 
 ## 3. Build/register and replay WinUI 3
 
 The target project must reference `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` with `PrivateAssets="all"`. The package is not bundled with this plugin and is not injected by WinApp CLI.
 
 Build/register the packaged target and start its detached canonical replay
-through the enforcement runner:
+through the closure gateway:
 
 ```powershell
-winapp-migrate uwp enforce run "<target>"
+winapp-migrate uwp closure attest "<target>"
 ```
 
 Pass `--configuration`, `--architecture`, `--framework`, `--runtime`, and
-repeatable `--property Name=Value` arguments when required. The runner
+repeatable `--property Name=Value` arguments when required. The gateway
 forwards the same selection to its `--no-launch --json` build and
 `--no-build --detach --json` replay, and preserves raw output, grouped
 diagnostics, exit codes, fingerprints, and attestations. Do not substitute a
@@ -153,24 +152,25 @@ wrapper script or copied analyzer DLL. Replay the active sentinel before
 peripheral features.
 
 For the target, never invoke raw `winapp run`, `winapp build`, or `winapp ui`.
-Those calls bypass target fingerprinting, retry accounting, replay identity,
+Those calls bypass target fingerprinting, replay identity,
 and evidence provenance, so their output cannot close a state. Source baseline
 capture remains outside this target-only boundary.
 
 If the detached app exits, turns blank, or never exposes a usable window, run
-one foreground diagnostic launch through the runner:
+one foreground diagnostic launch through the gateway:
 
 ```powershell
-winapp-migrate uwp enforce diagnose "<target>"
+winapp-migrate uwp closure diagnose "<target>"
 ```
 
-The runner invokes `--no-build --debug-output`, writes stdout and stderr under
+The gateway invokes `--no-build --debug-output`, writes stdout and stderr under
 `.migration-evidence/enforcement/diagnostics`, and records a diagnostic
-attestation. Derive a stable signature from the exception or HRESULT, the first
+development probe. That probe never satisfies canonical build, replay, parity,
+or finalization gates. Derive a stable signature from the exception or HRESULT, the first
 app-owned stack frame, and the WinUI triage verdict. A failed canonical replay
 already records its runtime attempt; do not duplicate it. When a later target
 UI action first exposes the failure, persist that action evidence and use
-`winapp-migrate uwp enforce record-failure`.
+`winapp-migrate uwp closure record-failure`.
 
 Before changing the target, diagnose source semantics in this order:
 
@@ -188,7 +188,7 @@ Before changing the target, diagnose source semantics in this order:
 5. Record the diagnosis before another build or replay:
 
    ```powershell
-   winapp-migrate uwp enforce record-diagnosis "<target>" "<signature>" `
+   winapp-migrate uwp closure record-diagnosis "<target>" "<signature>" `
      --state "<state-id>" `
      --source-location "<path:line>" `
      --target-location "<path:line>" `
@@ -198,29 +198,29 @@ Before changing the target, diagnose source semantics in this order:
      --evidence "<fresh-target-relative-diagnosis-path>"
    ```
 
-The runner's `failure-diagnosis` gate exposes `diagnosis-required` and rejects
+The gateway's `failure-diagnosis` gate exposes `diagnosis-required` and rejects
 missing, incomplete, out-of-root, or pre-failure evidence. Diagnosis is bound to
 the failing signature, state/slice, and target fingerprint; a completed record
 cannot be overwritten or repeated for that signature/fingerprint. It then
 exposes `change-required` until the target fingerprint changes. Apply only the change required by the recorded test,
-then use runner-controlled build and replay. A changed target fingerprint does
+then use gateway-controlled build and replay. A changed target fingerprint does
 not excuse an undiagnosed runtime failure.
 
 If diagnostics terminate without an app-owned cause, allow one focused temporary instrumentation pass at the narrowest existing app-owned constructors, handlers, and transition helpers. Remove all temporary instrumentation before the final analyzer-enabled build and clean replay.
 
-Drive target UI through the current runner-attested canonical replay:
+Drive target UI through the current gateway-attested canonical replay:
 
 ```powershell
-winapp-migrate uwp enforce ui "<target>" -- list-windows --json
-winapp-migrate uwp enforce ui "<target>" -- inspect -w <hwnd> -d 8 --json
-winapp-migrate uwp enforce ui "<target>" -- invoke "<semantic-name>" -w <hwnd> --json
-winapp-migrate uwp enforce ui "<target>" -- screenshot -w <hwnd> --focus --json -o "<evidence-path>.png"
+winapp-migrate uwp closure capture "<target>" -- list-windows --json
+winapp-migrate uwp closure capture "<target>" -- inspect -w <hwnd> -d 8 --json
+winapp-migrate uwp closure capture "<target>" -- invoke "<semantic-name>" -w <hwnd> --json
+winapp-migrate uwp closure capture "<target>" -- screenshot -w <hwnd> --focus --json -o "<evidence-path>.png"
 ```
 
 The target UI command refuses to run without a fresh canonical replay. When
 the target exits only while an `invoke` action runs, or a native crash stack is
 dominated by `UIAutomationCore` without an app-owned frame, test the same
-control once with runner-mediated `click` after a clean launch.
+control once with gateway-mediated `click` after a clean launch.
 
 If `invoke` fails while pointer input succeeds, inspect the complete downstream path for overlapping fire-and-forget tasks, reentrant navigation, frame replacement, overlay removal, or disposal while UI Automation is still returning. Serialize and await app-owned transitions, prevent re-entry, and remove visual-tree elements only after the action and required exit transition complete.
 
@@ -230,24 +230,16 @@ Group all locations explained by one signature into one correction. A failed
 build cannot repeat on an unchanged target, and replay/debug/hypothesis work
 cannot be repeated without the required new target or discriminating evidence.
 Each correction cycle must state one root-cause hypothesis the next probe can
-disprove. Persisted stage/slice operation ceilings and wall-clock limits survive
-new invocations. Follow `budget` and `stage-budget` decisions; assertions of
-near-completion never qualify for a measured-progress extension. The balanced
-`maximumProgressExtensionsPerUnit: 1` permits one independently per stage and
-per semantic slice, never a second for the same unit; stage and total workflow
-hard limits remain unchanged. The initial build belongs to mechanical
-stabilization, the initial replay to target bootstrap, and later semantic
-corrective builds/replays to their active slice. Stage-specific operation
-ceilings cannot enable incompatible work: source oracle has no target
-operations, mechanical stabilization only builds, and bootstrap no UI
-automation or diagnosis/hypothesis without a runtime failure. Closure permits
-only explicitly justified final replay/UI with `--discriminating-evidence`;
-report synchronization is not a counted external operation.
-Configure the strict policy before operations with
-`winapp-migrate uwp enforce configure "<target>" --write-default` or
-`--policy <file>`. See the repository README for defaults and hard-limit debt
-behavior. Corrections made after semantic convergence do not restart
-mechanical stabilization.
+disprove. Elapsed time and aggregate operation counts are telemetry only:
+they never authorize, cancel, defer, or terminate otherwise valid work.
+Progressive target changes may use as many informative operations as needed.
+The initial build belongs to mechanical stabilization, the initial replay to
+target bootstrap, and later semantic corrective build/replay attestations to
+their active slice. Stage compatibility remains deterministic: source oracle
+has no target operations, mechanical stabilization only builds, and bootstrap
+permits no UI automation or diagnosis/hypothesis without a runtime failure.
+Closure replay/UI requires fresh `--discriminating-evidence`. Corrections made
+after semantic convergence do not restart mechanical stabilization.
 
 Only when mechanical evidence, build diagnostics, WinUI triage, resource resolution, and generated XAML provide no actionable cause may you bisect XAML. Disable approximately half of one root subtree per probe, change only that dimension, and stop after four probes. Restore the complete page before applying the root-cause fix.
 
@@ -257,24 +249,24 @@ After progressive coverage, close the development process and run the
 following command with the same build-selection options:
 
 ```powershell
-winapp-migrate uwp enforce run "<target>" --force-replay --discriminating-evidence "<new-target-relative-evidence>"
+winapp-migrate uwp closure attest "<target>" --force-replay --discriminating-evidence "<new-target-relative-evidence>"
 ```
 
 The evidence must be new, fresh discriminating content, not a touched or renamed
-copy. Force replay bypasses neither no-progress guards nor stage budgets.
+copy. Force replay bypasses neither no-progress guards nor evidence freshness.
 
 Replay the primary sentinel first, then every runnable state in order. Only
 evidence created after this recorded replay start may set target states to
 `passed` and resolve runtime findings.
 
 After a state-plan update completes the active slice, immediately run
-`winapp-migrate uwp enforce assess "<target>"` before working on the next
-slice. This persists the completion event and starts the next slice's budget;
+`winapp-migrate uwp closure assess "<target>"` before working on the next
+slice. This persists the completion event and activates the next slice;
 do not batch an unobserved phase transition with the next slice's edits.
 
 The replay attestation persists the stable run ID, launch command, returned
 primary PID, target fingerprint, and launch time. Discover the actual HWND
-through `winapp-migrate uwp enforce ui`; during closure, pass fresh
+through `winapp-migrate uwp closure capture`; during closure, pass fresh
 `--discriminating-evidence` for each justified UI operation. Include the HWND
 with the run ID in final action, tree, screenshot, and health evidence. Do not
 infer an HWND from launch JSON. Evidence from a replacement process cannot

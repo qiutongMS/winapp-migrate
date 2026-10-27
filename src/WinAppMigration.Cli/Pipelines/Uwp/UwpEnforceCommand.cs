@@ -13,9 +13,10 @@ internal sealed class UwpEnforceCommand : Command
 {
     public UwpEnforceCommand(IEnforcementProcessRunner processRunner)
         : base(
-            "enforce",
-            "Assess and enforce evidence-backed behavioral migration closure.")
+            "closure",
+            "Assess migration closure and produce fingerprint-bound canonical attestations through WinApp CLI.")
     {
+        Aliases.Add("enforce");
         Subcommands.Add(new AssessCommand());
         Subcommands.Add(new WaitCommand(processRunner));
         Subcommands.Add(new RunCommand(processRunner));
@@ -32,7 +33,7 @@ internal sealed class UwpEnforceCommand : Command
         internal WaitCommand(IEnforcementProcessRunner processRunner)
             : base(
                 "wait",
-                "Wait for the Runner to produce a durable terminal disposition. The product Runner owns deadline materialization; stdout contains one versioned JSON observation.")
+                "Deprecated compatibility command. Wait for a durable closure disposition or an optional host observation timeout; elapsed time never changes closure state.")
         {
             var target = TargetArgument();
             var attempts = AttemptsOption();
@@ -71,7 +72,7 @@ internal sealed class UwpEnforceCommand : Command
     private sealed class ConfigureCommand : Command
     {
         internal ConfigureCommand()
-            : base("configure", "Persist a validated policy with stage-specific operation ceilings and maximumProgressExtensionsPerUnit (0..1 per stage/slice) before operations start. Policy is then immutable.")
+            : base("configure", "Deprecated compatibility command. Persist legacy telemetry policy before operations start; policy limits do not authorize, stop, or finalize closure operations.")
         {
             var target = TargetArgument();
             var file = new Option<FileInfo?>("--policy")
@@ -104,7 +105,7 @@ internal sealed class UwpEnforceCommand : Command
     private sealed class AssessCommand : Command
     {
         internal AssessCommand()
-            : base("assess", "Observe the durable five-stage workflow without external tools. Reports semantic resolution, evidence freshness, active-account stage-budget decisions and immutable terminal run dispositions.")
+            : base("assess", "Assess deterministic migration checklist, evidence freshness, active semantic work, and durable closure disposition without invoking external tools.")
         {
             var target = TargetArgument();
             var attempts = AttemptsOption();
@@ -126,9 +127,10 @@ internal sealed class UwpEnforceCommand : Command
     {
         internal RunCommand(IEnforcementProcessRunner processRunner)
             : base(
-                "run",
-                "Run the next build/replay; semantic corrections retain their slice account, closure revalidates stale evidence, and terminal runs reject operations.")
+                "attest",
+                "Run the next checklist-authorized canonical build or replay through WinApp CLI and bind its attestation to the target fingerprint.")
         {
+            Aliases.Add("run");
             var target = TargetArgument();
             var winApp = new Option<string?>("--winapp")
             {
@@ -158,7 +160,7 @@ internal sealed class UwpEnforceCommand : Command
             };
             var forceReplay = new Option<bool>("--force-replay")
             {
-                Description = "Request another canonical replay; requires new --discriminating-evidence and never bypasses diagnosis, change-required or stage-budget decisions."
+                Description = "Request another canonical replay; requires new --discriminating-evidence and never bypasses diagnosis, target-change, or freshness requirements."
             };
             var discriminatingEvidence = DiscriminatingEvidenceOption();
             var attempts = AttemptsOption();
@@ -205,7 +207,7 @@ internal sealed class UwpEnforceCommand : Command
         internal DiagnoseCommand(IEnforcementProcessRunner processRunner)
             : base(
                 "diagnose",
-                "Run controlled WinApp CLI debug with a fresh build; only semantic-convergence or target-bootstrap with a runtime failure permits diagnosis.")
+                "Forward a checklist-authorized development diagnostic probe to WinApp CLI. Probe output is fingerprint-bound but never satisfies canonical build, replay, parity, or finalization gates.")
         {
             var target = TargetArgument();
             var winApp = WinAppOption();
@@ -265,9 +267,10 @@ internal sealed class UwpEnforceCommand : Command
     {
         internal UiCommand(IEnforcementProcessRunner processRunner)
             : base(
-                "ui",
-                "Invoke controlled target UI automation only in semantic-convergence or justified closure. Closure requires --discriminating-evidence. Place UI arguments after --.")
+                "capture",
+                "Forward checklist-authorized target UI capture to WinApp CLI as a development probe. Closure requires --discriminating-evidence. Place UI arguments after --.")
         {
+            Aliases.Add("ui");
             var target = TargetArgument();
             var winApp = WinAppOption();
             var discriminatingEvidence = DiscriminatingEvidenceOption();
@@ -296,9 +299,10 @@ internal sealed class UwpEnforceCommand : Command
     {
         internal SynchronizeCommand()
             : base(
-                "sync-report",
-                "Synchronize migration-report validation summaries from the state plan, then reassess; not a counted external operation.")
+                "finalize",
+                "Synchronize migration-report validation summaries from canonical closure evidence and reassess final parity.")
         {
+            Aliases.Add("sync-report");
             var target = TargetArgument();
             var attempts = AttemptsOption();
             Arguments.Add(target);
@@ -471,7 +475,7 @@ internal sealed class UwpEnforceCommand : Command
     private static Option<int?> AttemptsOption() =>
         new("--max-attempts")
         {
-            Description = "Legacy signature ceiling (1..10, default 2). Cannot override unchanged-target or persisted stage-budget guards."
+            Description = "Compatibility limit for grouping repeated failure signatures (1..10, default 2). Cannot override unchanged-target or evidence-freshness guards."
         };
 
     private static Option<string[]> DiscriminatingEvidenceOption() =>

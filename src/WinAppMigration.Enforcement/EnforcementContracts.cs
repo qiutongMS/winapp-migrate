@@ -5,6 +5,13 @@ using System.Text.Json.Serialization;
 
 namespace WinAppMigration.Enforcement;
 
+public static class MigrationArtifactClass
+{
+    public const string CanonicalAttestation = "canonical-attestation";
+    public const string DevelopmentProbe = "development-probe";
+    public const string Producer = "winapp-migrate";
+}
+
 public sealed class StatePlanDocument
 {
     public const string CurrentSchemaVersion = "1.0";
@@ -137,6 +144,12 @@ public sealed class BuildAttestation
     [JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
 
+    [JsonPropertyName("artifactClass")]
+    public string ArtifactClass { get; set; } = MigrationArtifactClass.CanonicalAttestation;
+
+    [JsonPropertyName("producer")]
+    public string Producer { get; set; } = MigrationArtifactClass.Producer;
+
     [JsonPropertyName("id")]
     public required string Id { get; set; }
 
@@ -186,6 +199,12 @@ public sealed class ReplayAttestation
 
     [JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
+
+    [JsonPropertyName("artifactClass")]
+    public string ArtifactClass { get; set; } = MigrationArtifactClass.CanonicalAttestation;
+
+    [JsonPropertyName("producer")]
+    public string Producer { get; set; } = MigrationArtifactClass.Producer;
 
     [JsonPropertyName("id")]
     public required string Id { get; set; }
@@ -338,6 +357,12 @@ public sealed class DiagnosticRunAttestation
     [JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
 
+    [JsonPropertyName("artifactClass")]
+    public string ArtifactClass { get; set; } = MigrationArtifactClass.DevelopmentProbe;
+
+    [JsonPropertyName("producer")]
+    public string Producer { get; set; } = MigrationArtifactClass.Producer;
+
     [JsonPropertyName("id")]
     public required string Id { get; set; }
 
@@ -352,6 +377,44 @@ public sealed class DiagnosticRunAttestation
 
     [JsonPropertyName("sliceId")]
     public string? SliceId { get; set; }
+
+    [JsonPropertyName("startedAt")]
+    public DateTimeOffset StartedAt { get; set; }
+
+    [JsonPropertyName("completedAt")]
+    public DateTimeOffset CompletedAt { get; set; }
+
+    [JsonPropertyName("command")]
+    public List<string> Command { get; set; } = [];
+
+    [JsonPropertyName("exitCode")]
+    public int ExitCode { get; set; }
+
+    [JsonPropertyName("stdout")]
+    public required string StandardOutputPath { get; set; }
+
+    [JsonPropertyName("stderr")]
+    public required string StandardErrorPath { get; set; }
+}
+
+public sealed class UiDevelopmentProbe
+{
+    public const string CurrentSchemaVersion = "1.0";
+
+    [JsonPropertyName("schemaVersion")]
+    public string SchemaVersion { get; set; } = CurrentSchemaVersion;
+
+    [JsonPropertyName("artifactClass")]
+    public string ArtifactClass { get; set; } = MigrationArtifactClass.DevelopmentProbe;
+
+    [JsonPropertyName("producer")]
+    public string Producer { get; set; } = MigrationArtifactClass.Producer;
+
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("targetFingerprint")]
+    public required string TargetFingerprint { get; set; }
 
     [JsonPropertyName("startedAt")]
     public DateTimeOffset StartedAt { get; set; }

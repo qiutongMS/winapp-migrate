@@ -256,7 +256,7 @@ public static class EnforcementEvaluator
             workflow = WorkflowController.Observe(input, sourceReady, buildFresh, replayFresh, slices, frontier);
             // Diagnosis and change-required cannot be hidden by a slice correction frontier.
             if (workflow.Frontier is not null &&
-                (workflow.Frontier.Kind == "stage-budget" || frontier?.Kind is not ("diagnosis-required" or "change-required")))
+                frontier?.Kind is not ("diagnosis-required" or "change-required"))
                 frontier = workflow.Frontier;
             activeSlice = workflow.ActiveSlice;
             AddGate(gates, "stage-budget",
@@ -288,7 +288,7 @@ public static class EnforcementEvaluator
             Build = input.Build,
             Replay = input.Replay
         };
-        WorkflowDispositions.Update(snapshot, input.Policy, input.GeneratedAt);
+        WorkflowDispositions.Update(snapshot, input.GeneratedAt);
         return snapshot;
     }
 

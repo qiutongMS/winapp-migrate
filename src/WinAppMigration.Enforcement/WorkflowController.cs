@@ -31,6 +31,7 @@ public static class WorkflowController
                 CompletedSliceIds = slices.Where(slice => slice.Resolved).Select(slice => slice.Id).ToList()
             }
             : Copy(input.Progress);
+        WorkflowDispositions.ResumeRetiredAuthorization(progress);
         var active = SemanticSlicePlanner.Select(slices, progress.Debt);
         var previousUnit = progress.Units.FirstOrDefault(unit => unit.Epochs.Any(epoch => epoch.ExitedAt is null));
 
@@ -75,24 +76,6 @@ public static class WorkflowController
         if (progress.OperationsStartedAt is null)
             progress.PolicyFingerprint = WorkflowValidation.PolicyFingerprint(input.Policy);
 
-        if (previousUnit is not null &&
-            !(previousUnit.SliceId is not null &&
-                slices.Any(slice => slice.Id == previousUnit.SliceId && slice.Criticality == StateCriticality.Optional) &&
-                progress.Debt.Any(debt => debt.SliceId == previousUnit.SliceId)))
-        {
-            var previousSlice = slices.FirstOrDefault(slice => slice.Id == previousUnit.SliceId);
-            var priorBudget = WorkflowBudgets.Evaluate(input.Policy, progress, previousUnit, input.GeneratedAt,
-                previousUnit.Stage != WorkflowStage.SemanticConvergence ||
-                    previousSlice?.Criticality != StateCriticality.Optional);
-            if (priorBudget.Decision is "stage-budget" or "blocked-required" or "continue-with-debt" or "total-budget-exhausted")
-            {
-                progress.Stage = previousUnit.Stage;
-                progress.ActiveSliceId = previousUnit.SliceId;
-                if (priorBudget.Decision == "continue-with-debt" && previousSlice is not null)
-                    Defer(progress, previousSlice, priorBudget.Reason);
-                return new WorkflowAssessment(progress, previousSlice, priorBudget, BudgetFrontier(priorBudget, previousSlice));
-            }
-        }
         progress.Stage = NextStage(
             progress.Stage, sourceReady, buildFresh, replayFresh,
             input.Replay is { Success: true } && input.Build is { Success: true } &&
@@ -107,24 +90,9 @@ public static class WorkflowController
         var unit = CurrentUnit(progress, active?.Id);
         Activate(progress, unit, input.GeneratedAt, input.TargetFingerprint);
 
-        // A semantic correction reuses its slice budget, including when closure is reopened.
-        var operation = next?.Kind switch
-        {
-            "build" => (WorkflowOperation?)WorkflowOperation.Build,
-            "replay" => WorkflowOperation.Replay,
-            _ => null
-        };
-        var required = progress.Stage != WorkflowStage.SemanticConvergence ||
-            active is null || active.Criticality == StateCriticality.Required;
-        var budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, input.GeneratedAt, required, operation);
+        var budget = WorkflowBudgets.Evaluate(
+            input.Policy, progress, unit, input.GeneratedAt);
         EnforcementFrontier? frontier = null;
-        if (budget.Decision is "stage-budget" or "blocked-required" or "continue-with-debt" or "total-budget-exhausted")
-        {
-            frontier = BudgetFrontier(budget, active);
-            if (budget.Decision == "continue-with-debt" && active is not null &&
-                active.Criticality == StateCriticality.Optional)
-                Defer(progress, active, budget.Reason);
-        }
         if (frontier is null && progress.Stage == WorkflowStage.SemanticConvergence &&
             next?.Kind is not ("diagnosis-required" or "change-required"))
         {
@@ -169,13 +137,6 @@ public static class WorkflowController
             };
         return new WorkflowAssessment(progress, active, budget, frontier);
     }
-
-    private static EnforcementFrontier BudgetFrontier(WorkflowBudgetSnapshot budget, SemanticSlice? slice) => new()
-    {
-        Kind = budget.Decision == "continue-with-debt" ? "continue-with-debt" : "stage-budget",
-        Reason = budget.Reason, SliceId = slice?.Id,
-        StateIds = slice?.States.Select(state => state.Id).ToList() ?? []
-    };
 
     public static WorkflowUnitProgress CurrentUnit(WorkflowProgress progress, string? activeSlice)
     {
@@ -265,79 +226,27 @@ public static class WorkflowBudgets
 {
     public static WorkflowBudgetSnapshot Evaluate(
         EnforcementPolicy policy, WorkflowProgress progress, WorkflowUnitProgress unit,
-        DateTimeOffset now, bool required, WorkflowOperation? operation = null)
+        DateTimeOffset now)
     {
         var stage = policy.For(unit.Stage);
         var elapsed = unit.ActiveMinutes(now);
         var total = progress.StartedAt is null ? 0 : (now - progress.StartedAt.Value).TotalMinutes;
         var measured = progress.Events.Any(item => item.Stage == unit.Stage && item.SliceId == unit.SliceId &&
             unit.StartedAt is not null && item.RecordedAt >= unit.StartedAt);
-        var decision = "within-budget";
-        var reason = "Stage and total budgets permit the next operation.";
-        var reasonCode = "within-budget";
-        var ceiling = operation is not null &&
-            unit.Operations.For(operation.Value) >= stage.Operations.For(operation.Value);
-        var overCeiling = Enum.GetValues<WorkflowOperation>().Any(kind =>
-            unit.Operations.For(kind) > stage.Operations.For(kind));
-        if (total >= policy.TotalHardMinutes)
-        {
-            decision = "total-budget-exhausted";
-            reasonCode = "total-hard-limit";
-            reason = "Total workflow hard limit expired; no more controlled operations are permitted.";
-        }
-        else if (unit.BlockedAt is not null || elapsed >= stage.HardMinutes || ceiling || overCeiling)
-        {
-            decision = unit.BlockedAt is not null || required ? "blocked-required" : "continue-with-debt";
-            reasonCode = ceiling || overCeiling ? "operation-ceiling" : "unit-hard-limit";
-            reason = unit.BlockedReason ?? (ceiling || overCeiling
-                    ? $"Stage operation ceiling reached for {operation?.ToString() ?? "recorded operations"}."
-                    : "Stage hard limit expired.");
-            if (unit.BlockedAt is null)
-            {
-                reason += required ? " Required work is blocked." : " Optional work must be deferred with debt.";
-                if (required)
-                {
-                    unit.BlockedAt = now;
-                    unit.BlockedReason = reason;
-                }
-            }
-        }
-        else
-        {
-            if (elapsed >= stage.SoftMinutes && unit.ExtensionGrantedAt is null &&
-                measured && policy.MaximumProgressExtensionsPerUnit > 0)
-                unit.ExtensionGrantedAt = now;
-            var soft = stage.SoftMinutes + (unit.ExtensionGrantedAt is null ? 0 : policy.ExtensionMinutes);
-            if (elapsed >= soft)
-            {
-                decision = "stage-budget";
-                reasonCode = "stage-soft-limit";
-                reason = "Stage soft limit expired without an available measured-progress extension. Replan or stop; assertions of near-completion do not authorize operations.";
-            }
-            else if (unit.ExtensionGrantedAt is not null)
-            {
-                decision = "extension-granted";
-                reasonCode = "measured-progress-extension";
-                reason = "Measured progress authorized this budget unit's one configured extension; stage and total hard limits remain unchanged.";
-            }
-        }
         var totals = new OperationCounts();
         foreach (var item in progress.Operations) totals.Increment(item.Kind);
         return new WorkflowBudgetSnapshot
         {
             Stage = unit.Stage,
             SliceId = unit.SliceId,
-            Decision = decision,
-            Reason = reason,
-            ReasonCode = reasonCode,
+            Decision = "within-budget",
+            Reason = "Elapsed time and operation totals are telemetry only; operation compatibility and evidence freshness govern authorization.",
+            ReasonCode = "within-budget",
             ElapsedMinutes = Math.Max(0, elapsed),
             TotalElapsedMinutes = Math.Max(0, total),
-            SoftDeadline = unit.Epochs.LastOrDefault() is { ExitedAt: null }
-                ? now.AddMinutes(Math.Max(0, Math.Min(stage.HardMinutes,
-                    stage.SoftMinutes + (unit.ExtensionGrantedAt is null ? 0 : policy.ExtensionMinutes)) - elapsed)) : null,
-            HardDeadline = unit.Epochs.LastOrDefault() is { ExitedAt: null }
-                ? now.AddMinutes(Math.Max(0, stage.HardMinutes - elapsed)) : null,
-            TotalHardDeadline = progress.StartedAt?.AddMinutes(policy.TotalHardMinutes),
+            SoftDeadline = null,
+            HardDeadline = null,
+            TotalHardDeadline = null,
             ExtensionsUsed = unit.ExtensionGrantedAt is null ? 0 : 1,
             MeasuredProgress = measured,
             Operations = unit.Operations with { },

@@ -111,9 +111,23 @@ public static class WorkflowPersistence
     {
         if (progress is null) return (null, null);
         if (progress.SchemaVersion == WorkflowProgress.CurrentSchemaVersion)
+        {
+            WorkflowDispositions.ResumeRetiredAuthorization(progress);
             return (progress, WorkflowValidation.ProgressError(progress, policy, now));
+        }
+        if (progress.SchemaVersion == "2.0")
+        {
+            var legacyError = WorkflowValidation.Schema20ImportError(progress, policy, now);
+            if (legacyError is not null)
+                return (progress, $"Cannot safely import workflow progress schema 2.0: {legacyError}");
+            var imported20 = ImportToCurrent(progress);
+            var currentError = WorkflowValidation.ProgressError(imported20, policy, now);
+            return currentError is null
+                ? (imported20, null)
+                : (progress, $"Cannot safely import workflow progress schema 2.0: {currentError}");
+        }
         if (progress.SchemaVersion != "1.0")
-            return (progress, $"Unsupported workflow progress schema {progress.SchemaVersion}; supported schemas are 1.0 (explicit import) and 2.0.");
+            return (progress, $"Unsupported workflow progress schema {progress.SchemaVersion}; supported schemas are 1.0 and 2.0 (explicit import) and {WorkflowProgress.CurrentSchemaVersion}.");
         if (progress.Units is null || progress.Units.Count != 1 ||
             progress.Units.Any(unit => unit is null || unit.Epochs is null || unit.Epochs.Count > 0 ||
                 unit.Stage != progress.Stage || unit.SliceId !=
@@ -125,6 +139,9 @@ public static class WorkflowPersistence
             SchemaVersion = WorkflowProgress.CurrentSchemaVersion,
             Units = progress.Units.Select(unit => unit with
             {
+                ExtensionGrantedAt = null,
+                BlockedAt = null,
+                BlockedReason = null,
                 Operations = unit.Operations is null ? null! : unit.Operations with { },
                 Epochs = [new WorkflowActivationEpoch
                 {
@@ -145,6 +162,51 @@ public static class WorkflowPersistence
         var error = WorkflowValidation.ProgressError(imported, policy, now);
         return error is null ? (imported, null) : (progress, $"Cannot safely import workflow progress schema 1.0: {error}");
     }
+
+    private static WorkflowProgress ImportToCurrent(WorkflowProgress progress)
+    {
+        var imported = progress with
+        {
+            SchemaVersion = WorkflowProgress.CurrentSchemaVersion,
+            UnresolvedRequiredStates = [.. progress.UnresolvedRequiredStates],
+            CompletedSliceIds = [.. progress.CompletedSliceIds],
+            Units = progress.Units.Select(unit => unit with
+            {
+                ExtensionGrantedAt = null,
+                BlockedAt = null,
+                BlockedReason = null,
+                Operations = unit.Operations with { },
+                Epochs = unit.Epochs.Select(epoch => epoch with { }).ToList()
+            }).ToList(),
+            Slices = progress.Slices.Select(slice => slice with { }).ToList(),
+            Events = [.. progress.Events],
+            Operations = [.. progress.Operations],
+            Debt = progress.Debt.Where(debt => !IsRetiredAuthorizationDebt(debt))
+                .Select(debt => debt with { }).ToList()
+        };
+        WorkflowDispositions.ResumeRetiredAuthorization(imported);
+        if (imported.Disposition is { Kind: "continue-with-debt", ReasonCode: "optional-debt" } &&
+            imported.Debt.Count == 0)
+        {
+            imported.Disposition = new RunDisposition
+            {
+                Kind = "continue",
+                ReasonCode = "retired-authorization-resumed",
+                Terminal = false,
+                Retryable = true,
+                Finalization = "not-ready"
+            };
+        }
+        return imported;
+    }
+
+    private static bool IsRetiredAuthorizationDebt(WorkflowDebt debt) =>
+        debt.Reason.StartsWith(
+            "Stage hard limit expired.",
+            StringComparison.Ordinal) ||
+        debt.Reason.StartsWith(
+            "Stage operation ceiling reached",
+            StringComparison.Ordinal);
 
     private static WorkflowProgress? ImportLegacy(
         EnforcementPolicy policy, string fingerprint, BuildAttestation? build,

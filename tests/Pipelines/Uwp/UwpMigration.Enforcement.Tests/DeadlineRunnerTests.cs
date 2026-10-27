@@ -10,86 +10,40 @@ public sealed partial class RunnerAcceptanceTests
     private static readonly DateTimeOffset DeadlineNow = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
-    [DataRow(WorkflowOperation.Build)]
-    [DataRow(WorkflowOperation.Replay)]
-    [DataRow(WorkflowOperation.DiagnosticRun)]
-    [DataRow(WorkflowOperation.UiAction)]
-    public async Task Deadline_ExpiryAfterAssessmentPreventsEveryProcessInvocation(WorkflowOperation operation)
+    [DataRow(0)]
+    [DataRow(145)]
+    [DataRow(151)]
+    public async Task ElapsedTime_DoesNotCancelProcessOrBlockWorkflow(int previousMinutes)
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var clock = new ManualTimeProvider(DeadlineNow);
-        if (operation != WorkflowOperation.Build)
-            await new UwpEnforcementRunner(SuccessfulLaunch(), clock).RunAsync(fixture.Root, new UwpEnforcementOptions());
-        await SeedDeadlineAsync(fixture, 145);
-        clock.OnTimerCreated = () => clock.Advance(TimeSpan.FromMinutes(5));
-        var process = new DelegateProcessRunner(_ => Task.FromResult(BuildSuccess()));
-        var runner = new UwpEnforcementRunner(process, clock);
-        const string evidence = ".migration-evidence/deadline.txt";
-        await File.WriteAllTextAsync(fixture.Path(evidence), "A discriminating observation before deadline.");
-        Func<Task> invoke = operation switch
-        {
-            WorkflowOperation.Build or WorkflowOperation.Replay => () => runner.RunAsync(fixture.Root,
-                new UwpEnforcementOptions { ForceReplay = true, DiscriminatingEvidence = [evidence] }),
-            WorkflowOperation.DiagnosticRun => () => runner.DiagnoseAsync(fixture.Root,
-                new UwpEnforcementOptions { DiscriminatingEvidence = [evidence] }),
-            _ => () => runner.InvokeUiAsync(fixture.Root, "winapp", ["list"], [evidence])
-        };
-
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(invoke);
-
-        Assert.AreEqual(0, process.CallCount);
-        var snapshot = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
-        AssertDeadline(snapshot, DeadlineNow.AddMinutes(5), 5);
-        Assert.AreEqual(operation, snapshot.Workflow!.Operations.Last().Kind);
-    }
-
-    [TestMethod]
-    [DataRow(0, true)]
-    [DataRow(145, true)]
-    [DataRow(145, false)]
-    public async Task Deadline_RemainingBudgetCancelsProcessAndDurablyTerminalizes(
-        int previousMinutes, bool honorsCancellation)
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var clock = new ManualTimeProvider(DeadlineNow);
-        var policy = EnforcementPolicy.Balanced();
-        policy.MechanicalStabilization.HardMinutes = policy.TotalHardMinutes;
-        await UwpEnforcementRunner.ConfigurePolicyAsync(fixture.Root, policy);
-        await SeedDeadlineAsync(fixture, previousMinutes);
-        var remaining = TimeSpan.FromMinutes(150 - previousMinutes);
-        using var callerCancellation = new CancellationTokenSource();
+        await SeedElapsedTimeAsync(fixture, previousMinutes);
+        var invocation = 0;
         var process = new DelegateProcessRunner(token =>
         {
-            Assert.IsTrue(token.CanBeCanceled);
-            Assert.AreNotEqual(callerCancellation.Token, token);
-            clock.Advance(remaining - TimeSpan.FromSeconds(1));
             Assert.IsFalse(token.IsCancellationRequested);
-            clock.Advance(TimeSpan.FromSeconds(1));
-            Assert.IsTrue(token.IsCancellationRequested);
-            Assert.IsFalse(callerCancellation.IsCancellationRequested);
-            if (honorsCancellation) token.ThrowIfCancellationRequested();
-            return Task.FromResult(BuildSuccess());
+            clock.Advance(TimeSpan.FromMinutes(200));
+            invocation++;
+            return Task.FromResult(invocation == 1 ? BuildSuccess() : ReplaySuccess());
         });
-        var runner = new UwpEnforcementRunner(process, clock);
 
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            runner.RunAsync(fixture.Root, new UwpEnforcementOptions(), callerCancellation.Token));
+        var snapshot = await new UwpEnforcementRunner(process, clock).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
 
-        var snapshot = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
-        AssertDeadline(snapshot, DeadlineNow + remaining, remaining.TotalMinutes);
-        Assert.AreEqual(1, snapshot.Workflow!.Units.Single().Operations.Builds);
-        Assert.IsFalse(File.Exists(fixture.Path(EnforcementStore.BuildAttestationPath)));
-        Assert.IsNull(WorkflowValidation.ProgressError(snapshot.Workflow,
-            await fixture.LoadAsync<EnforcementPolicy>(EnforcementStore.PolicyPath), clock.GetUtcNow()));
-        var observed = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
-        Assert.AreEqual("total-budget-exhausted", observed.Disposition?.Kind);
-        Assert.AreEqual(1, process.CallCount);
+        Assert.AreEqual(2, process.CallCount);
+        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
+        Assert.AreEqual("continue", snapshot.Disposition?.Kind);
+        Assert.IsFalse(snapshot.Disposition!.Terminal);
+        Assert.IsNull(snapshot.Budget!.SoftDeadline);
+        Assert.IsNull(snapshot.Budget.HardDeadline);
+        Assert.IsNull(snapshot.Budget.TotalHardDeadline);
+        Assert.IsGreaterThanOrEqualTo(previousMinutes + 400, snapshot.Budget.TotalElapsedMinutes);
     }
 
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Deadline_InfrastructureFailurePersistsActualElapsedTime(bool returnsFailure)
+    public async Task InfrastructureFailurePersistsActualElapsedTime(bool returnsFailure)
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var clock = new ManualTimeProvider(DeadlineNow);
@@ -104,7 +58,8 @@ public sealed partial class RunnerAcceptanceTests
         });
         var runner = new UwpEnforcementRunner(process, clock);
 
-        await Assert.ThrowsExactlyAsync<IOException>(() => runner.RunAsync(fixture.Root, new UwpEnforcementOptions()));
+        await Assert.ThrowsExactlyAsync<IOException>(() =>
+            runner.RunAsync(fixture.Root, new UwpEnforcementOptions()));
 
         var snapshot = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         var failedAt = DeadlineNow.AddMinutes(5);
@@ -120,18 +75,12 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsNull(snapshot.Budget.HardDeadline);
         Assert.IsNull(WorkflowValidation.ProgressError(snapshot.Workflow,
             await fixture.LoadAsync<EnforcementPolicy>(EnforcementStore.PolicyPath), failedAt));
-        clock.Advance(TimeSpan.FromMinutes(10));
-        var observed = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
-        Assert.AreEqual("infrastructure-failure", observed.Disposition?.Kind);
-        Assert.AreEqual(failedAt, observed.Workflow!.LastObservedAt);
-        Assert.AreEqual(5, observed.Workflow.Units.Single().ActiveMinutes(clock.GetUtcNow()));
-        Assert.AreEqual(1, process.CallCount);
     }
 
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Deadline_CallerCancellationBeforeDeadlineIsNotGlobalTimeout(bool honorsCancellation)
+    public async Task CallerCancellationStillCancelsProcess(bool honorsCancellation)
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var clock = new ManualTimeProvider(DeadlineNow);
@@ -150,36 +99,57 @@ public sealed partial class RunnerAcceptanceTests
 
         var snapshot = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         Assert.IsFalse(snapshot.Disposition!.Terminal);
-        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        Assert.IsFalse(progress.Disposition!.Terminal);
         Assert.IsFalse(File.Exists(fixture.Path(EnforcementStore.BuildAttestationPath)));
-        Assert.IsFalse(File.Exists(fixture.Path(EnforcementStore.ReplayAttestationPath)));
         Assert.AreEqual(1, snapshot.Workflow!.Units.Single().Operations.Builds);
         Assert.IsNull(snapshot.Workflow.Units.Single().Epochs.Single().ExitedAt);
         Assert.AreEqual(1, process.CallCount);
     }
 
     [TestMethod]
-    public async Task Deadline_ExpiryTakesPrecedenceOverConcurrentInfrastructureFailure()
+    [DataRow("total-budget-exhausted", "total-hard-limit")]
+    [DataRow("blocked-required", "unit-hard-limit")]
+    [DataRow("blocked-required", "operation-ceiling")]
+    public async Task LegacySchema20AuthorizationTerminalResumesAndInvokesWinApp(
+        string kind, string reasonCode)
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var clock = new ManualTimeProvider(DeadlineNow);
-        await SeedDeadlineAsync(fixture, 145);
-        var process = new DelegateProcessRunner(_ =>
+        await SeedElapsedTimeAsync(fixture, 151);
+        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
+        progress.SchemaVersion = "2.0";
+        var disposition = new RunDisposition
         {
-            clock.Advance(TimeSpan.FromMinutes(5));
-            throw new IOException("Process transport failed at the deadline.");
-        });
+            Kind = kind,
+            ReasonCode = reasonCode,
+            Terminal = true,
+            Retryable = false,
+            Finalization = "blocked"
+        };
+        progress.Disposition = disposition;
+        var unit = progress.Units.Single();
+        unit.BlockedAt = DeadlineNow;
+        unit.BlockedReason = "Retired time authorization.";
+        WorkflowController.CloseActiveEpochs(progress, DeadlineNow, $"terminal:{kind}");
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
+        var state = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
+        state.GeneratedAt = DeadlineNow;
+        state.Status = "blocked";
+        state.Workflow = progress;
+        state.Disposition = disposition;
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.StatePath, state);
+        var process = SuccessfulLaunch();
 
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            new UwpEnforcementRunner(process, clock).RunAsync(fixture.Root, new UwpEnforcementOptions()));
+        var resumed = await new UwpEnforcementRunner(process, new ManualTimeProvider(DeadlineNow))
+            .RunAsync(fixture.Root, new UwpEnforcementOptions());
 
-        AssertDeadline(await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath),
-            DeadlineNow.AddMinutes(5), 5);
-        Assert.AreEqual(1, process.CallCount);
+        Assert.AreEqual(2, process.CallCount);
+        Assert.AreEqual("continue", resumed.Disposition?.Kind);
+        Assert.IsFalse(resumed.Disposition!.Terminal);
+        Assert.AreEqual("3.0", resumed.Workflow?.SchemaVersion);
+        Assert.AreEqual("within-budget", resumed.Budget?.Decision);
+        Assert.IsTrue(resumed.Workflow!.Units.All(account => account.BlockedAt is null));
     }
 
-    private static async Task SeedDeadlineAsync(RunnerFixture fixture, int previousMinutes)
+    private static async Task SeedElapsedTimeAsync(RunnerFixture fixture, int previousMinutes)
     {
         if (!File.Exists(fixture.Path(EnforcementStore.ProgressPath)))
             await UwpEnforcementRunner.AssessAsync(fixture.Root);
@@ -196,23 +166,6 @@ public sealed partial class RunnerAcceptanceTests
             }).ToList();
         }
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
-    }
-
-    private static void AssertDeadline(EnforcementSnapshot snapshot, DateTimeOffset observedAt, double activeMinutes)
-    {
-        Assert.AreEqual("total-budget-exhausted", snapshot.Disposition?.Kind);
-        Assert.AreEqual("total-hard-limit", snapshot.Disposition?.ReasonCode);
-        Assert.IsTrue(snapshot.Disposition!.Terminal);
-        Assert.IsFalse(snapshot.Disposition.Retryable);
-        Assert.IsEmpty(snapshot.Disposition.AllowedOperations);
-        Assert.AreEqual("blocked", snapshot.Status);
-        Assert.AreEqual(observedAt, snapshot.GeneratedAt);
-        Assert.AreEqual(observedAt, snapshot.Workflow!.LastObservedAt);
-        Assert.IsTrue(snapshot.Workflow.Units.SelectMany(unit => unit.Epochs).All(epoch => epoch.ExitedAt is not null));
-        Assert.AreEqual("total-budget-exhausted", snapshot.Budget?.Decision);
-        Assert.AreEqual("blocked", snapshot.Gates.Single(gate => gate.Id == "stage-budget").Status);
-        Assert.AreEqual(activeMinutes, snapshot.Budget!.ElapsedMinutes);
-        Assert.AreEqual(150, snapshot.Budget.TotalElapsedMinutes);
     }
 
     private sealed class DelegateProcessRunner(Func<CancellationToken, Task<EnforcementProcessResult>> invoke)
@@ -244,7 +197,8 @@ public sealed partial class RunnerAcceptanceTests
                 if (timer.DueAt <= _now) timer.Fire();
         }
 
-        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        public override ITimer CreateTimer(
+            TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = new ManualTimer(this, callback, state);
             _timers.Add(timer);
@@ -255,7 +209,8 @@ public sealed partial class RunnerAcceptanceTests
             return timer;
         }
 
-        private sealed class ManualTimer(ManualTimeProvider clock, TimerCallback callback, object? state) : ITimer
+        private sealed class ManualTimer(
+            ManualTimeProvider clock, TimerCallback callback, object? state) : ITimer
         {
             private TimeSpan _period;
             private bool _disposed;

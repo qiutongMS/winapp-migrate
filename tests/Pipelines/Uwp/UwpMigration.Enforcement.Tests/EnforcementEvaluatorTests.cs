@@ -9,6 +9,29 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class EnforcementEvaluatorTests
 {
     [TestMethod]
+    [DataRow("build")]
+    [DataRow("replay")]
+    public void ArtifactClassification_DevelopmentProbeCannotSatisfyCanonicalGate(
+        string artifact)
+    {
+        using var fixture = new EvaluatorFixture();
+        var input = fixture.ClosedInput();
+        if (artifact == "build")
+            input.Build!.ArtifactClass = MigrationArtifactClass.DevelopmentProbe;
+        else
+            input.Replay!.ArtifactClass = MigrationArtifactClass.DevelopmentProbe;
+
+        var snapshot = EnforcementEvaluator.Evaluate(input);
+
+        Assert.AreEqual("blocked",
+            snapshot.Gates.Single(gate => gate.Id == "enforcement-artifacts").Status);
+        Assert.AreEqual("blocked",
+            snapshot.Gates.Single(gate => gate.Id ==
+                (artifact == "build" ? "fresh-build" : "canonical-replay")).Status);
+        Assert.AreNotEqual("passed", snapshot.Status);
+    }
+
+    [TestMethod]
     public void Evaluate_MissingStatePlanFailsClosed()
     {
         using var fixture = new EvaluatorFixture();

@@ -257,7 +257,7 @@ public sealed record WorkflowDebt
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowProgress
 {
-    public const string CurrentSchemaVersion = "2.0";
+    public const string CurrentSchemaVersion = "3.0";
 
     [JsonRequired, JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;

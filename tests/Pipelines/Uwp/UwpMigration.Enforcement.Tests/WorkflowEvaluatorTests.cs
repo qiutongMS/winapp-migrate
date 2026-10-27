@@ -126,38 +126,39 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Budget_SoftExpiryWithoutProgressRequiresDecision()
+    [DataRow(16)]
+    [DataRow(26)]
+    [DataRow(151)]
+    public void Telemetry_ElapsedTimeDoesNotChangeAuthorization(int minutes)
     {
         using var fixture = new EvaluatorFixture();
-        var snapshot = EnforcementEvaluator.Evaluate(ExpiredInput(fixture, 16));
-        Assert.AreEqual("stage-budget", snapshot.Frontier?.Kind);
-        Assert.AreEqual("stage-budget", snapshot.Budget?.Decision);
+        var snapshot = EnforcementEvaluator.Evaluate(ExpiredInput(fixture, minutes));
+        Assert.AreEqual("state", snapshot.Frontier?.Kind);
+        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
         Assert.IsFalse(snapshot.Budget!.MeasuredProgress);
-        Assert.IsNotNull(snapshot.Budget.HardDeadline);
-        Assert.IsNotNull(snapshot.Budget.TotalHardDeadline);
+        Assert.AreEqual(minutes, snapshot.Budget.ElapsedMinutes);
+        Assert.AreEqual(minutes, snapshot.Budget.TotalElapsedMinutes);
+        Assert.IsNull(snapshot.Budget.SoftDeadline);
+        Assert.IsNull(snapshot.Budget.HardDeadline);
+        Assert.IsNull(snapshot.Budget.TotalHardDeadline);
+        Assert.IsFalse(snapshot.Disposition!.Terminal);
     }
 
     [TestMethod]
-    public void Budget_TargetChangeGrantsOnlyOneMeasuredExtension()
+    public void Telemetry_TargetChangeIsMeasuredWithoutAuthorizingAnExtension()
     {
         using var fixture = new EvaluatorFixture();
         var input = ExpiredInput(fixture, 16);
         input.Policy.SemanticConvergence.HardMinutes = 40;
-        var extended = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.AreEqual("extension-granted", extended.Budget?.Decision);
-        Assert.AreEqual(1, extended.Budget!.ExtensionsUsed);
-        Assert.AreEqual("build", extended.Frontier?.Kind);
-        var expired = EnforcementEvaluator.Evaluate(input with
-        {
-            TargetFingerprint = "another-correction", Progress = extended.Workflow,
-            GeneratedAt = input.GeneratedAt.AddMinutes(10)
-        });
-        Assert.AreEqual("stage-budget", expired.Budget?.Decision);
-        Assert.AreEqual(1, expired.Budget!.ExtensionsUsed);
+        var observed = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
+        Assert.AreEqual("within-budget", observed.Budget?.Decision);
+        Assert.AreEqual(0, observed.Budget!.ExtensionsUsed);
+        Assert.IsTrue(observed.Budget.MeasuredProgress);
+        Assert.AreEqual("build", observed.Frontier?.Kind);
     }
 
     [TestMethod]
-    public void Budget_CompletedDiagnosisIsMeasuredProgress()
+    public void Telemetry_CompletedDiagnosisIsMeasuredProgress()
     {
         using var fixture = new EvaluatorFixture();
         var input = ExpiredInput(fixture, 16);
@@ -170,45 +171,22 @@ public sealed partial class EnforcementEvaluatorTests
             Diagnosis = Diagnosis(recorded.AddSeconds(1))
         });
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("extension-granted", snapshot.Budget?.Decision);
+        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
+        Assert.AreEqual(0, snapshot.Budget!.ExtensionsUsed);
         Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
         Assert.IsTrue(snapshot.Workflow!.Events.Any(item => item.Kind == "diagnosis-completed"));
     }
 
     [TestMethod]
-    [DataRow(false, "blocked-required")]
-    [DataRow(true, "continue-with-debt")]
-    public void Budget_HardLimitDistinguishesRequiredAndOptional(bool optional, string decision)
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = ExpiredInput(fixture, 26);
-        if (optional) input.StatePlan!.States[0].Criticality = StateCriticality.Optional;
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual(decision, snapshot.Budget?.Decision);
-        Assert.AreEqual(optional ? "continue-with-debt" : "stage-budget", snapshot.Frontier?.Kind);
-        Assert.AreEqual(optional ? 1 : 0, snapshot.Workflow!.Debt.Count);
-        Assert.AreEqual("unverified", input.StatePlan!.States[0].Target.Status);
-    }
-
-    [TestMethod]
-    public void Budget_TotalHardLimitOverridesNewSlice()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = ExpiredInput(fixture, 1);
-        input.Progress!.StartedAt = input.GeneratedAt.AddMinutes(-151);
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("total-budget-exhausted", snapshot.Budget?.Decision);
-        StringAssert.Contains(snapshot.Budget!.Reason, "Total workflow hard limit");
-    }
-
-    [TestMethod]
-    public void Budget_OperationCeilingsUseSemanticUnits()
+    public void Telemetry_OperationTotalsDoNotAuthorizeSemanticUnits()
     {
         using var fixture = new EvaluatorFixture();
         var input = SemanticInput(fixture) with { TargetFingerprint = "corrected" };
         input.Policy.SemanticConvergence.Operations.Builds = 0;
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("blocked-required", snapshot.Budget?.Decision);
+        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
+        Assert.AreEqual("build", snapshot.Frontier?.Kind);
+        Assert.IsFalse(snapshot.Disposition!.Terminal);
         Assert.AreEqual(0, snapshot.Budget!.Operations.Builds);
         Assert.AreEqual(0, snapshot.Budget.OperationCeilings.Builds);
         Assert.AreEqual(2, snapshot.Budget.OperationCeilings.Replays);
@@ -350,40 +328,40 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Budget_HardBlockedSliceCannotEscapeByCompletingItLate()
+    public void Telemetry_ElapsedTimeCannotFreezeCompletedSlice()
     {
         using var fixture = new EvaluatorFixture();
         var input = ExpiredInput(fixture, 26);
-        var blocked = EnforcementEvaluator.Evaluate(input);
+        var observed = EnforcementEvaluator.Evaluate(input);
         input.StatePlan!.States[0].Target.Status = "passed";
-        var late = EnforcementEvaluator.Evaluate(input with { Progress = blocked.Workflow });
-        Assert.AreEqual(blocked.Disposition, late.Disposition);
-        Assert.AreEqual(WorkflowStage.SemanticConvergence, late.Stage);
-        Assert.AreEqual("run-terminal", late.Frontier?.Kind);
-        Assert.IsNotNull(late.Workflow!.Units[0].BlockedAt);
+        var completed = EnforcementEvaluator.Evaluate(input with { Progress = observed.Workflow });
+        Assert.AreEqual(WorkflowStage.Closure, completed.Stage);
+        Assert.AreNotEqual("blocked-required", completed.Disposition?.Kind);
+        Assert.AreNotEqual("total-budget-exhausted", completed.Disposition?.Kind);
+        Assert.IsTrue(completed.Workflow!.Units.All(unit => unit.BlockedAt is null));
     }
 
     [TestMethod]
-    public void Budget_EachSliceCanReceiveItsOwnMeasuredExtension()
+    public void Telemetry_EachSliceTracksElapsedTimeWithoutExtensions()
     {
         using var fixture = new EvaluatorFixture();
         var input = ExpiredInput(fixture, 16);
         input.StatePlan!.States.Add(State("second"));
-        var extended = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.AreEqual(1, extended.Budget!.ExtensionsUsed);
+        var observed = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
+        Assert.AreEqual(0, observed.Budget!.ExtensionsUsed);
         input.StatePlan.States[0].Target.Status = "passed";
-        var next = EnforcementEvaluator.Evaluate(input with { Progress = extended.Workflow });
+        var next = EnforcementEvaluator.Evaluate(input with { Progress = observed.Workflow });
         Assert.AreEqual("second", next.ActiveSlice);
-        var second = next.Workflow!.Units.Single(unit => unit.SliceId == "second");
-        var extendedAgain = EnforcementEvaluator.Evaluate(input with
+        var observedAgain = EnforcementEvaluator.Evaluate(input with
         {
             Progress = next.Workflow, TargetFingerprint = "another-correction",
             GeneratedAt = input.GeneratedAt.AddMinutes(16)
         });
-        Assert.AreEqual("extension-granted", extendedAgain.Budget?.Decision);
-        Assert.AreEqual(1, extendedAgain.Budget!.ExtensionsUsed);
-        Assert.AreEqual(2, extendedAgain.Workflow!.Units.Count(unit => unit.ExtensionGrantedAt is not null));
-        Assert.IsNull(WorkflowValidation.ProgressError(extendedAgain.Workflow, input.Policy, input.GeneratedAt.AddMinutes(16)));
+        Assert.AreEqual("within-budget", observedAgain.Budget?.Decision);
+        Assert.AreEqual(0, observedAgain.Budget!.ExtensionsUsed);
+        Assert.IsTrue(observedAgain.Budget.MeasuredProgress);
+        Assert.IsTrue(observedAgain.Workflow!.Units.All(unit => unit.ExtensionGrantedAt is null));
+        Assert.IsNull(WorkflowValidation.ProgressError(observedAgain.Workflow, input.Policy, input.GeneratedAt.AddMinutes(16)));
     }
 
     [TestMethod]
@@ -543,7 +521,7 @@ public sealed partial class EnforcementEvaluatorTests
         var input = ExpiredInput(fixture, 16);
         input.Policy.MaximumProgressExtensionsPerUnit = 0;
         var snapshot = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.AreEqual("stage-budget", snapshot.Budget?.Decision);
+        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
         var unit = snapshot.Workflow!.Units.Single();
         unit.ExtensionGrantedAt = input.GeneratedAt;
         Assert.IsNotNull(WorkflowValidation.ProgressError(snapshot.Workflow, input.Policy, input.GeneratedAt));
