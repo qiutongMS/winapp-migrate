@@ -3,6 +3,7 @@
 
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 using UwpMigration.Contracts;
 
@@ -228,6 +229,14 @@ public static partial class MechanicalMigration
                 }
             }
 
+            if (request.PackageIdentity is { } packageIdentity
+                && !TryApplyPackageIdentity(targetRoot, packageIdentity, out var identityError))
+            {
+                Console.Out.WriteLine(
+                    $"[ERROR] Could not apply the requested package identity: {identityError}");
+                return 1;
+            }
+
             var targetProject = Path.Combine(targetRoot, Path.GetRelativePath(stagingRoot, stagedProject!));
             var report = new MigrationReport
             {
@@ -238,7 +247,7 @@ public static partial class MechanicalMigration
                 },
                 Target = new MigrationProject
                 {
-                    Root = NormalizePath(targetRoot),
+                    Root = request.PortableReport ? "." : NormalizePath(targetRoot),
                     ProjectFile = NormalizePath(Path.GetRelativePath(targetRoot, targetProject))
                 }
             };
@@ -440,6 +449,59 @@ public static partial class MechanicalMigration
             Console.Out.WriteLine("=====================================");
 
             return report.MechanicalVerification.Status == "passed" ? 0 : 1;
+        }
+
+        private static bool TryApplyPackageIdentity(
+            string targetRoot,
+            Guid packageIdentity,
+            out string error)
+        {
+            var manifestPath = Path.Combine(targetRoot, "Package.appxmanifest");
+            if (!File.Exists(manifestPath))
+            {
+                error = "Package.appxmanifest was not produced by the WinUI template.";
+                return false;
+            }
+
+            try
+            {
+                var document = XDocument.Load(
+                    manifestPath,
+                    LoadOptions.PreserveWhitespace);
+                var identity = document
+                    .Descendants()
+                    .FirstOrDefault(element =>
+                        element.Name.LocalName == "Identity"
+                        && element.Attribute("Name") is not null);
+                if (identity is null)
+                {
+                    error = "Package.appxmanifest has no Identity Name attribute.";
+                    return false;
+                }
+
+                var value = packageIdentity.ToString("D").ToUpperInvariant();
+                identity.SetAttributeValue("Name", value);
+                foreach (var phoneIdentity in document
+                    .Descendants()
+                    .Where(element =>
+                        element.Name.LocalName == "PhoneIdentity"
+                        && element.Attribute("PhoneProductId") is not null))
+                {
+                    phoneIdentity.SetAttributeValue("PhoneProductId", value);
+                }
+
+                document.Save(manifestPath, SaveOptions.DisableFormatting);
+                error = string.Empty;
+                return true;
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                or UnauthorizedAccessException
+                or System.Xml.XmlException)
+            {
+                error = exception.Message;
+                return false;
+            }
         }
 
         // ───────────────────────────── 2 ───────────────────────────────────────

@@ -1666,6 +1666,54 @@ public class MigrateCommandTests : MigrateCommandTestBase
     }
 
     [TestMethod]
+    public async Task Migrate_PortableReportAndPackageIdentityProduceRelocatableDeterministicOutput()
+    {
+        var source = await CreateUwpSourceAsync("PortableOutputApp");
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "portable-output"));
+        ArrangeTemplateCreation(target, "PortableOutputApp", template =>
+        {
+            File.WriteAllText(
+                Path.Combine(template.FullName, "Package.appxmanifest"),
+                """
+                <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+                         xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest">
+                  <Identity Name="11111111-1111-1111-1111-111111111111" />
+                  <mp:PhoneIdentity PhoneProductId="22222222-2222-2222-2222-222222222222" />
+                </Package>
+                """);
+        });
+        const string packageIdentity = "ABCDEF01-2345-6789-ABCD-EF0123456789";
+
+        var (exit, output) = await InvokeAsync(
+            source,
+            target,
+            "--portable-report",
+            "--package-identity",
+            packageIdentity);
+
+        Assert.AreEqual(0, exit, output);
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        Assert.AreEqual(
+            ".",
+            report.RootElement.GetProperty("target").GetProperty("root").GetString());
+        var manifest = XDocument.Load(Path.Combine(target.FullName, "Package.appxmanifest"));
+        Assert.AreEqual(
+            packageIdentity,
+            manifest.Descendants()
+                .Single(element => element.Name.LocalName == "Identity")
+                .Attribute("Name")?.Value);
+        Assert.AreEqual(
+            packageIdentity,
+            manifest.Descendants()
+                .Single(element => element.Name.LocalName == "PhoneIdentity")
+                .Attribute("PhoneProductId")?.Value);
+    }
+
+    [TestMethod]
     public async Task Migrate_MetadataConflictLeavesExistingOutputUnchanged()
     {
         var source = await CreateUwpSourceAsync("MetadataConflictApp");

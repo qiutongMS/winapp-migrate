@@ -32,6 +32,20 @@ internal sealed class MigrateCommand : Command
             Description = "Suppress progress and completion output."
         };
 
+    public static Option<Guid?> PackageIdentityOption { get; } =
+        new("--package-identity")
+        {
+            Description =
+                "Override the generated package Identity Name and PhoneProductId with this GUID."
+        };
+
+    public static Option<bool> PortableReportOption { get; } =
+        new("--portable-report")
+        {
+            Description =
+                "Record the target root as '.' so the generated directory can be relocated."
+        };
+
     public MigrateCommand(MechanicalMigration.Engine engine)
         : base(
             "create",
@@ -43,6 +57,8 @@ internal sealed class MigrateCommand : Command
         Options.Add(OutputOption);
         Options.Add(NameOption);
         Options.Add(QuietOption);
+        Options.Add(PackageIdentityOption);
+        Options.Add(PortableReportOption);
         SetAction(async (parseResult, cancellationToken) =>
         {
             var source = parseResult.GetRequiredValue(SourceArgument);
@@ -50,7 +66,9 @@ internal sealed class MigrateCommand : Command
             var request = new MigrationRequest(
                 source,
                 output,
-                parseResult.GetValue(NameOption));
+                parseResult.GetValue(NameOption),
+                parseResult.GetValue(PackageIdentityOption),
+                parseResult.GetValue(PortableReportOption));
             if (!parseResult.GetValue(QuietOption))
             {
                 return await engine.MigrateAsync(request, cancellationToken);
