@@ -41,6 +41,7 @@ winapp-migrate uwp decide-project-item <target> <item> <strategy> <rationale>
 winapp-migrate uwp enforce configure <target> --write-default
 winapp-migrate uwp enforce configure <target> --policy <policy.json>
 winapp-migrate uwp enforce assess <target>
+winapp-migrate uwp enforce wait <target> [--timeout-seconds <seconds>]
 winapp-migrate uwp enforce run <target>
 winapp-migrate uwp enforce diagnose <target>
 winapp-migrate uwp enforce ui <target> -- <winapp-ui-arguments>
@@ -106,6 +107,12 @@ Run the first `enforce assess` immediately after the state plan is created and
 before source capture; otherwise the source-oracle phase has not entered the
 durable workflow clock. Run it again immediately after source completion and
 after each slice completion, before beginning work in the next budget unit.
+
+External hosts must use `enforce wait` instead of parsing enforcement state or
+calculating workflow deadlines. The command waits for a durable terminal
+disposition, materializes due deadlines through the same product assessment
+path, and writes one versioned JSON observation to stdout. Its optional
+observation timeout does not mutate Runner budgets or dispositions.
 Schema `1.0` progress is explicitly imported only when exactly one continuous
 account can be reconstructed safely. Zero-account histories fail closed rather
 than starting a new epoch. Counts, extension/block

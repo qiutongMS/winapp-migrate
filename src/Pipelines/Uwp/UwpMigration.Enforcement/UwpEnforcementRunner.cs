@@ -23,15 +23,111 @@ public sealed class UwpEnforcementRunner
         int maximumSignatureAttempts = 2,
         CancellationToken cancellationToken = default)
     {
+        return await AssessCoreAsync(
+            target,
+            maximumSignatureAttempts,
+            TimeProvider.System,
+            cancellationToken);
+    }
+
+    public async Task<EnforcementSnapshot> WaitForTerminalAsync(
+        DirectoryInfo target,
+        int maximumSignatureAttempts = 2,
+        TimeSpan? timeout = null,
+        TimeSpan? pollInterval = null,
+        CancellationToken cancellationToken = default)
+    {
+        var interval = pollInterval ?? TimeSpan.FromMilliseconds(500);
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(pollInterval), "Poll interval must be positive.");
+        if (timeout is { } timeoutValue && timeoutValue <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be positive.");
+
+        var observationDeadline = timeout is null
+            ? (DateTimeOffset?)null
+            : _timeProvider.GetUtcNow() + timeout.Value;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var now = _timeProvider.GetUtcNow();
+            if (observationDeadline is not null && now >= observationDeadline.Value)
+                throw new TimeoutException("Runner observation timed out before a terminal disposition was produced.");
+
+            var lockTimeout = observationDeadline is null
+                ? TimeSpan.FromSeconds(10)
+                : observationDeadline.Value - now;
+            using var observationTimeoutSource = observationDeadline is null
+                ? null
+                : new CancellationTokenSource(lockTimeout, _timeProvider);
+            using var assessmentSource = observationTimeoutSource is null
+                ? null
+                : CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    observationTimeoutSource.Token);
+            var assessmentToken =
+                assessmentSource?.Token ?? cancellationToken;
+            EnforcementSnapshot snapshot;
+            try
+            {
+                snapshot = await AssessCoreAsync(
+                    target,
+                    maximumSignatureAttempts,
+                    _timeProvider,
+                    assessmentToken,
+                    lockTimeout);
+            }
+            catch (OperationCanceledException exception) when (
+                observationTimeoutSource?.IsCancellationRequested == true &&
+                !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    "Runner observation timed out while assessing the enforcement state.",
+                    exception);
+            }
+            catch (EnforcementLockTimeoutException exception) when (
+                observationDeadline is not null)
+            {
+                throw new TimeoutException(
+                    "Runner observation timed out while waiting for the active enforcement operation.",
+                    exception);
+            }
+            catch (EnforcementLockTimeoutException)
+            {
+                continue;
+            }
+            now = _timeProvider.GetUtcNow();
+            if (observationDeadline is not null && now >= observationDeadline.Value)
+                throw new TimeoutException("Runner observation timed out before a terminal disposition was produced.");
+            if (snapshot.Disposition?.Terminal == true)
+                return snapshot;
+
+            var delay = observationDeadline is null
+                ? interval
+                : TimeSpan.FromTicks(Math.Min(
+                    interval.Ticks,
+                    (observationDeadline.Value - now).Ticks));
+            await Task.Delay(delay, _timeProvider, cancellationToken);
+        }
+    }
+
+    private static async Task<EnforcementSnapshot> AssessCoreAsync(
+        DirectoryInfo target,
+        int maximumSignatureAttempts,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken,
+        TimeSpan? lockTimeout = null)
+    {
         var lockTarget = ResolveLockTarget(target);
         await using var enforcementLock =
             await EnforcementStore.AcquireLockAsync(
                 lockTarget,
+                lockTimeout,
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
             maximumSignatureAttempts,
-            cancellationToken);
+            cancellationToken,
+            timeProvider);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
         return snapshot;
@@ -884,7 +980,9 @@ public sealed class UwpEnforcementRunner
         }
 
         var analyzer = AnalyzerReferenceInspector.Inspect(targetProject);
-        var fingerprint = TargetFingerprint.Compute(target);
+        var fingerprint = await TargetFingerprint.ComputeAsync(
+            target,
+            cancellationToken);
         var (statePlan, statePlanError) =
             await EnforcementStore.TryLoadAsync<StatePlanDocument>(
                 target,

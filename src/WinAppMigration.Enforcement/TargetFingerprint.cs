@@ -18,9 +18,21 @@ public static class TargetFingerprint
             "obj"
         };
 
-    public static string Compute(DirectoryInfo root)
+    public static string Compute(
+        DirectoryInfo root,
+        CancellationToken cancellationToken = default)
+    {
+        return ComputeAsync(root, cancellationToken)
+            .GetAwaiter()
+            .GetResult();
+    }
+
+    public static async Task<string> ComputeAsync(
+        DirectoryInfo root,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(root);
+        cancellationToken.ThrowIfCancellationRequested();
         if (!root.Exists)
         {
             throw new DirectoryNotFoundException(
@@ -28,18 +40,29 @@ public static class TargetFingerprint
         }
 
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        Visit(root, root, hash);
+        await VisitAsync(root, root, hash, cancellationToken)
+            .ConfigureAwait(false);
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
-    private static void Visit(
+    private static async Task VisitAsync(
         DirectoryInfo root,
         DirectoryInfo directory,
-        IncrementalHash hash)
+        IncrementalHash hash,
+        CancellationToken cancellationToken)
     {
-        foreach (var entry in directory.EnumerateFileSystemInfos()
-                     .OrderBy(item => item.Name, StringComparer.Ordinal))
+        var entries = new List<FileSystemInfo>();
+        foreach (var entry in directory.EnumerateFileSystemInfos())
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            entries.Add(entry);
+        }
+        entries.Sort((left, right) =>
+            StringComparer.Ordinal.Compare(left.Name, right.Name));
+
+        foreach (var entry in entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             if (entry is DirectoryInfo child)
             {
                 if (ExcludedDirectories.Contains(child.Name))
@@ -53,7 +76,8 @@ public static class TargetFingerprint
                 }
 
                 Append(hash, $"dir\0{Relative(root, child)}\0");
-                Visit(root, child, hash);
+                await VisitAsync(root, child, hash, cancellationToken)
+                    .ConfigureAwait(false);
                 continue;
             }
 
@@ -77,10 +101,18 @@ public static class TargetFingerprint
             }
 
             Append(hash, $"file\0{Relative(root, file)}\0{file.Length}\0");
-            using var stream = file.OpenRead();
+            await using var stream = new FileStream(
+                file.FullName,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                81920,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
             var buffer = new byte[81920];
             int read;
-            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+            while ((read = await stream.ReadAsync(
+                       buffer,
+                       cancellationToken).ConfigureAwait(false)) > 0)
             {
                 hash.AppendData(buffer, 0, read);
             }

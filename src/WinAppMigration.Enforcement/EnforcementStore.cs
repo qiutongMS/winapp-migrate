@@ -6,6 +6,19 @@ using System.Text.Json.Serialization;
 
 namespace WinAppMigration.Enforcement;
 
+public sealed class EnforcementLockTimeoutException : TimeoutException
+{
+    public EnforcementLockTimeoutException(
+        string lockPath,
+        TimeSpan timeout,
+        Exception innerException)
+        : base(
+            $"Timed out after {timeout} waiting for enforcement lock: {lockPath}",
+            innerException)
+    {
+    }
+}
+
 public static class EnforcementStore
 {
     public const string EvidenceDirectory = ".migration-evidence";
@@ -166,14 +179,30 @@ public static class EnforcementStore
         }
     }
 
+    public static Task<FileStream> AcquireLockAsync(
+        DirectoryInfo targetRoot,
+        CancellationToken cancellationToken = default)
+    {
+        return AcquireLockAsync(targetRoot, null, cancellationToken);
+    }
+
     public static async Task<FileStream> AcquireLockAsync(
         DirectoryInfo targetRoot,
+        TimeSpan? timeout,
         CancellationToken cancellationToken = default)
     {
         if (!targetRoot.Exists)
         {
             throw new DirectoryNotFoundException(
                 $"Target directory does not exist: {targetRoot.FullName}");
+        }
+        var lockTimeout = timeout ?? TimeSpan.FromSeconds(10);
+        if (lockTimeout <= TimeSpan.Zero &&
+            lockTimeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout),
+                "Lock timeout must be positive or infinite.");
         }
         RejectReparsePoints(targetRoot.FullName, targetRoot.FullName);
         var lockDirectory = Path.Combine(
@@ -183,11 +212,21 @@ public static class EnforcementStore
         Directory.CreateDirectory(lockDirectory);
         RejectReparsePoints(targetRoot.FullName, lockDirectory);
         var lockPath = Path.Combine(lockDirectory, "enforcement.lock");
-        var timeout = TimeSpan.FromSeconds(10);
         var started = DateTimeOffset.UtcNow;
+        IOException? lastContention = null;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var elapsed = DateTimeOffset.UtcNow - started;
+            if (lastContention is not null &&
+                lockTimeout != Timeout.InfiniteTimeSpan &&
+                elapsed >= lockTimeout)
+            {
+                throw new EnforcementLockTimeoutException(
+                    lockPath,
+                    lockTimeout,
+                    lastContention);
+            }
             try
             {
                 return new FileStream(
@@ -198,12 +237,35 @@ public static class EnforcementStore
                     1,
                     FileOptions.DeleteOnClose);
             }
-            catch (IOException) when (
-                DateTimeOffset.UtcNow - started < timeout)
+            catch (IOException exception) when (IsLockContention(exception))
             {
-                await Task.Delay(100, cancellationToken);
+                lastContention = exception;
+                elapsed = DateTimeOffset.UtcNow - started;
+                if (lockTimeout != Timeout.InfiniteTimeSpan &&
+                    elapsed >= lockTimeout)
+                {
+                    throw new EnforcementLockTimeoutException(
+                        lockPath,
+                        lockTimeout,
+                        exception);
+                }
+                var delay = lockTimeout == Timeout.InfiniteTimeSpan
+                    ? TimeSpan.FromMilliseconds(100)
+                    : TimeSpan.FromTicks(Math.Min(
+                        TimeSpan.FromMilliseconds(100).Ticks,
+                        Math.Max(0, (lockTimeout - elapsed).Ticks)));
+                if (delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(delay, cancellationToken);
+                }
             }
         }
+    }
+
+    private static bool IsLockContention(IOException exception)
+    {
+        var errorCode = exception.HResult & 0xFFFF;
+        return errorCode is 32 or 33;
     }
 
     public static bool TryResolveContainedPath(

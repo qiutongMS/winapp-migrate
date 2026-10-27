@@ -17,6 +17,7 @@ internal sealed class UwpEnforceCommand : Command
             "Assess and enforce evidence-backed behavioral migration closure.")
     {
         Subcommands.Add(new AssessCommand());
+        Subcommands.Add(new WaitCommand(processRunner));
         Subcommands.Add(new RunCommand(processRunner));
         Subcommands.Add(new DiagnoseCommand(processRunner));
         Subcommands.Add(new UiCommand(processRunner));
@@ -24,6 +25,47 @@ internal sealed class UwpEnforceCommand : Command
         Subcommands.Add(new RecordFailureCommand());
         Subcommands.Add(new RecordDiagnosisCommand());
         Subcommands.Add(new ConfigureCommand());
+    }
+
+    private sealed class WaitCommand : Command
+    {
+        internal WaitCommand(IEnforcementProcessRunner processRunner)
+            : base(
+                "wait",
+                "Wait for the Runner to produce a durable terminal disposition. The product Runner owns deadline materialization; stdout contains one versioned JSON observation.")
+        {
+            var target = TargetArgument();
+            var attempts = AttemptsOption();
+            var timeoutSeconds = new Option<int?>("--timeout-seconds")
+            {
+                Description = "Optional positive host observation timeout. This does not change Runner budgets or dispositions."
+            };
+            var pollIntervalMilliseconds = new Option<int?>("--poll-interval-ms")
+            {
+                Description = "Positive polling interval in milliseconds. Defaults to 500."
+            };
+            Arguments.Add(target);
+            Options.Add(attempts);
+            Options.Add(timeoutSeconds);
+            Options.Add(pollIntervalMilliseconds);
+            SetAction((parseResult, cancellationToken) =>
+                InvokeObservationAsync(
+                    async () =>
+                    {
+                        var timeoutValue = parseResult.GetValue(timeoutSeconds);
+                        var pollValue = parseResult.GetValue(pollIntervalMilliseconds) ?? 500;
+                        var runner = new UwpEnforcementRunner(processRunner);
+                        return await runner.WaitForTerminalAsync(
+                            parseResult.GetValue(target)!,
+                            parseResult.GetValue(attempts) ?? 2,
+                            timeoutValue is null
+                                ? null
+                                : TimeSpan.FromSeconds(timeoutValue.Value),
+                            TimeSpan.FromMilliseconds(pollValue),
+                            cancellationToken);
+                    },
+                    cancellationToken));
+        }
     }
 
     private sealed class ConfigureCommand : Command
@@ -541,5 +583,68 @@ internal sealed class UwpEnforceCommand : Command
                     EnforcementStore.JsonOptions));
             return 1;
         }
+    }
+
+    private static async Task<int> InvokeObservationAsync(
+        Func<Task<EnforcementSnapshot>> operation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await operation();
+            WriteObservation(new UwpEnforcementObservation(
+                "1.0",
+                "terminal",
+                snapshot.GeneratedAt,
+                snapshot.Disposition));
+            return 0;
+        }
+        catch (TimeoutException exception)
+        {
+            WriteObservation(new UwpEnforcementObservation(
+                "1.0",
+                "error",
+                DateTimeOffset.UtcNow,
+                Error: new UwpEnforcementObservationError(
+                    "observation-timeout",
+                    exception.Message,
+                    true)));
+            return 2;
+        }
+        catch (OperationCanceledException exception)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            WriteObservation(new UwpEnforcementObservation(
+                "1.0",
+                "error",
+                DateTimeOffset.UtcNow,
+                Error: new UwpEnforcementObservationError(
+                    "observation-cancelled",
+                    exception.Message,
+                    true)));
+            return 130;
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException
+            or InvalidDataException
+            or IOException
+            or UnauthorizedAccessException)
+        {
+            WriteObservation(new UwpEnforcementObservation(
+                "1.0",
+                "error",
+                DateTimeOffset.UtcNow,
+                Error: new UwpEnforcementObservationError(
+                    "observation-failed",
+                    exception.Message,
+                    false)));
+            return 1;
+        }
+    }
+
+    private static void WriteObservation(UwpEnforcementObservation observation)
+    {
+        Console.Out.WriteLine(
+            JsonSerializer.Serialize(observation, EnforcementStore.JsonOptions));
     }
 }
