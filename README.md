@@ -52,9 +52,9 @@ winapp-migrate uwp enforce sync-report <target>
 
 `uwp create` / `uwp migrate` also accept `--package-identity <guid>` to
 override template-generated package identity values and `--portable-report`
-to record `target.root` as `.`. Together these options let callers create
-byte-stable, relocatable outputs without rewriting product artifacts after
-the migration completes.
+to record `target.root` as `.`. Together these options let callers stabilize
+the package identity and relocate the target directory without rewriting
+product artifacts after the migration completes.
 
 `enforce run` invokes `winapp run` first with `--no-launch --json`, then with
 `--no-build --detach --json` after a successful analyzer-enabled build. It
