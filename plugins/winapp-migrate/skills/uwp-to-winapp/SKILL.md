@@ -70,11 +70,14 @@ totals are telemetry only. If the state plan is missing, create only that plan
 first, then assess before doing any capture or implementation.
 
 Stop when the disposition is terminal. Otherwise, perform only work consistent
-with the reported frontier and allowed operations. Reassess immediately after
-persisting source-state completion, semantic finding resolution, or other
-evidence that can advance the workflow. Target execution must still use the
-specific `closure attest`, `closure diagnose`, or `closure capture` operation
-compatible with the current stage and evidence frontier.
+with the reported frontier and allowed operations. Reassess only at a workflow
+boundary: after a target-fingerprint change, source/state completion, semantic
+finding resolution, slice completion, or immediately before finalization. Do
+not reassess after each build substep or UI command. The default bounded receipt
+points to the durable full state; use `--full` only for focused workflow repair.
+Target execution must still use the specific `closure attest`,
+`closure diagnose`, or `closure capture` operation compatible with the current
+stage and evidence frontier.
 
 If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is available, stop before scaffolding or copying application files. Report that deterministic migration is unavailable. Do not replace the missing tool with hand-written namespace replacement, a second scaffold, or a fabricated report.
 
@@ -187,9 +190,11 @@ needed.
 Source oracle allows no target operations; mechanical stabilization allows
 builds only; bootstrap allows replay and runtime-failure diagnosis/hypothesis,
 never UI automation. Closure permits revalidation build/replay/UI only when
-the evidence frontier requires it; repeated replay and closure UI require
-`--discriminating-evidence`. Workflow schema `2.0` is imported to `3.0` while
-preserving operation/evidence history and clearing retired budget state.
+the evidence frontier requires it. Repeated replay requires new
+`--discriminating-evidence`; closure UI uses one fresh state intent for the
+whole state sequence, not one justification per command. Workflow schema `2.0`
+is imported to `3.0` while preserving operation/evidence history and clearing
+retired budget state.
 Stop speculative edits and inspect the complete
 type, project-item, generated-code, and call-site context. Record expanded-path
 root causes in the semantic finding ledger. Build success closes only
@@ -252,6 +257,13 @@ an external blocker for an app-owned crash.
 After every sentinel passes, expand progressively to remaining feature paths
 and source states. Use optional schema `1.0` `slice`, `dependencies` (slice IDs),
 and `criticality` fields to group states by dependency or architecture boundary.
+During semantic convergence, let the gateway record automatic provenance for
+each target UI probe. Do not create hand-written justification JSON for every
+`list-windows`, `inspect`, `invoke`, or `screenshot`; update the state plan once
+the state outcome is known. `closure capture` writes a bounded receipt by
+default and persists raw stdout/stderr plus
+`probes/<probe-id>/probe.json`. Read only the relevant persisted output; use
+`--raw-output` only when that focused payload is itself needed.
 The gateway selects only the first dependency-ready semantically unresolved slice. Required
 blocked work stops; optional debt never verifies a state or unlocks a dependent
 slice. Follow snapshot `activeSlice`, `activeStateIds`, and `frontier`. Whenever
@@ -285,12 +297,22 @@ Finish this falsification pass before report synchronization makes a fully
 passed closure terminal; do not request more target operations afterward.
 
 From that fresh canonical process, replay the primary sentinel followed by
-every runnable planned state. Persist state evidence after the recorded replay
-start; obtain target window-specific evidence through
-`winapp-migrate uwp closure capture "<target>" --discriminating-evidence
-"<new-target-relative-evidence>" -- <ui-arguments>` during closure rather than
-invoking raw `winapp ui` or inventing an HWND from launch output. Each closure
-UI operation needs explicit fresh justification.
+every runnable planned state. For each state, create one target-relative intent
+after the recorded replay starts. Its content must name the current target
+fingerprint, replay attestation ID, state ID, and expected outcome. Pass that
+same file to each distinct action in the state sequence:
+
+```powershell
+winapp-migrate uwp closure capture "<target>" --discriminating-evidence "<state-intent>" -- <ui-arguments>
+```
+
+The gateway binds the intent to the target fingerprint and canonical replay,
+allows it across distinct command signatures, and rejects an immediate exact
+repeat. Replace it when the target, replay, or state changes. Persist only the
+state-level completion bundle: the decisive action result, final
+tree/property evidence, and a screenshot when visible parity matters. Do not
+promote every intermediate inspect or capture to completion evidence. Never
+invoke raw `winapp ui` or infer an HWND from launch output.
 
 This final pass attempts to disprove completion. Do not reuse a development process or old evidence. Reopen a finding when the clean sequence changes the signature or fails.
 

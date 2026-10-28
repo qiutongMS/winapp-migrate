@@ -103,14 +103,52 @@ public static class WorkflowOperations
         string? evidenceFingerprint = null;
         if (evidence.Count > 0)
         {
-            if (!TryEvidenceFingerprint(input.TargetRoot, evidence,
-                previous.Length == 0 ? null : previous.Max(item => item.RecordedAt), out evidenceFingerprint, out reason))
-                return false;
-            if (progress.Operations.Any(item => item.Kind == operation &&
-                item.TargetFingerprint == input.TargetFingerprint && item.EvidenceFingerprint == evidenceFingerprint))
+            if (operation == WorkflowOperation.UiAction)
             {
-                reason = "Discriminating evidence content has already authorized this operation; touching or renaming it is not progress.";
-                return false;
+                if (!TryEvidenceFingerprint(input.TargetRoot, evidence, null, out evidenceFingerprint, out reason))
+                    return false;
+                var matchingIntent = previous
+                    .Where(item =>
+                        item.EvidenceFingerprint == evidenceFingerprint &&
+                        item.ReplayAttestationId == input.Replay?.Id)
+                    .ToArray();
+                var freshnessAfter = previous.Length == 0
+                    ? input.Replay?.StartedAt
+                    : new[]
+                    {
+                        previous.Max(item => item.RecordedAt),
+                        input.Replay?.StartedAt ?? DateTimeOffset.MinValue
+                    }.Max();
+                if (matchingIntent.Length == 0 &&
+                    !TryEvidenceFingerprint(
+                        input.TargetRoot,
+                        evidence,
+                        freshnessAfter,
+                        out evidenceFingerprint,
+                        out reason))
+                    return false;
+                var latestOperation = previous
+                    .Where(item => item.ReplayAttestationId == input.Replay?.Id)
+                    .MaxBy(item => item.RecordedAt);
+                if (latestOperation is not null &&
+                    latestOperation.EvidenceFingerprint == evidenceFingerprint &&
+                    latestOperation.Signature == signature)
+                {
+                    reason = "This UI command immediately repeats the same state intent and command signature, so it is not discriminating progress.";
+                    return false;
+                }
+            }
+            else
+            {
+                if (!TryEvidenceFingerprint(input.TargetRoot, evidence,
+                    previous.Length == 0 ? null : previous.Max(item => item.RecordedAt), out evidenceFingerprint, out reason))
+                    return false;
+                if (progress.Operations.Any(item => item.Kind == operation &&
+                    item.TargetFingerprint == input.TargetFingerprint && item.EvidenceFingerprint == evidenceFingerprint))
+                {
+                    reason = "Discriminating evidence content has already authorized this operation; touching or renaming it is not progress.";
+                    return false;
+                }
             }
         }
         if (operation == WorkflowOperation.Replay &&
@@ -137,6 +175,9 @@ public static class WorkflowOperations
         {
             Kind = operation, Stage = unit.Stage, SliceId = unit.SliceId,
             TargetFingerprint = input.TargetFingerprint, RecordedAt = now,
+            ReplayAttestationId = operation == WorkflowOperation.UiAction
+                ? input.Replay?.Id
+                : null,
             EvidenceFingerprint = evidenceFingerprint, Signature = signature
         });
         progress.LastObservedAt = now;

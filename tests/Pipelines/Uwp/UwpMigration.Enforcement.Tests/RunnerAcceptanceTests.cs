@@ -401,11 +401,29 @@ public sealed partial class RunnerAcceptanceTests
         var parseResult = command.Parse(
             ["ui", fixture.Root.FullName, "--", "list", "--json"]);
 
-        var exitCode = await parseResult.InvokeAsync(
-            parseResult.InvocationConfiguration,
-            CancellationToken.None);
+        using var writer = new StringWriter();
+        var original = Console.Out;
+        int exitCode;
+        try
+        {
+            Console.SetOut(writer);
+            exitCode = await parseResult.InvokeAsync(
+                parseResult.InvocationConfiguration,
+                CancellationToken.None);
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
 
         Assert.AreEqual(7, exitCode);
+        var receipt = JsonNode.Parse(writer.ToString())!.AsObject();
+        Assert.AreEqual(MigrationArtifactClass.DevelopmentProbe,
+            receipt["artifactClass"]!.GetValue<string>());
+        Assert.IsNull(receipt["output"]);
+        Assert.IsFalse(writer.ToString().Contains(
+            "ui output",
+            StringComparison.Ordinal));
         CollectionAssert.AreEqual(
             new[] { "ui", "list", "--json" },
             process.Calls[2]);
@@ -418,10 +436,166 @@ public sealed partial class RunnerAcceptanceTests
         CollectionAssert.AreEqual(
             new[] { "winapp", "ui", "list", "--json" },
             probe.Command);
+        Assert.IsTrue(File.Exists(fixture.Path(probe.ArtifactPath)));
+        Assert.AreEqual(probe.Id,
+            (await fixture.LoadAsync<UiDevelopmentProbe>(
+                probe.ArtifactPath)).Id);
         Assert.AreEqual("ui output",
             await File.ReadAllTextAsync(fixture.Path(probe.StandardOutputPath)));
         Assert.AreEqual("ui error",
             await File.ReadAllTextAsync(fixture.Path(probe.StandardErrorPath)));
+    }
+
+    [TestMethod]
+    public async Task Ui_StateIntentAuthorizesSequenceButRejectsImmediateExactRepeat()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var process = new FakeProcessRunner(
+            new EnforcementProcessResult(0, """{"AUMID":"Contoso.App"}""", ""),
+            new EnforcementProcessResult(0, """{"ProcessId":4242}""", ""),
+            new EnforcementProcessResult(0, """{"windows":[]}""", ""),
+            new EnforcementProcessResult(0, """{"nodes":[]}""", ""),
+            new EnforcementProcessResult(0, """{"ProcessId":4243}""", ""));
+        var runner = new UwpEnforcementRunner(process);
+        var initial = await runner.RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        const string intent = ".migration-evidence/state-intent.json";
+        await File.WriteAllTextAsync(
+            fixture.Path(intent),
+            JsonSerializer.Serialize(new
+            {
+                targetFingerprint = initial.TargetFingerprint,
+                replayAttestationId = initial.Replay!.Id,
+                stateId = "state-1",
+                expectedOutcome = "State remains usable."
+            }));
+
+        var first = await runner.InvokeUiAsync(
+            fixture.Root,
+            "winapp",
+            ["list-windows", "--json"],
+            [intent]);
+        var second = await runner.InvokeUiAsync(
+            fixture.Root,
+            "winapp",
+            ["inspect", "--window", "Main", "--json"],
+            [intent]);
+
+        Assert.AreNotEqual(first.Id, second.Id);
+        Assert.AreEqual(first.ReplayAttestationId, second.ReplayAttestationId);
+        Assert.AreNotEqual(first.CommandSignature, second.CommandSignature);
+        Assert.IsTrue(File.Exists(fixture.Path(first.ArtifactPath)));
+        Assert.IsTrue(File.Exists(fixture.Path(second.ArtifactPath)));
+        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            runner.InvokeUiAsync(
+                fixture.Root,
+                "winapp",
+                ["inspect", "--window", "Main", "--json"],
+                [intent]));
+        StringAssert.Contains(exception.Message, "same state intent and command signature");
+        Assert.AreEqual(4, process.CallCount);
+        var progress = await fixture.LoadAsync<WorkflowProgress>(
+            EnforcementStore.ProgressPath);
+        var uiOperations = progress.Operations
+            .Where(operation => operation.Kind == WorkflowOperation.UiAction)
+            .ToArray();
+        Assert.AreEqual(2, uiOperations.Length);
+        Assert.AreEqual(
+            uiOperations[0].EvidenceFingerprint,
+            uiOperations[1].EvidenceFingerprint);
+        Assert.AreNotEqual(
+            uiOperations[0].Signature,
+            uiOperations[1].Signature);
+
+        const string replayEvidence = ".migration-evidence/replay-evidence.json";
+        await File.WriteAllTextAsync(
+            fixture.Path(replayEvidence),
+            """{"reason":"Revalidate the completed state sequence."}""");
+        var replayed = await runner.RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions
+            {
+                ForceReplay = true,
+                DiscriminatingEvidence = [replayEvidence]
+            });
+        Assert.AreNotEqual(
+            first.ReplayAttestationId,
+            replayed.Replay!.Id);
+        var staleIntent = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            runner.InvokeUiAsync(
+                fixture.Root,
+                "winapp",
+                ["list-windows", "--json"],
+                [intent]));
+        StringAssert.Contains(staleIntent.Message, "must exist and postdate");
+        Assert.AreEqual(5, process.CallCount);
+    }
+
+    [TestMethod]
+    public async Task Cli_UiRawOutputEscapeHatchForwardsPersistedPayload()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var process = new FakeProcessRunner(
+            new EnforcementProcessResult(0, """{"AUMID":"Contoso.App"}""", ""),
+            new EnforcementProcessResult(0, """{"ProcessId":4242}""", ""),
+            new EnforcementProcessResult(3, "focused output", "focused error"));
+        await new UwpEnforcementRunner(process).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        var parseResult = new UwpEnforceCommand(process).Parse(
+            ["capture", fixture.Root.FullName, "--raw-output", "--", "list-windows"]);
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        var originalOut = Console.Out;
+        var originalError = Console.Error;
+        int exitCode;
+        try
+        {
+            Console.SetOut(stdout);
+            Console.SetError(stderr);
+            exitCode = await parseResult.InvokeAsync(
+                parseResult.InvocationConfiguration,
+                CancellationToken.None);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+        }
+
+        Assert.AreEqual(3, exitCode);
+        Assert.AreEqual("focused output", stdout.ToString());
+        Assert.AreEqual("focused error", stderr.ToString());
+    }
+
+    [TestMethod]
+    public async Task Cli_AssessWritesBoundedReceiptUnlessFullOutputIsRequested()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var process = new FakeProcessRunner(
+            new EnforcementProcessResult(0, """{"AUMID":"Contoso.App"}""", ""),
+            new EnforcementProcessResult(0, """{"ProcessId":4242}""", ""));
+        await new UwpEnforcementRunner(process).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        var command = new UwpEnforceCommand(process);
+
+        var receipt = await InvokeWithCapturedOutputAsync(
+            command.Parse(["assess", fixture.Root.FullName]));
+        var compact = JsonNode.Parse(receipt)!.AsObject();
+        Assert.IsNull(compact["workflow"]);
+        Assert.IsTrue(receipt.Length < 20_000);
+        Assert.AreEqual(
+            EnforcementStore.StatePath,
+            compact["artifacts"]!["state"]!.GetValue<string>());
+        Assert.IsNotNull(compact["latest"]!["replay"]);
+
+        var fullOutput = await InvokeWithCapturedOutputAsync(
+            command.Parse(["assess", fixture.Root.FullName, "--full"]));
+        var full = JsonNode.Parse(fullOutput)!.AsObject();
+        Assert.IsNotNull(full["workflow"]);
+        Assert.IsTrue(fullOutput.Length > receipt.Length);
     }
 
     [TestMethod]
@@ -645,6 +819,25 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsTrue(parsed.Structured);
         Assert.IsNull(parsed.ProcessId);
         Assert.IsNull(parsed.Error);
+    }
+
+    private static async Task<string> InvokeWithCapturedOutputAsync(
+        ParseResult parseResult)
+    {
+        using var writer = new StringWriter();
+        var original = Console.Out;
+        try
+        {
+            Console.SetOut(writer);
+            await parseResult.InvokeAsync(
+                parseResult.InvocationConfiguration,
+                CancellationToken.None);
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+        return writer.ToString();
     }
 
     private sealed class FakeProcessRunner(

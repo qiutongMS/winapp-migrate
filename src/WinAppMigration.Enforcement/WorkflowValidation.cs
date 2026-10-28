@@ -220,7 +220,10 @@ public static class WorkflowValidation
             probe.ArtifactClass != MigrationArtifactClass.DevelopmentProbe ||
             probe.Producer != MigrationArtifactClass.Producer ||
             string.IsNullOrWhiteSpace(probe.Id) || string.IsNullOrWhiteSpace(probe.TargetFingerprint) ||
+            string.IsNullOrWhiteSpace(probe.ReplayAttestationId) ||
+            string.IsNullOrWhiteSpace(probe.CommandSignature) ||
             probe.Command is null || probe.Command.Count == 0 ||
+            string.IsNullOrWhiteSpace(probe.ArtifactPath) ||
             string.IsNullOrWhiteSpace(probe.StandardOutputPath) || string.IsNullOrWhiteSpace(probe.StandardErrorPath) ||
             probe.StartedAt == default || probe.CompletedAt < probe.StartedAt)
             ? "UI artifacts must be winapp-migrate development probes using schema 1.0 with valid identities, commands, paths and timestamps." : null;

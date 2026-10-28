@@ -72,6 +72,12 @@ failure opens a diagnosis frontier that requires fresh source/target locations,
 the preserved source invariant, one falsifiable hypothesis, one discriminating
 test, and target-contained evidence before another build or replay. Target UI
 automation must use `closure capture`, which requires a fresh canonical replay.
+Snapshot commands emit bounded receipts by default and accept `--full` for the
+durable workflow history. `closure capture` persists raw output and an immutable
+per-probe manifest while returning a bounded receipt; `--raw-output` restores
+inline forwarding. During closure, one fresh state-intent evidence file may
+authorize a sequence of distinct UI commands for the same fingerprint and
+canonical replay, while an immediate exact repeat is rejected.
 The gateway resolves WinApp CLI from `--winapp`,
 `WINAPP_MIGRATE_WINAPP_PATH`, or PATH, in that order, so raw `winapp.exe` need
 not be exposed to the migration agent.

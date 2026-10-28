@@ -217,7 +217,13 @@ winapp-migrate uwp closure capture "<target>" -- invoke "<semantic-name>" -w <hw
 winapp-migrate uwp closure capture "<target>" -- screenshot -w <hwnd> --focus --json -o "<evidence-path>.png"
 ```
 
-The target UI command refuses to run without a fresh canonical replay. When
+The target UI command refuses to run without a fresh canonical replay. Its
+default output is a bounded receipt; raw stdout/stderr and a per-probe
+`probe.json` remain under `.migration-evidence/enforcement/probes`. Read only
+the relevant persisted payload instead of repeatedly emitting the full UI tree;
+reserve `--raw-output` for a focused result that must be inline. During semantic
+convergence, rely on this automatic provenance and update state evidence once
+per completed state rather than authoring evidence for each UI command. When
 the target exits only while an `invoke` action runs, or a native crash stack is
 dominated by `UIAutomationCore` without an app-owned frame, test the same
 control once with gateway-mediated `click` after a clean launch.
@@ -238,8 +244,9 @@ target bootstrap, and later semantic corrective build/replay attestations to
 their active slice. Stage compatibility remains deterministic: source oracle
 has no target operations, mechanical stabilization only builds, and bootstrap
 permits no UI automation or diagnosis/hypothesis without a runtime failure.
-Closure replay/UI requires fresh `--discriminating-evidence`. Corrections made
-after semantic convergence do not restart mechanical stabilization.
+Repeated closure replay requires fresh `--discriminating-evidence`; closure UI
+uses one fresh intent per state sequence. Corrections made after semantic
+convergence do not restart mechanical stabilization.
 
 Only when mechanical evidence, build diagnostics, WinUI triage, resource resolution, and generated XAML provide no actionable cause may you bisect XAML. Disable approximately half of one root subtree per probe, change only that dimension, and stop after four probes. Restore the complete page before applying the root-cause fix.
 
@@ -266,11 +273,16 @@ do not batch an unobserved phase transition with the next slice's edits.
 
 The replay attestation persists the stable run ID, launch command, returned
 primary PID, target fingerprint, and launch time. Discover the actual HWND
-through `winapp-migrate uwp closure capture`; during closure, pass fresh
-`--discriminating-evidence` for each justified UI operation. Include the HWND
-with the run ID in final action, tree, screenshot, and health evidence. Do not
-infer an HWND from launch JSON. Evidence from a replacement process cannot
-complete the earlier run.
+through `winapp-migrate uwp closure capture`. During closure, create one fresh
+state-intent file after the replay starts containing the target fingerprint,
+replay attestation ID, state ID, and expected outcome. Reuse that file across
+the state's distinct UI commands; an immediate repeat of the same command is
+rejected. Replace the intent when the target, replay, or state changes. Include
+the HWND with the run ID in the state-level decisive action, final
+tree/property, screenshot when needed, and health evidence. Intermediate probes
+remain development provenance, not completion evidence. Do not infer an HWND
+from launch JSON. Evidence from a replacement process cannot complete the
+earlier run.
 
 ## 4. Compare semantically
 

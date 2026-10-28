@@ -109,8 +109,10 @@ internal sealed class UwpEnforceCommand : Command
         {
             var target = TargetArgument();
             var attempts = AttemptsOption();
+            var full = FullOutputOption();
             Arguments.Add(target);
             Options.Add(attempts);
+            Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -118,7 +120,7 @@ internal sealed class UwpEnforceCommand : Command
                         parseResult.GetValue(target)!,
                         parseResult.GetValue(attempts) ?? 2,
                         cancellationToken);
-                    return WriteSnapshot(snapshot);
+                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
                 }));
         }
     }
@@ -164,6 +166,7 @@ internal sealed class UwpEnforceCommand : Command
             };
             var discriminatingEvidence = DiscriminatingEvidenceOption();
             var attempts = AttemptsOption();
+            var full = FullOutputOption();
             Arguments.Add(target);
             Options.Add(winApp);
             Options.Add(configuration);
@@ -174,6 +177,7 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(forceReplay);
             Options.Add(discriminatingEvidence);
             Options.Add(attempts);
+            Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -197,7 +201,7 @@ internal sealed class UwpEnforceCommand : Command
                         parseResult.GetValue(target)!,
                         options,
                         cancellationToken);
-                    return WriteSnapshot(snapshot);
+                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
                 }));
         }
     }
@@ -268,12 +272,16 @@ internal sealed class UwpEnforceCommand : Command
         internal UiCommand(IEnforcementProcessRunner processRunner)
             : base(
                 "capture",
-                "Forward checklist-authorized target UI capture to WinApp CLI as a development probe. Closure requires --discriminating-evidence. Place UI arguments after --.")
+                "Forward checklist-authorized target UI capture to WinApp CLI as a development probe and return a bounded receipt. Closure requires --discriminating-evidence. Place UI arguments after --.")
         {
             Aliases.Add("ui");
             var target = TargetArgument();
             var winApp = WinAppOption();
             var discriminatingEvidence = DiscriminatingEvidenceOption();
+            var rawOutput = new Option<bool>("--raw-output")
+            {
+                Description = "Write the raw WinApp CLI stdout and stderr instead of the bounded probe receipt. Raw output is always persisted to the receipt paths."
+            };
             var arguments = new Argument<string[]>("arguments")
             {
                 Description = "Arguments forwarded after the WinApp CLI ui command.",
@@ -283,12 +291,14 @@ internal sealed class UwpEnforceCommand : Command
             Arguments.Add(arguments);
             Options.Add(winApp);
             Options.Add(discriminatingEvidence);
+            Options.Add(rawOutput);
             SetAction((parseResult, cancellationToken) =>
                 new UiAction(
                     processRunner,
                     target,
                     winApp,
                     discriminatingEvidence,
+                    rawOutput,
                     arguments).InvokeAsync(
                         parseResult,
                         cancellationToken));
@@ -305,8 +315,10 @@ internal sealed class UwpEnforceCommand : Command
             Aliases.Add("sync-report");
             var target = TargetArgument();
             var attempts = AttemptsOption();
+            var full = FullOutputOption();
             Arguments.Add(target);
             Options.Add(attempts);
+            Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -315,7 +327,7 @@ internal sealed class UwpEnforceCommand : Command
                             parseResult.GetValue(target)!,
                             parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
-                    return WriteSnapshot(snapshot);
+                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
                 }));
         }
     }
@@ -350,12 +362,14 @@ internal sealed class UwpEnforceCommand : Command
                 AllowMultipleArgumentsPerToken = false
             };
             var attempts = AttemptsOption();
+            var full = FullOutputOption();
             Arguments.Add(target);
             Arguments.Add(kind);
             Arguments.Add(signature);
             Options.Add(state);
             Options.Add(evidence);
             Options.Add(attempts);
+            Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -368,7 +382,7 @@ internal sealed class UwpEnforceCommand : Command
                             parseResult.GetValue(evidence) ?? [],
                             parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
-                    return WriteSnapshot(snapshot);
+                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
                 }));
         }
     }
@@ -430,6 +444,7 @@ internal sealed class UwpEnforceCommand : Command
                 AllowMultipleArgumentsPerToken = false
             };
             var attempts = AttemptsOption();
+            var full = FullOutputOption();
             Arguments.Add(target);
             Arguments.Add(signature);
             Options.Add(state);
@@ -440,6 +455,7 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(test);
             Options.Add(evidence);
             Options.Add(attempts);
+            Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -456,7 +472,7 @@ internal sealed class UwpEnforceCommand : Command
                             parseResult.GetValue(evidence) ?? [],
                             parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
-                    return WriteSnapshot(snapshot);
+                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
                 }));
         }
     }
@@ -486,6 +502,12 @@ internal sealed class UwpEnforceCommand : Command
             AllowMultipleArgumentsPerToken = false
         };
 
+    private static Option<bool> FullOutputOption() =>
+        new("--full")
+        {
+            Description = "Write the full durable closure snapshot, including workflow history. The default bounded receipt points to the full state artifact."
+        };
+
     private static Option<string?> WinAppOption() =>
         new("--winapp")
         {
@@ -511,6 +533,7 @@ internal sealed class UwpEnforceCommand : Command
         Argument<DirectoryInfo> target,
         Option<string?> winApp,
         Option<string[]> discriminatingEvidence,
+        Option<bool> rawOutput,
         Argument<string[]> arguments)
         : AsynchronousCommandLineAction
     {
@@ -521,21 +544,27 @@ internal sealed class UwpEnforceCommand : Command
             try
             {
                 var runner = new UwpEnforcementRunner(processRunner);
-                var result = await runner.InvokeUiAsync(
-                    parseResult.GetValue(target)!,
+                var targetRoot = parseResult.GetValue(target)!;
+                var probe = await runner.InvokeUiAsync(
+                    targetRoot,
                     ResolveWinAppExecutable(parseResult.GetValue(winApp)),
                     parseResult.GetValue(arguments) ?? [],
                     parseResult.GetValue(discriminatingEvidence) ?? [],
                     cancellationToken);
-                if (!string.IsNullOrEmpty(result.Output))
+                if (parseResult.GetValue(rawOutput))
                 {
-                    Console.Out.Write(result.Output);
+                    await WriteRawProbeOutputAsync(
+                        targetRoot,
+                        probe,
+                        cancellationToken);
                 }
-                if (!string.IsNullOrEmpty(result.Error))
+                else
                 {
-                    Console.Error.Write(result.Error);
+                    Console.Out.WriteLine(JsonSerializer.Serialize(
+                        probe,
+                        EnforcementStore.JsonOptions));
                 }
-                return result.ExitCode;
+                return probe.ExitCode;
             }
             catch (Exception exception) when (
                 exception is ArgumentException
@@ -556,11 +585,84 @@ internal sealed class UwpEnforceCommand : Command
         }
     }
 
-    private static int WriteSnapshot(EnforcementSnapshot snapshot)
+    private static int WriteSnapshot(EnforcementSnapshot snapshot, bool full)
     {
+        object output = full
+            ? snapshot
+            : new
+            {
+                schemaVersion = "1.0",
+                snapshot.GeneratedAt,
+                snapshot.Stage,
+                snapshot.ActiveSlice,
+                snapshot.ActiveStateIds,
+                snapshot.Status,
+                snapshot.TargetFingerprint,
+                snapshot.Gates,
+                snapshot.Frontier,
+                snapshot.Disposition,
+                latest = new
+                {
+                    build = snapshot.Build is null
+                        ? null
+                        : new
+                        {
+                            snapshot.Build.Id,
+                            snapshot.Build.Success,
+                            snapshot.Build.ExitCode,
+                            artifact = EnforcementStore.BuildAttestationPath
+                        },
+                    replay = snapshot.Replay is null
+                        ? null
+                        : new
+                        {
+                            snapshot.Replay.Id,
+                            snapshot.Replay.Success,
+                            snapshot.Replay.ExitCode,
+                            snapshot.Replay.ProcessId,
+                            artifact = EnforcementStore.ReplayAttestationPath
+                        }
+                },
+                artifacts = new
+                {
+                    state = EnforcementStore.StatePath,
+                    progress = EnforcementStore.ProgressPath,
+                    attempts = EnforcementStore.AttemptLedgerPath,
+                    latestDiagnostic = EnforcementStore.DiagnosticAttestationPath,
+                    latestUiProbe = EnforcementStore.UiProbePath
+                }
+            };
         Console.Out.WriteLine(
-            JsonSerializer.Serialize(snapshot, EnforcementStore.JsonOptions));
+            JsonSerializer.Serialize(
+                output,
+                EnforcementStore.JsonOptions));
         return snapshot.Status == "passed" ? 0 : 2;
+    }
+
+    private static async Task WriteRawProbeOutputAsync(
+        DirectoryInfo target,
+        UiDevelopmentProbe probe,
+        CancellationToken cancellationToken)
+    {
+        if (!EnforcementStore.TryResolveContainedPath(
+                target,
+                probe.StandardOutputPath,
+                out var stdout,
+                out var stdoutError))
+            throw new InvalidDataException(stdoutError);
+        if (!EnforcementStore.TryResolveContainedPath(
+                target,
+                probe.StandardErrorPath,
+                out var stderr,
+                out var stderrError))
+            throw new InvalidDataException(stderrError);
+
+        var output = await File.ReadAllTextAsync(stdout, cancellationToken);
+        var error = await File.ReadAllTextAsync(stderr, cancellationToken);
+        if (!string.IsNullOrEmpty(output))
+            Console.Out.Write(output);
+        if (!string.IsNullOrEmpty(error))
+            Console.Error.Write(error);
     }
 
     private static async Task<int> InvokeGuardedAsync(

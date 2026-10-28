@@ -237,6 +237,8 @@ public sealed record WorkflowOperationRecord
     public string? SliceId { get; init; }
     [JsonRequired, JsonPropertyName("targetFingerprint")]
     public required string TargetFingerprint { get; init; }
+    [JsonPropertyName("replayAttestationId")]
+    public string? ReplayAttestationId { get; init; }
     [JsonPropertyName("signature")]
     public string? Signature { get; init; }
     [JsonPropertyName("evidenceFingerprint")]

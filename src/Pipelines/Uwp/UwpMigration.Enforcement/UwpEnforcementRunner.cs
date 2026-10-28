@@ -553,14 +553,14 @@ public sealed class UwpEnforcementRunner
         return attestation;
     }
 
-    public Task<WinAppInvocationResult> InvokeUiAsync(
+    public Task<UiDevelopmentProbe> InvokeUiAsync(
         DirectoryInfo target,
         string winAppExecutable,
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken = default) =>
         InvokeUiAsync(target, winAppExecutable, arguments, [], cancellationToken);
 
-    public async Task<WinAppInvocationResult> InvokeUiAsync(
+    public async Task<UiDevelopmentProbe> InvokeUiAsync(
         DirectoryInfo target,
         string winAppExecutable,
         IReadOnlyList<string> arguments,
@@ -592,16 +592,21 @@ public sealed class UwpEnforcementRunner
             throw new InvalidDataException(
                 "A fresh runner-attested canonical replay is required before target UI automation.");
         }
+        var command = new List<string> { "ui" };
+        command.AddRange(arguments);
+        var signature = DiagnosticGrouper.CreateSignature(
+            "ui-command",
+            [],
+            string.Join('\u001f', command));
         if (!await BeginOperationAsync(workspace, snapshot, WorkflowOperation.UiAction,
-                discriminatingEvidence, null, cancellationToken))
+                discriminatingEvidence, signature, cancellationToken))
             throw new InvalidDataException(snapshot.Frontier!.Reason);
 
         var id = CreateId("ui-probe");
         var directory = $"{EnforcementStore.EnforcementDirectory}/probes/{id}";
+        var artifact = $"{directory}/probe.json";
         var stdout = $"{directory}/stdout.log";
         var stderr = $"{directory}/stderr.log";
-        var command = new List<string> { "ui" };
-        command.AddRange(arguments);
         var startedAt = _timeProvider.GetUtcNow();
         var result = await InvokeProcessAsync(
             workspace, snapshot, winAppExecutable,
@@ -614,25 +619,31 @@ public sealed class UwpEnforcementRunner
             stderr,
             result,
             cancellationToken);
+        var probe = new UiDevelopmentProbe
+        {
+            Id = id,
+            TargetFingerprint = workspace.Fingerprint,
+            ReplayAttestationId = snapshot.Replay!.Id,
+            CommandSignature = signature,
+            StartedAt = startedAt,
+            CompletedAt = completedAt,
+            Command = [winAppExecutable, .. command],
+            ExitCode = result.ExitCode,
+            ArtifactPath = artifact,
+            StandardOutputPath = stdout,
+            StandardErrorPath = stderr
+        };
+        await EnforcementStore.WriteAtomicAsync(
+            workspace.Target,
+            artifact,
+            probe,
+            cancellationToken);
         await EnforcementStore.WriteAtomicAsync(
             workspace.Target,
             EnforcementStore.UiProbePath,
-            new UiDevelopmentProbe
-            {
-                Id = id,
-                TargetFingerprint = workspace.Fingerprint,
-                StartedAt = startedAt,
-                CompletedAt = completedAt,
-                Command = [winAppExecutable, .. command],
-                ExitCode = result.ExitCode,
-                StandardOutputPath = stdout,
-                StandardErrorPath = stderr
-            },
+            probe,
             cancellationToken);
-        return new WinAppInvocationResult(
-            result.ExitCode,
-            result.Output,
-            result.Error);
+        return probe;
     }
 
     public static async Task<EnforcementSnapshot> SynchronizeReportAsync(

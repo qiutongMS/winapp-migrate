@@ -416,6 +416,12 @@ public sealed class UiDevelopmentProbe
     [JsonPropertyName("targetFingerprint")]
     public required string TargetFingerprint { get; set; }
 
+    [JsonPropertyName("replayAttestationId")]
+    public string ReplayAttestationId { get; set; } = string.Empty;
+
+    [JsonPropertyName("commandSignature")]
+    public string CommandSignature { get; set; } = string.Empty;
+
     [JsonPropertyName("startedAt")]
     public DateTimeOffset StartedAt { get; set; }
 
@@ -428,17 +434,15 @@ public sealed class UiDevelopmentProbe
     [JsonPropertyName("exitCode")]
     public int ExitCode { get; set; }
 
+    [JsonPropertyName("artifact")]
+    public string ArtifactPath { get; set; } = string.Empty;
+
     [JsonPropertyName("stdout")]
     public required string StandardOutputPath { get; set; }
 
     [JsonPropertyName("stderr")]
     public required string StandardErrorPath { get; set; }
 }
-
-public sealed record WinAppInvocationResult(
-    int ExitCode,
-    string Output,
-    string Error);
 
 public sealed class EnforcementSnapshot
 {
