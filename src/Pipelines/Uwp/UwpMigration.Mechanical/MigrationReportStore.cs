@@ -20,6 +20,7 @@ internal static class MigrationReportStore
         {
             "1.2",
             "1.3",
+            "1.4",
             MigrationReport.CurrentSchemaVersion
         };
 
@@ -267,6 +268,29 @@ internal static class MigrationReportStore
         report.Summary ??= new MigrationSummary();
         report.Transforms ??= [];
         report.Todos ??= [];
+        foreach (var todo in report.Todos)
+        {
+            todo.Locations ??= [];
+            if (todo.Guidance is null)
+            {
+                continue;
+            }
+            todo.Guidance.Facts ??= [];
+            todo.Guidance.MechanicallyAppliedTransforms ??= [];
+            todo.Guidance.CandidateStrategies ??= [];
+            todo.Guidance.ForbiddenShortcuts ??= [];
+            todo.Guidance.CompletionConditions ??= [];
+            foreach (var fact in todo.Guidance.Facts)
+            {
+                fact.Locations ??= [];
+            }
+            foreach (var strategy in todo.Guidance.CandidateStrategies)
+            {
+                strategy.Actions ??= [];
+                strategy.Preconditions ??= [];
+                strategy.Risks ??= [];
+            }
+        }
         report.DependencyAnalysis ??= new MigrationDependencyAnalysis();
         report.ActivationAnalysis ??= new MigrationActivationAnalysis();
         report.ProjectItemDecisions ??= [];

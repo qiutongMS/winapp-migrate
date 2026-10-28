@@ -886,6 +886,7 @@ public static partial class MechanicalMigration
                 evaluator,
                 cancellationToken);
             RefreshMechanicalTodos(
+                targetRoot,
                 report,
                 residuals,
                 projectItems,
@@ -973,6 +974,7 @@ public static partial class MechanicalMigration
                 cancellationToken,
                 projectItemEvaluation?.RawEvaluation);
             RefreshMechanicalTodos(
+                targetRoot,
                 report,
                 residuals,
                 projectItems,
@@ -1136,6 +1138,7 @@ public static partial class MechanicalMigration
         }
 
         private static void RefreshMechanicalTodos(
+            string targetRoot,
             MigrationReport report,
             List<MigrationLocation> residuals,
             ProjectItemMigrationResult projectItems,
@@ -1193,6 +1196,7 @@ public static partial class MechanicalMigration
                         .ToList()
                 });
             }
+            RefreshNullTemplateSelectorTodo(targetRoot, report);
         }
 
         private static bool TryReadInspectableText(string path, out string text)

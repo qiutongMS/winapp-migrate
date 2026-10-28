@@ -1,6 +1,6 @@
 # Activation contracts
 
-Use this protocol for every protocol or file-association contract in schema `1.4` `activationAnalysis`. `winapp-migrate uwp` owns source declaration inventory, safe target manifest translation, and declaration verification. The target owns activation routing and behavior; the schema `1.0` state plan owns runtime proof.
+Use this protocol for every protocol or file-association contract in schema `1.5` `activationAnalysis`. `winapp-migrate uwp` owns source declaration inventory, safe target manifest translation, and declaration verification. The target owns activation routing and behavior; the schema `1.0` state plan owns runtime proof.
 
 ## 1. Separate declaration coverage from behavior
 

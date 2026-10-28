@@ -84,7 +84,78 @@ public static partial class MechanicalMigration
                 Priority = "required",
                 Summary = "Review remaining Dispatcher and CoreDispatcher operations",
                 Reason = "Only DependencyObject.Dispatcher.HasThreadAccess in XAML Page code-behind is converted automatically. Other receivers and RunAsync delegate behavior require code-specific review.",
-                Locations = locations
+                Locations = locations,
+                Guidance = new MigrationRepairGuidance
+                {
+                    ReasonCode = "dispatcher-operation-requires-semantic-port",
+                    Facts =
+                    [
+                        new()
+                        {
+                            Id = "dispatcher-residual-detected",
+                            Summary = "Target C# still contains Dispatcher.RunAsync, Dispatcher.HasThreadAccess, or CoreDispatcherPriority usage that was not safe to rewrite mechanically.",
+                            Locations = locations
+                        }
+                    ],
+                    MechanicallyAppliedTransforms =
+                    [
+                        new()
+                        {
+                            Id = "UWMIG-DISPATCHER",
+                            Summary = "The mechanical transform is limited to DependencyObject.Dispatcher.HasThreadAccess on unambiguous XAML Page code-behind receivers."
+                        }
+                    ],
+                    CandidateStrategies =
+                    [
+                        new()
+                        {
+                            Id = "use-dispatcher-queue",
+                            Summary = "Port UI-thread dispatch to the DispatcherQueue owned by the relevant WinUI object.",
+                            Actions =
+                            [
+                                "Resolve the DispatcherQueue from the UI object or window that owns the operation.",
+                                "Translate priority and callback behavior without changing ordering or exception handling."
+                            ],
+                            Preconditions =
+                            [
+                                "The operation targets a live WinUI object with a known DispatcherQueue."
+                            ],
+                            Risks =
+                            [
+                                "Fire-and-forget queueing can hide exceptions or change completion ordering."
+                            ]
+                        },
+                        new()
+                        {
+                            Id = "remove-unnecessary-dispatch",
+                            Summary = "Keep the operation on its existing UI-thread call path when dispatch is no longer necessary.",
+                            Actions =
+                            [
+                                "Trace the caller and prove it already executes on the owning UI thread.",
+                                "Invoke the operation directly and preserve any required asynchronous completion."
+                            ],
+                            Preconditions =
+                            [
+                                "Every caller is proven to run on the owning UI thread."
+                            ],
+                            Risks =
+                            [
+                                "Removing dispatch without call-path proof can introduce cross-thread access failures."
+                            ]
+                        }
+                    ],
+                    ForbiddenShortcuts =
+                    [
+                        "Do not replace asynchronous dispatch with an unobserved fire-and-forget task.",
+                        "Do not use an unrelated window or control's DispatcherQueue."
+                    ],
+                    CompletionConditions =
+                    [
+                        "No residual UWP Dispatcher or CoreDispatcherPriority usage remains.",
+                        "The affected UI operation runs on its owning UI thread.",
+                        "Completion ordering and exception behavior are explicitly verified."
+                    ]
+                }
             });
         }
 
@@ -223,7 +294,70 @@ public static partial class MechanicalMigration
                     Priority = "required",
                     Summary = "Replace remaining Window.Current usage with an explicit WinUI Window or AppWindow reference",
                     Reason = "WinUI 3 desktop has no Window.Current singleton, and the correct replacement depends on how each call uses the window.",
-                    Locations = otherLocations
+                    Locations = otherLocations,
+                    Guidance = new MigrationRepairGuidance
+                    {
+                        ReasonCode = "window-current-requires-explicit-owner",
+                        Facts =
+                        [
+                            new()
+                            {
+                                Id = "window-current-residual-detected",
+                                Summary = "Target C# still accesses the UWP Window.Current singleton.",
+                                Locations = otherLocations
+                            }
+                        ],
+                        CandidateStrategies =
+                        [
+                            new()
+                            {
+                                Id = "pass-owning-window",
+                                Summary = "Pass or inject the WinUI Window that owns the affected UI flow.",
+                                Actions =
+                                [
+                                    "Identify the window that owns the control, page, or service operation.",
+                                    "Carry that Window reference through the existing composition boundary."
+                                ],
+                                Preconditions =
+                                [
+                                    "The operation is scoped to a specific application window."
+                                ],
+                                Risks =
+                                [
+                                    "Caching a stale Window can retain closed UI or route work to the wrong window."
+                                ]
+                            },
+                            new()
+                            {
+                                Id = "use-app-window-or-xaml-root",
+                                Summary = "Use AppWindow, HWND, or XamlRoot only when that narrower contract matches the operation.",
+                                Actions =
+                                [
+                                    "Classify whether the call needs window management, native interop, or XAML-tree state.",
+                                    "Resolve AppWindow or HWND from the owning Window, or XamlRoot from the owning element."
+                                ],
+                                Preconditions =
+                                [
+                                    "The required behavior is defined by the selected narrower contract."
+                                ],
+                                Risks =
+                                [
+                                    "Substituting AppWindow, HWND, and XamlRoot interchangeably changes semantics."
+                                ]
+                            }
+                        ],
+                        ForbiddenShortcuts =
+                        [
+                            "Do not introduce a process-wide Window singleton unless the application is proven to be permanently single-window.",
+                            "Do not select an arbitrary active window when ownership is ambiguous."
+                        ],
+                        CompletionConditions =
+                        [
+                            "No Window.Current usage remains.",
+                            "Each affected operation uses the explicit owning Window, AppWindow, HWND, or XamlRoot contract.",
+                            "The behavior is verified for every window that can reach the affected path."
+                        ]
+                    }
                 });
             }
         }

@@ -8,7 +8,7 @@ namespace UwpMigration.Contracts;
 
 public sealed class MigrationReport
 {
-    public const string CurrentSchemaVersion = "1.4";
+    public const string CurrentSchemaVersion = "1.5";
 
     [JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -734,6 +734,70 @@ public sealed class MigrationTodo
 
     [JsonPropertyName("locations")]
     public List<MigrationLocation> Locations { get; set; } = [];
+
+    [JsonPropertyName("guidance")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MigrationRepairGuidance? Guidance { get; set; }
+}
+
+public sealed class MigrationRepairGuidance
+{
+    [JsonPropertyName("reasonCode")]
+    public required string ReasonCode { get; set; }
+
+    [JsonPropertyName("facts")]
+    public List<MigrationGuidanceFact> Facts { get; set; } = [];
+
+    [JsonPropertyName("mechanicallyAppliedTransforms")]
+    public List<MigrationGuidanceTransform> MechanicallyAppliedTransforms { get; set; } = [];
+
+    [JsonPropertyName("candidateStrategies")]
+    public List<MigrationGuidanceStrategy> CandidateStrategies { get; set; } = [];
+
+    [JsonPropertyName("forbiddenShortcuts")]
+    public List<string> ForbiddenShortcuts { get; set; } = [];
+
+    [JsonPropertyName("completionConditions")]
+    public List<string> CompletionConditions { get; set; } = [];
+}
+
+public sealed class MigrationGuidanceFact
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; set; }
+
+    [JsonPropertyName("locations")]
+    public List<MigrationLocation> Locations { get; set; } = [];
+}
+
+public sealed class MigrationGuidanceTransform
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; set; }
+}
+
+public sealed class MigrationGuidanceStrategy
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; set; }
+
+    [JsonPropertyName("actions")]
+    public List<string> Actions { get; set; } = [];
+
+    [JsonPropertyName("preconditions")]
+    public List<string> Preconditions { get; set; } = [];
+
+    [JsonPropertyName("risks")]
+    public List<string> Risks { get; set; } = [];
 }
 
 public sealed class MigrationLocation

@@ -54,7 +54,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
 
         Assert.AreEqual(0, exit, output);
         using var report = await ReadReportAsync(target);
-        Assert.AreEqual("1.4", report.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.AreEqual("1.5", report.RootElement.GetProperty("schemaVersion").GetString());
         var analysis = report.RootElement.GetProperty("activationAnalysis");
         Assert.AreEqual("passed", analysis.GetProperty("status").GetString());
         var contracts = analysis.GetProperty("contracts").EnumerateArray().ToList();
@@ -607,7 +607,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
 
         Assert.AreEqual(0, exit, output);
         using var upgraded = await ReadReportAsync(target);
-        Assert.AreEqual("1.4", upgraded.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.AreEqual("1.5", upgraded.RootElement.GetProperty("schemaVersion").GetString());
         Assert.AreEqual(
             "not-required",
             upgraded.RootElement
@@ -625,6 +625,67 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
         Assert.AreEqual("resolved", dependencies.GetProperty("status").GetString());
         Assert.IsTrue(dependencies.GetProperty("issues").EnumerateArray().Any(issue =>
             issue.GetProperty("kind").GetString() == "preserved-test-issue"));
+    }
+
+    [TestMethod]
+    public async Task Verify_UpgradesSchema14WithoutLosingExistingTodo()
+    {
+        var source = await CreateSourceAsync(
+            "Schema14UpgradeApp",
+            SourceManifest(string.Empty));
+        var target = NewTarget("schema-14-upgrade-output");
+        ArrangeTemplateCreation(target, "Schema14UpgradeApp");
+        var (migrateExit, migrateOutput) = await InvokeMigrateAsync(source, target);
+        Assert.AreEqual(0, migrateExit, migrateOutput);
+
+        var reportPath = Path.Combine(target.FullName, "migration-report.json");
+        var report = JsonNode.Parse(await File.ReadAllTextAsync(
+            reportPath,
+            TestContext.CancellationToken))!;
+        report["schemaVersion"] = "1.4";
+        report["todos"]!.AsArray().Add(new JsonObject
+        {
+            ["id"] = "UWMIG-LEGACY",
+            ["category"] = "legacy-fixture",
+            ["priority"] = "required",
+            ["status"] = "accepted",
+            ["summary"] = "Preserve the old TODO.",
+            ["reason"] = "This reason must survive the schema upgrade.",
+            ["locations"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["path"] = "LegacyPage.xaml.cs",
+                    ["line"] = 37
+                }
+            }
+        });
+        await File.WriteAllTextAsync(
+            reportPath,
+            report.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
+            TestContext.CancellationToken);
+
+        var (exit, output) = await InvokeVerifyAsync(target);
+
+        Assert.AreEqual(0, exit, output);
+        using var upgraded = await ReadReportAsync(target);
+        Assert.AreEqual("1.5", upgraded.RootElement
+            .GetProperty("schemaVersion").GetString());
+        var legacyTodo = upgraded.RootElement.GetProperty("todos")
+            .EnumerateArray()
+            .Single(todo =>
+                todo.GetProperty("id").GetString() == "UWMIG-LEGACY");
+        Assert.AreEqual(
+            "accepted",
+            legacyTodo.GetProperty("status").GetString());
+        Assert.AreEqual(
+            "This reason must survive the schema upgrade.",
+            legacyTodo.GetProperty("reason").GetString());
+        Assert.AreEqual(
+            37,
+            legacyTodo.GetProperty("locations")[0]
+                .GetProperty("line").GetInt32());
+        Assert.IsFalse(legacyTodo.TryGetProperty("guidance", out _));
     }
 
     [TestMethod]

@@ -26,7 +26,7 @@ Use mutable target navigation topology only when the target control can own that
 
 ## Activation, windows, and deployment
 
-Use schema `1.4` `activationAnalysis` as the source manifest contract and mechanical target-declaration evidence. Follow [Activation contracts](activation-contracts.md) for protocol and file activation. Notifications, background work, app services, secondary windows, and package identity still have desktop-specific entry paths and lifetime semantics. A normal primary-window launch or a mechanically verified manifest declaration does not verify these contracts.
+Use schema `1.5` `activationAnalysis` as the source manifest contract and mechanical target-declaration evidence. Follow [Activation contracts](activation-contracts.md) for protocol and file activation. Notifications, background work, app services, secondary windows, and package identity still have desktop-specific entry paths and lifetime semantics. A normal primary-window launch or a mechanically verified manifest declaration does not verify these contracts.
 
 ## Media, composition, and hosted controls
 

@@ -2,7 +2,7 @@
 
 Use this protocol to preserve observable behavior across the UWP-to-WinUI migration. It orchestrates installed tools; do not create helper scripts, temporary test projects, or app-specific CLI extensions.
 
-The migration report uses schema `1.4`. The state plan below is a separate artifact and stays at schema `1.0`.
+The migration report uses schema `1.5`. The state plan below is a separate artifact and stays at schema `1.0`.
 
 ## 1. Plan evidence by behavior
 
@@ -316,7 +316,7 @@ Classify each planned state:
 
 A target crash, app-owned exception, visual-tree race, or broken navigation transition is `failed`, not `blocked`. If a later state cannot run because an earlier app-owned state failed, keep the earlier state `failed` and mark the later state `unverified` with that failed prerequisite named.
 
-When finalizing schema `1.4` `migration-report.json`, keep the schema `1.0` state-plan path and evidence roots stable. Summarize:
+When finalizing schema `1.5` `migration-report.json`, keep the schema `1.0` state-plan path and evidence roots stable. Summarize:
 
 - `sourceBaseline.status`: `captured` when every source state has evidence, `partial` when some do, or `unverified` when none do;
 - `targetReplay.status`: `passed` when every target state succeeds, `partial` when at least one is blocked or unverified, or `failed` when any state fails;

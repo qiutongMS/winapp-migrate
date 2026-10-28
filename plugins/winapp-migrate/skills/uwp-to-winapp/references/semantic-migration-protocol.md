@@ -1,6 +1,6 @@
 # Semantic migration protocol
 
-Use this protocol for migration work that is not completely determined by the schema `1.4` `winapp-migrate uwp` report. It is deliberately open-ended: documented mappings and platform patterns can accelerate analysis, but absence of a known pattern never proves that a feature is unsupported or that migration is complete.
+Use this protocol for migration work that is not completely determined by the schema `1.5` `winapp-migrate uwp` report. It is deliberately open-ended: documented mappings and platform patterns can accelerate analysis, but absence of a known pattern never proves that a feature is unsupported or that migration is complete.
 
 ## 1. Define the active contract
 
@@ -72,6 +72,14 @@ Classify each finding before editing:
 Categories organize evidence; they are not exhaustive. If a finding fits none, retain it as `semantic-other`, define its source invariant and completion condition, and use the same resolution loop.
 
 ## 4. Choose a resolution from evidence
+
+When a required migration TODO includes `guidance`, begin with its
+tool-produced facts and applied transforms. Candidate strategies are bounded
+options, not commands: select one only after proving every listed precondition,
+carry its risks into the finding, and reject every forbidden shortcut. Copy the
+selected strategy ID into the finding's resolution strategy and map its
+completion conditions to state-plan evidence. If no candidate applies, perform
+source-first diagnosis rather than inventing a hybrid or editing the report.
 
 Choose the least invasive strategy that preserves the source invariant:
 

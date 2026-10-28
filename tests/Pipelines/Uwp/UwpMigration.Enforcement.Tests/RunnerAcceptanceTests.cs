@@ -693,6 +693,51 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    public async Task SyncReport_FinalizesSchema14WithoutLosingTodoData()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        report.SchemaVersion = "1.4";
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "UWMIG-LEGACY",
+            Category = "legacy-fixture",
+            Priority = "required",
+            Status = "accepted",
+            Summary = "Preserve this accepted TODO.",
+            Reason = "The schema upgrade must not discard old report data.",
+            Locations =
+            [
+                new()
+                {
+                    Path = "LegacyPage.xaml.cs",
+                    Line = 42
+                }
+            ]
+        });
+        await fixture.SaveReportAsync(report);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root);
+
+        Assert.AreEqual("passed", snapshot.Status);
+        var finalized = await fixture.LoadReportAsync();
+        Assert.AreEqual("1.5", finalized.SchemaVersion);
+        var legacyTodo = finalized.Todos.Single(todo =>
+            todo.Id == "UWMIG-LEGACY");
+        Assert.AreEqual("accepted", legacyTodo.Status);
+        Assert.AreEqual(
+            "The schema upgrade must not discard old report data.",
+            legacyTodo.Reason);
+        Assert.AreEqual(42, legacyTodo.Locations.Single().Line);
+        Assert.IsNull(legacyTodo.Guidance);
+    }
+
+    [TestMethod]
     public async Task SyncReport_VerifiesPendingRequiredTodoOnlyAfterMappedStatesClose()
     {
         using var fixture = await RunnerFixture.CreateAsync();

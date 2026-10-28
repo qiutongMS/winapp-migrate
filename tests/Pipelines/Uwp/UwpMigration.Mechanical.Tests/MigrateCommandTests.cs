@@ -39,6 +39,54 @@ public class MigrateCommandTests : MigrateCommandTestBase
         return dir;
     }
 
+    private async Task<DirectoryInfo> CreateTemplateSelectorSourceAsync(
+        string name,
+        string fallbackStatement,
+        bool useNavigationView)
+    {
+        var source = await CreateUwpSourceAsync(name);
+        var selectorProperty = useNavigationView
+            ? "MenuItemTemplateSelector=\"{StaticResource CatalogSelector}\""
+            : string.Empty;
+        var itemsControl = useNavigationView
+            ? $"<NavigationView {selectorProperty} />"
+            : """<ListView ItemTemplateSelector="{StaticResource CatalogSelector}" />""";
+        await WriteAsync(source, "MainPage.xaml", $$"""
+            <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                  xmlns:local="using:GenericCatalog">
+              <Page.Resources>
+                <DataTemplate x:Key="SpecialTemplate"><TextBlock Text="Special" /></DataTemplate>
+                <DataTemplate x:Key="DefaultTemplate"><TextBlock Text="Default" /></DataTemplate>
+                <local:CatalogTemplateSelector x:Key="CatalogSelector"
+                                               SpecialTemplate="{StaticResource SpecialTemplate}"
+                                               DefaultTemplate="{StaticResource DefaultTemplate}" />
+              </Page.Resources>
+              {{itemsControl}}
+            </Page>
+            """);
+        await WriteAsync(source, "CatalogTemplateSelector.cs", $$"""
+            using Windows.UI.Xaml;
+            using Windows.UI.Xaml.Controls;
+            namespace GenericCatalog;
+            public sealed class CatalogTemplateSelector : DataTemplateSelector
+            {
+                public DataTemplate SpecialTemplate { get; set; }
+                public DataTemplate DefaultTemplate { get; set; }
+
+                protected override DataTemplate SelectTemplateCore(object item)
+                {
+                    if (item is SpecialCatalogItem)
+                    {
+                        return SpecialTemplate;
+                    }
+                    {{fallbackStatement}}
+                }
+            }
+            """);
+        return source;
+    }
+
     private void ArrangeTemplateCreation(
         DirectoryInfo target,
         string projectName = "MigratedApp",
@@ -188,7 +236,7 @@ public class MigrateCommandTests : MigrateCommandTestBase
 
         using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
-        Assert.AreEqual("1.4", report.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.AreEqual("1.5", report.RootElement.GetProperty("schemaVersion").GetString());
         Assert.AreEqual("mechanical-migration-complete", report.RootElement.GetProperty("status").GetString());
         Assert.IsTrue(report.RootElement.GetProperty("todos").GetArrayLength() >= 2);
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
@@ -1183,6 +1231,211 @@ public class MigrateCommandTests : MigrateCommandTestBase
         Assert.AreEqual("required", dispatcherTodo.GetProperty("priority").GetString());
         Assert.AreEqual(1, dispatcherTodo.GetProperty("locations").GetArrayLength());
         Assert.AreEqual(5, dispatcherTodo.GetProperty("locations")[0].GetProperty("line").GetInt32());
+        Assert.AreEqual(
+            "dispatcher-operation-requires-semantic-port",
+            dispatcherTodo.GetProperty("guidance")
+                .GetProperty("reasonCode")
+                .GetString());
+        Assert.IsTrue(dispatcherTodo.GetProperty("guidance")
+            .GetProperty("mechanicallyAppliedTransforms")
+            .EnumerateArray()
+            .Any(transform =>
+                transform.GetProperty("id").GetString() ==
+                "UWMIG-DISPATCHER"));
+    }
+
+    [TestMethod]
+    public async Task Migrate_ReportsNavigationViewSelectorNullFallbackWithStableGuidance()
+    {
+        var source = await CreateTemplateSelectorSourceAsync(
+            "NullSelectorApp",
+            "return null;",
+            useNavigationView: true);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "null-selector-output"));
+        ArrangeTemplateCreation(target, "NullSelectorApp");
+
+        var (exit, output) = await InvokeAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        var todo = report.RootElement.GetProperty("todos").EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "UWMIG014");
+        Assert.AreEqual("required", todo.GetProperty("priority").GetString());
+        var locations = todo.GetProperty("locations").EnumerateArray()
+            .Select(location => (
+                Path: location.GetProperty("path").GetString(),
+                Line: location.GetProperty("line").GetInt32()))
+            .ToArray();
+        CollectionAssert.Contains(
+            locations,
+            ("CatalogTemplateSelector.cs", 4));
+        CollectionAssert.Contains(
+            locations,
+            ("MainPage.xaml", 11));
+
+        var guidance = todo.GetProperty("guidance");
+        Assert.AreEqual(
+            "navigation-view-selector-null-fallback",
+            guidance.GetProperty("reasonCode").GetString());
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "selector-consumed-by-navigation-view",
+                "selector-has-null-fallback"
+            },
+            guidance.GetProperty("facts").EnumerateArray()
+                .Select(fact => fact.GetProperty("id").GetString())
+                .ToArray());
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "preserve-native-items",
+                "provide-non-null-default-template"
+            },
+            guidance.GetProperty("candidateStrategies").EnumerateArray()
+                .Select(strategy => strategy.GetProperty("id").GetString())
+                .ToArray());
+        Assert.IsTrue(guidance.GetProperty("forbiddenShortcuts")
+            .EnumerateArray()
+            .Any(item => item.GetString()!.Contains(
+                "generic TextBlock",
+                StringComparison.Ordinal)));
+        Assert.IsTrue(guidance.GetProperty("completionConditions")
+            .EnumerateArray()
+            .Any(item => item.GetString()!.Contains(
+                "selected-state property",
+                StringComparison.Ordinal)));
+        Assert.AreEqual(
+            0,
+            guidance.GetProperty("mechanicallyAppliedTransforms")
+                .GetArrayLength());
+    }
+
+    [TestMethod]
+    public async Task Migrate_NavigationViewSelectorWithNonNullFallbackDoesNotReportTodo()
+    {
+        var source = await CreateTemplateSelectorSourceAsync(
+            "DefaultSelectorApp",
+            "return DefaultTemplate;",
+            useNavigationView: true);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "default-selector-output"));
+        ArrangeTemplateCreation(target, "DefaultSelectorApp");
+
+        var (exit, output) = await InvokeAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
+            .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
+    }
+
+    [TestMethod]
+    public async Task Migrate_ReportsNavigationViewSelectorNullCoalescingBaseFallback()
+    {
+        var source = await CreateTemplateSelectorSourceAsync(
+            "BaseFallbackSelectorApp",
+            "return DefaultTemplate ?? base.SelectTemplateCore(item);",
+            useNavigationView: true);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "base-fallback-selector-output"));
+        ArrangeTemplateCreation(target, "BaseFallbackSelectorApp");
+
+        var (exit, output) = await InvokeAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
+            .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
+    }
+
+    [TestMethod]
+    public async Task Migrate_UnconsumedNullSelectorDoesNotReportTodo()
+    {
+        var source = await CreateTemplateSelectorSourceAsync(
+            "ListSelectorApp",
+            "return null;",
+            useNavigationView: false);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "list-selector-output"));
+        ArrangeTemplateCreation(target, "ListSelectorApp");
+
+        var (exit, output) = await InvokeAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
+            .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
+    }
+
+    [TestMethod]
+    public async Task Verify_DoesNotDuplicateOrDestabilizeNavigationViewSelectorTodo()
+    {
+        var source = await CreateTemplateSelectorSourceAsync(
+            "RepeatSelectorApp",
+            "return base.SelectTemplateCore(item);",
+            useNavigationView: true);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "repeat-selector-output"));
+        ArrangeTemplateCreation(target, "RepeatSelectorApp");
+        var (migrateExit, migrateOutput) = await InvokeAsync(source, target);
+        Assert.AreEqual(0, migrateExit, migrateOutput);
+
+        var (firstExit, firstOutput) = await InvokeVerifyAsync(target);
+        Assert.AreEqual(0, firstExit, firstOutput);
+        using var firstReport = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        var firstTodo = firstReport.RootElement.GetProperty("todos")
+            .EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "UWMIG014");
+        var firstGuidance = firstTodo.GetProperty("guidance").GetRawText();
+        var firstLocations = firstTodo.GetProperty("locations").GetRawText();
+        var reportPath = Path.Combine(target.FullName, "migration-report.json");
+        var reportNode = JsonNode.Parse(await File.ReadAllTextAsync(
+            reportPath,
+            TestContext.CancellationToken))!;
+        reportNode["todos"]!.AsArray()
+            .Single(item => item!["id"]!.GetValue<string>() == "UWMIG014")![
+                "status"] = "accepted";
+        await File.WriteAllTextAsync(
+            reportPath,
+            reportNode.ToJsonString(
+                new JsonSerializerOptions { WriteIndented = true }),
+            TestContext.CancellationToken);
+
+        var (secondExit, secondOutput) = await InvokeVerifyAsync(target);
+        Assert.AreEqual(0, secondExit, secondOutput);
+        using var secondReport = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        var matchingTodos = secondReport.RootElement.GetProperty("todos")
+            .EnumerateArray()
+            .Where(item => item.GetProperty("id").GetString() == "UWMIG014")
+            .ToArray();
+
+        Assert.HasCount(1, matchingTodos);
+        Assert.AreEqual(firstGuidance, matchingTodos[0]
+            .GetProperty("guidance").GetRawText());
+        Assert.AreEqual(firstLocations, matchingTodos[0]
+            .GetProperty("locations").GetRawText());
+        Assert.AreEqual(
+            "accepted",
+            matchingTodos[0].GetProperty("status").GetString());
     }
 
     [TestMethod]
@@ -1234,8 +1487,13 @@ public class MigrateCommandTests : MigrateCommandTestBase
         Assert.AreEqual(0, exit, output);
         using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
-        Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
-            .Any(todo => todo.GetProperty("category").GetString() == "windowing"));
+        var windowTodo = report.RootElement.GetProperty("todos").EnumerateArray()
+            .Single(todo => todo.GetProperty("category").GetString() == "windowing");
+        Assert.AreEqual(
+            "window-current-requires-explicit-owner",
+            windowTodo.GetProperty("guidance")
+                .GetProperty("reasonCode")
+                .GetString());
         Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
             .Any(todo => todo.GetProperty("category").GetString() == "window-sizing"));
     }
