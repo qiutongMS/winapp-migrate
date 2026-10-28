@@ -57,6 +57,35 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
+    public void Evaluate_ReportClosureFailurePreventsCompletion()
+    {
+        using var fixture = new EvaluatorFixture();
+        var input = fixture.ClosedInput() with
+        {
+            ReportClosureReady = false,
+            ReportClosureReason =
+                "Required TODO UWMIG002 is not referenced by any state.",
+            PersistedDisposition = new RunDisposition
+            {
+                Kind = "complete",
+                ReasonCode = "closure-passed",
+                Terminal = true,
+                Retryable = false,
+                Finalization = "complete"
+            }
+        };
+
+        var snapshot = EnforcementEvaluator.Evaluate(input);
+
+        Assert.AreEqual("blocked", snapshot.Status);
+        Assert.AreEqual("report-closure", snapshot.Frontier?.Kind);
+        Assert.AreEqual(
+            "blocked",
+            snapshot.Gates.Single(gate => gate.Id == "report-closure").Status);
+        StringAssert.Contains(snapshot.Frontier!.Reason, "UWMIG002");
+    }
+
+    [TestMethod]
     public void Evaluate_MechanicalFailureIsFirstFrontier()
     {
         using var fixture = new EvaluatorFixture();
@@ -583,7 +612,9 @@ public sealed partial class EnforcementEvaluatorTests
                 },
                 Attempts = new AttemptLedger(),
                 ReportValidation =
-                    EnforcementEvaluator.SummarizeStatePlan(plan)
+                    EnforcementEvaluator.SummarizeStatePlan(plan),
+                ReportClosureReady = true,
+                ReportClosureReason = "Required report work and canonical evidence are complete."
             };
         }
 

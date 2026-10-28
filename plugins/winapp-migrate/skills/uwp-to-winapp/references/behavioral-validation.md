@@ -82,6 +82,14 @@ authorize or stop migration work.
 
 For state-changing behavior, plan a transition rather than only a destination. Verify changed values, selection, collections, navigation state, or visible content. Include cancel/back restoration and alternate modifier-key paths when they produce different source behavior.
 
+Split `expectedOutcome` into independently observable assertions and retain
+direct evidence for every assertion on both sides. A reached page is not proof
+that its navigation destination is selected. For selection, toggles, values,
+focus, enabled state, and restoration, query the relevant UI Automation
+property after the decisive action; do not infer it from nearby content or a
+screenshot. A state cannot be `passed` or `verified` while an expected property
+is false, absent, or supported only by indirect evidence.
+
 For each visual state, retain:
 
 1. ordered semantic actions;

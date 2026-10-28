@@ -314,6 +314,15 @@ tree/property evidence, and a screenshot when visible parity matters. Do not
 promote every intermediate inspect or capture to completion evidence. Never
 invoke raw `winapp ui` or infer an HWND from launch output.
 
+Treat every independently observable clause in `expectedOutcome` as an
+assertion, not as descriptive prose. Record direct final evidence for each
+clause before setting the state to passed/verified. Navigation to a destination
+does not prove that its navigation item is selected; visible text does not prove
+`IsSelected`, toggle state, value retention, focus, enabled state, or restored
+state. Query the relevant property after the decisive action and retain that
+result with the final tree. If any expected property is false or missing, keep
+the state failed or unverified and reopen the linked finding.
+
 This final pass attempts to disprove completion. Do not reuse a development process or old evidence. Reopen a finding when the clean sequence changes the signature or fails.
 
 Before claiming completion:

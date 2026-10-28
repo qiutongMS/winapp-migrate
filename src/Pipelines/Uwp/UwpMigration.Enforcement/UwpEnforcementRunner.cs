@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation and Contributors. All rights reserved.
 // Licensed under the MIT License.
 
+using System.Buffers.Binary;
+using System.Text.Json;
 using UwpMigration.Contracts;
 using UwpMigration.Mechanical;
 using WinAppMigration.Enforcement;
@@ -9,6 +11,18 @@ namespace UwpMigration.Enforcement;
 
 public sealed class UwpEnforcementRunner
 {
+    private static readonly HashSet<string> TerminalTodoStatuses =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "verified",
+            "accepted",
+            "completed",
+            "resolved",
+            "done"
+        };
+    private static readonly byte[] PngSignature =
+        [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
     private readonly IEnforcementProcessRunner _processRunner;
     private readonly TimeProvider _timeProvider;
 
@@ -686,6 +700,12 @@ public sealed class UwpEnforcementRunner
             workspace.ReportPath,
             cancellationToken);
         var plan = workspace.Input.StatePlan;
+        SynchronizeRequiredTodos(report, plan);
+        await MaterializeCanonicalEvidenceAsync(
+            workspace.Target,
+            report,
+            plan,
+            cancellationToken);
         report.Validation.SourceBaseline.Status = summary.SourceStatus;
         report.Validation.SourceBaseline.States = plan.States.Select(state =>
             new MigrationValidationState
@@ -721,6 +741,559 @@ public sealed class UwpEnforcementRunner
         await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
         return snapshot;
     }
+
+    private static void SynchronizeRequiredTodos(
+        MigrationReport report,
+        StatePlanDocument plan)
+    {
+        var duplicate = report.Todos
+            .GroupBy(todo => todo.Id, StringComparer.Ordinal)
+            .FirstOrDefault(group =>
+                string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new InvalidDataException(
+                "migration-report.json TODO IDs must be non-empty and unique before report synchronization.");
+        }
+
+        foreach (var todo in report.Todos.Where(todo =>
+            string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(todo.Status, "pending", StringComparison.OrdinalIgnoreCase)))
+        {
+            var states = plan.States.Where(state =>
+                state.TodoIds?.Contains(todo.Id, StringComparer.Ordinal) == true).ToArray();
+            if (states.Length > 0 && states.All(StateIsVerified))
+            {
+                todo.Status = "verified";
+            }
+        }
+    }
+
+    private static async Task MaterializeCanonicalEvidenceAsync(
+        DirectoryInfo target,
+        MigrationReport report,
+        StatePlanDocument plan,
+        CancellationToken cancellationToken)
+    {
+        var sourceRoot = ResolveCanonicalRoot(
+            target,
+            report.Validation.SourceBaseline.EvidenceRoot,
+            "source");
+        var targetRoot = ResolveCanonicalRoot(
+            target,
+            report.Validation.TargetReplay.EvidenceRoot,
+            "target");
+        ValidateCanonicalLayout(sourceRoot, targetRoot, plan);
+        var copies = new List<CanonicalEvidenceCopy>();
+
+        foreach (var state in plan.States)
+        {
+            ValidateCanonicalStateId(state.Id);
+            var sourceEvidence = await SelectCanonicalEvidenceAsync(
+                target,
+                state.Id,
+                "source",
+                state.Source.Evidence,
+                cancellationToken);
+            var targetEvidence = await SelectCanonicalEvidenceAsync(
+                target,
+                state.Id,
+                "target",
+                state.Target.Evidence,
+                cancellationToken);
+            copies.Add(new CanonicalEvidenceCopy(
+                sourceEvidence.ScreenshotPath,
+                ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png")));
+            copies.Add(new CanonicalEvidenceCopy(
+                sourceEvidence.TreePath,
+                ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json")));
+            copies.Add(new CanonicalEvidenceCopy(
+                targetEvidence.ScreenshotPath,
+                ResolveCanonicalDestination(target, targetRoot, state.Id, ".png")));
+            copies.Add(new CanonicalEvidenceCopy(
+                targetEvidence.TreePath,
+                ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json")));
+        }
+
+        foreach (var copy in copies)
+        {
+            await WriteCanonicalEvidenceAsync(target, copy, cancellationToken);
+        }
+    }
+
+    private static async Task<(bool Ready, string Reason)> AssessReportClosureAsync(
+        DirectoryInfo target,
+        MigrationReport report,
+        StatePlanDocument? plan,
+        string? statePlanError,
+        CancellationToken cancellationToken)
+    {
+        if (plan is null || !string.IsNullOrWhiteSpace(statePlanError))
+        {
+            return (false,
+                statePlanError ?? "A valid state plan is required to validate report closure.");
+        }
+
+        var duplicate = report.Todos
+            .GroupBy(todo => todo.Id, StringComparer.Ordinal)
+            .FirstOrDefault(group =>
+                string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
+        if (duplicate is not null)
+        {
+            return (false,
+                "migration-report.json TODO IDs must be non-empty and unique before closure.");
+        }
+
+        foreach (var todo in report.Todos.Where(todo =>
+            string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase) &&
+            !TerminalTodoStatuses.Contains(todo.Status)))
+        {
+            var states = plan.States.Where(state =>
+                state.TodoIds?.Contains(todo.Id, StringComparer.Ordinal) == true).ToArray();
+            if (states.Length == 0)
+            {
+                return (false,
+                    $"Required TODO {todo.Id} remains {todo.Status} and is not referenced by any state.");
+            }
+
+            var incomplete = states.Where(state => !StateIsVerified(state))
+                .Select(state => state.Id)
+                .ToArray();
+            if (incomplete.Length > 0)
+            {
+                return (false,
+                    $"Required TODO {todo.Id} remains {todo.Status}; mapped state(s) {string.Join(", ", incomplete)} are not fully verified.");
+            }
+
+            return (false,
+                $"Required TODO {todo.Id} remains {todo.Status} and must be synchronized to a terminal status.");
+        }
+
+        try
+        {
+            var sourceRoot = ResolveCanonicalRoot(
+                target,
+                report.Validation.SourceBaseline.EvidenceRoot,
+                "source");
+            var targetRoot = ResolveCanonicalRoot(
+                target,
+                report.Validation.TargetReplay.EvidenceRoot,
+                "target");
+            ValidateCanonicalLayout(sourceRoot, targetRoot, plan);
+            foreach (var state in plan.States)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ValidateCanonicalStateId(state.Id);
+                var sourceScreenshot = ResolveCanonicalDestination(
+                    target, sourceRoot, state.Id, ".png");
+                var sourceTree = ResolveCanonicalDestination(
+                    target, sourceRoot, state.Id, "-ui.json");
+                var targetScreenshot = ResolveCanonicalDestination(
+                    target, targetRoot, state.Id, ".png");
+                var targetTree = ResolveCanonicalDestination(
+                    target, targetRoot, state.Id, "-ui.json");
+                if (!await IsUsablePngAsync(sourceScreenshot.FullPath, cancellationToken))
+                {
+                    return (false,
+                        $"Canonical source screenshot is missing or invalid for state {state.Id}: {sourceScreenshot.RelativePath}.");
+                }
+                if (!await IsValidJsonTreeAsync(sourceTree.FullPath, cancellationToken))
+                {
+                    return (false,
+                        $"Canonical source UI tree is missing or invalid for state {state.Id}: {sourceTree.RelativePath}.");
+                }
+                if (!await IsUsablePngAsync(targetScreenshot.FullPath, cancellationToken))
+                {
+                    return (false,
+                        $"Canonical target screenshot is missing or invalid for state {state.Id}: {targetScreenshot.RelativePath}.");
+                }
+                if (!await IsValidJsonTreeAsync(targetTree.FullPath, cancellationToken))
+                {
+                    return (false,
+                        $"Canonical target UI tree is missing or invalid for state {state.Id}: {targetTree.RelativePath}.");
+                }
+            }
+        }
+        catch (InvalidDataException exception)
+        {
+            return (false, exception.Message);
+        }
+
+        return (true,
+            $"All {plan.States.Count} state(s) have canonical source and target evidence, and all required TODOs are terminal.");
+    }
+
+    private static CanonicalEvidenceRoot ResolveCanonicalRoot(
+        DirectoryInfo target,
+        string relativePath,
+        string side)
+    {
+        if (!EnforcementStore.TryResolveContainedPath(
+                target,
+                relativePath,
+                out var fullPath,
+                out var error))
+        {
+            throw new InvalidDataException(
+                $"The declared {side} evidence root is invalid: {error}");
+        }
+        if (File.Exists(fullPath))
+        {
+            throw new InvalidDataException(
+                $"The declared {side} evidence root is a file: {relativePath}");
+        }
+
+        return new CanonicalEvidenceRoot(relativePath, fullPath);
+    }
+
+    private static void ValidateCanonicalLayout(
+        CanonicalEvidenceRoot sourceRoot,
+        CanonicalEvidenceRoot targetRoot,
+        StatePlanDocument plan)
+    {
+        if (sourceRoot.FullPath.Equals(
+                targetRoot.FullPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "The declared source and target evidence roots must be distinct.");
+        }
+        var duplicate = plan.States
+            .GroupBy(state => state.Id, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new InvalidDataException(
+                $"State IDs must also be unique as Windows file names: {duplicate.Key}.");
+        }
+    }
+
+    private static CanonicalEvidenceDestination ResolveCanonicalDestination(
+        DirectoryInfo target,
+        CanonicalEvidenceRoot root,
+        string stateId,
+        string suffix)
+    {
+        ValidateCanonicalStateId(stateId);
+        var relativePath = $"{root.RelativePath.TrimEnd('/', '\\')}/{stateId}{suffix}";
+        if (!EnforcementStore.TryResolveContainedPath(
+                target,
+                relativePath,
+                out var fullPath,
+                out var error))
+        {
+            throw new InvalidDataException(
+                $"Canonical evidence path for state {stateId} is invalid: {error}");
+        }
+        var rootPrefix = root.FullPath.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Canonical evidence for state {stateId} must remain beneath the declared evidence root.");
+        }
+
+        return new CanonicalEvidenceDestination(relativePath, fullPath);
+    }
+
+    private static async Task<SelectedCanonicalEvidence> SelectCanonicalEvidenceAsync(
+        DirectoryInfo target,
+        string stateId,
+        string side,
+        IEnumerable<string>? evidencePaths,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<(string RelativePath, string FullPath)>();
+        foreach (var relativePath in evidencePaths ?? [])
+        {
+            if (!EnforcementStore.TryResolveContainedPath(
+                    target,
+                    relativePath,
+                    out var fullPath,
+                    out var error))
+            {
+                throw new InvalidDataException(
+                    $"State {stateId} {side} evidence path '{relativePath}' is invalid: {error}");
+            }
+            if (!File.Exists(fullPath))
+            {
+                throw new InvalidDataException(
+                    $"State {stateId} {side} evidence file does not exist: {relativePath}");
+            }
+            candidates.Add((relativePath, fullPath));
+        }
+        string? screenshot = null;
+        foreach (var candidate in candidates.AsEnumerable().Reverse().Where(candidate =>
+            Path.GetExtension(candidate.RelativePath)
+                .Equals(".png", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (await IsUsablePngAsync(candidate.FullPath, cancellationToken))
+            {
+                screenshot = candidate.FullPath;
+                break;
+            }
+        }
+        if (screenshot is null)
+        {
+            throw new InvalidDataException(
+                $"State {stateId} {side} evidence does not contain a usable PNG screenshot.");
+        }
+
+        string? tree = null;
+        foreach (var candidate in candidates.AsEnumerable().Reverse())
+        {
+            if (await IsValidJsonTreeAsync(candidate.FullPath, cancellationToken))
+            {
+                tree = candidate.FullPath;
+                break;
+            }
+        }
+        if (tree is null)
+        {
+            throw new InvalidDataException(
+                $"State {stateId} {side} evidence does not contain a parseable JSON UI tree.");
+        }
+
+        return new SelectedCanonicalEvidence(screenshot, tree);
+    }
+
+    private static async Task<bool> IsUsablePngAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+        try
+        {
+            await using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: PngSignature.Length,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var header = new byte[PngSignature.Length];
+            if (!await ReadExactlyAsync(stream, header, cancellationToken) ||
+                !header.AsSpan().SequenceEqual(PngSignature))
+            {
+                return false;
+            }
+
+            var chunkHeader = new byte[8];
+            var firstChunk = true;
+            var hasImageData = false;
+            while (await ReadExactlyAsync(stream, chunkHeader, cancellationToken))
+            {
+                var length = BinaryPrimitives.ReadUInt32BigEndian(
+                    chunkHeader.AsSpan(0, 4));
+                var type = chunkHeader.AsSpan(4, 4);
+                if (length > int.MaxValue ||
+                    stream.Length - stream.Position < length + 4)
+                {
+                    return false;
+                }
+                if (firstChunk)
+                {
+                    if (length != 13 || !type.SequenceEqual("IHDR"u8))
+                    {
+                        return false;
+                    }
+                    var imageHeader = new byte[13];
+                    if (!await ReadExactlyAsync(
+                            stream,
+                            imageHeader,
+                            cancellationToken) ||
+                        BinaryPrimitives.ReadUInt32BigEndian(
+                            imageHeader.AsSpan(0, 4)) == 0 ||
+                        BinaryPrimitives.ReadUInt32BigEndian(
+                            imageHeader.AsSpan(4, 4)) == 0)
+                    {
+                        return false;
+                    }
+                    stream.Seek(4, SeekOrigin.Current);
+                    firstChunk = false;
+                    continue;
+                }
+
+                if (type.SequenceEqual("IDAT"u8))
+                {
+                    hasImageData = true;
+                }
+                stream.Seek(length + 4, SeekOrigin.Current);
+                if (type.SequenceEqual("IEND"u8))
+                {
+                    return length == 0 && hasImageData;
+                }
+            }
+            return false;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> ReadExactlyAsync(
+        Stream stream,
+        Memory<byte> buffer,
+        CancellationToken cancellationToken)
+    {
+        var read = 0;
+        while (read < buffer.Length)
+        {
+            var count = await stream.ReadAsync(
+                buffer[read..],
+                cancellationToken);
+            if (count == 0)
+            {
+                return false;
+            }
+            read += count;
+        }
+        return true;
+    }
+
+    private static async Task<bool> IsValidJsonTreeAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+        try
+        {
+            await using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 4096,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            using var document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken);
+            return ContainsUiTree(document.RootElement);
+        }
+        catch (Exception exception) when (
+            exception is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsUiTree(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            if (root.TryGetProperty("windows", out var windows) &&
+                windows.ValueKind == JsonValueKind.Array &&
+                windows.EnumerateArray().Any(window =>
+                    window.ValueKind == JsonValueKind.Object &&
+                    window.TryGetProperty("elements", out var elements) &&
+                    IsNonEmptyElementArray(elements)))
+            {
+                return true;
+            }
+
+            return root.TryGetProperty("elements", out var rootElements) &&
+                IsNonEmptyElementArray(rootElements);
+        }
+
+        return root.ValueKind == JsonValueKind.Array &&
+            IsNonEmptyElementArray(root);
+    }
+
+    private static bool IsNonEmptyElementArray(JsonElement elements) =>
+        elements.ValueKind == JsonValueKind.Array &&
+        elements.EnumerateArray().Any(element =>
+            element.ValueKind == JsonValueKind.Object &&
+            (element.TryGetProperty("type", out _) ||
+             element.TryGetProperty("controlType", out _) ||
+             element.TryGetProperty("className", out _)));
+
+    private static async Task WriteCanonicalEvidenceAsync(
+        DirectoryInfo target,
+        CanonicalEvidenceCopy copy,
+        CancellationToken cancellationToken)
+    {
+        if (copy.SourcePath.Equals(
+                copy.Destination.FullPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(copy.Destination.FullPath)!);
+        if (!EnforcementStore.TryResolveContainedPath(
+                target,
+                copy.Destination.RelativePath,
+                out var destinationPath,
+                out var error) ||
+            !destinationPath.Equals(
+                copy.Destination.FullPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Canonical evidence destination is no longer safe: {error}");
+        }
+
+        var bytes = await File.ReadAllBytesAsync(
+            copy.SourcePath,
+            cancellationToken);
+        var tempPath = $"{destinationPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllBytesAsync(tempPath, bytes, cancellationToken);
+            File.Move(tempPath, destinationPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+    }
+
+    private static void ValidateCanonicalStateId(string stateId)
+    {
+        if (string.IsNullOrWhiteSpace(stateId) ||
+            stateId is "." or ".." ||
+            stateId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            stateId.Contains('/') ||
+            stateId.Contains('\\'))
+        {
+            throw new InvalidDataException(
+                $"State ID '{stateId}' cannot be used as a canonical evidence file name.");
+        }
+    }
+
+    private static bool StateIsVerified(MigrationState state) =>
+        state.Source.Status == "captured" &&
+        state.Target.Status == "passed" &&
+        state.Comparison.Status == "verified";
+
+    private sealed record CanonicalEvidenceRoot(
+        string RelativePath,
+        string FullPath);
+
+    private sealed record CanonicalEvidenceDestination(
+        string RelativePath,
+        string FullPath);
+
+    private sealed record SelectedCanonicalEvidence(
+        string ScreenshotPath,
+        string TreePath);
+
+    private sealed record CanonicalEvidenceCopy(
+        string SourcePath,
+        CanonicalEvidenceDestination Destination);
 
     private async Task RunBuildAsync(
         Workspace workspace,
@@ -1081,6 +1654,13 @@ public sealed class UwpEnforcementRunner
         var mechanicalReady =
             report.Status == "mechanical-migration-complete" &&
             report.MechanicalVerification.Status == "passed";
+        var (reportClosureReady, reportClosureReason) =
+            await AssessReportClosureAsync(
+                target,
+                report,
+                statePlan,
+                statePlanError,
+                cancellationToken);
         var input = new EnforcementEvaluationInput
         {
             TargetRoot = target,
@@ -1104,6 +1684,8 @@ public sealed class UwpEnforcementRunner
             Progress = progress,
             PersistedDisposition = persistedState?.Disposition,
             ReportValidation = summary,
+            ReportClosureReady = reportClosureReady,
+            ReportClosureReason = reportClosureReason,
             MaximumSignatureAttempts = maximumSignatureAttempts,
             GeneratedAt = generatedAt
         };

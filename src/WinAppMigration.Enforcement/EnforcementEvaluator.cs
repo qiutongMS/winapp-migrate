@@ -19,6 +19,7 @@ public static class EnforcementEvaluator
         EnforcementEvaluationInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
+        input = ReopenInvalidCompletion(input);
         if (WorkflowDispositions.Terminal(input) is { } terminal)
         {
             var frozenStage = input.Progress?.Stage ?? WorkflowStage.SourceOracle;
@@ -220,6 +221,11 @@ public static class EnforcementEvaluator
             planValid
                 ? reportReason
                 : "Report synchronization requires a valid state plan.");
+        AddGate(
+            gates,
+            "report-closure",
+            input.ReportClosureReady,
+            input.ReportClosureReason);
 
         var retryFrontier = artifactsValid ? FindExhaustedRetry(input) : null;
         AddGate(
@@ -244,6 +250,7 @@ public static class EnforcementEvaluator
             statesReady,
             stateFrontier,
             reportSynchronized,
+            input.ReportClosureReady,
             retryFrontier);
         var noProgress = artifactsValid ? FailureProtocol.FindChangeRequired(input) : null;
         if (artifactsValid && planValid && diagnosisFrontier is null && noProgress is not null)
@@ -290,6 +297,36 @@ public static class EnforcementEvaluator
         };
         WorkflowDispositions.Update(snapshot, input.GeneratedAt);
         return snapshot;
+    }
+
+    private static EnforcementEvaluationInput ReopenInvalidCompletion(
+        EnforcementEvaluationInput input)
+    {
+        if (input.ReportClosureReady)
+        {
+            return input;
+        }
+
+        var persistedDisposition = input.PersistedDisposition;
+        if (persistedDisposition is { Kind: "complete", Terminal: true })
+        {
+            persistedDisposition = null;
+        }
+        if (input.Progress?.Disposition is
+            { Kind: "complete", Terminal: true })
+        {
+            input.Progress.Disposition = new RunDisposition
+            {
+                Kind = "continue",
+                ReasonCode = "report-closure-reopened",
+                Terminal = false,
+                Retryable = true,
+                AllowedOperations = [],
+                Finalization = "not-ready"
+            };
+        }
+
+        return input with { PersistedDisposition = persistedDisposition };
     }
 
     private static bool FindingCollectionsValid(SemanticFindingLedger? ledger) =>
@@ -700,6 +737,7 @@ public static class EnforcementEvaluator
         bool statesReady,
         EnforcementFrontier? stateFrontier,
         bool reportSynchronized,
+        bool reportClosureReady,
         EnforcementFrontier? retryFrontier)
     {
         if (!planValid)
@@ -796,6 +834,14 @@ public static class EnforcementEvaluator
                 Kind = "report-sync",
                 Reason =
                     "Reconcile migration-report.json validation summary with the state plan."
+            };
+        }
+        if (!reportClosureReady)
+        {
+            return new EnforcementFrontier
+            {
+                Kind = "report-closure",
+                Reason = input.ReportClosureReason
             };
         }
         return null;

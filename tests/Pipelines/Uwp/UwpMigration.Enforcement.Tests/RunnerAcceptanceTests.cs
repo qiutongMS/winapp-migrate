@@ -678,6 +678,197 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("state-1", report.Validation.SourceBaseline.States.Single().Id);
         Assert.AreEqual("captured", report.Validation.SourceBaseline.States.Single().Status);
         Assert.AreEqual("passed", report.Validation.TargetReplay.States.Single().Status);
+        CollectionAssert.AreEqual(
+            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/states/state-1/source.png")),
+            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/source/state-1.png")));
+        Assert.AreEqual(
+            await File.ReadAllTextAsync(fixture.Path(".migration-evidence/states/state-1/source-ui.json")),
+            await File.ReadAllTextAsync(fixture.Path(".migration-evidence/source/state-1-ui.json")));
+        CollectionAssert.AreEqual(
+            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/states/state-1/target.png")),
+            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/target/state-1.png")));
+        Assert.AreEqual(
+            await File.ReadAllTextAsync(fixture.Path(".migration-evidence/states/state-1/stdout.log")),
+            await File.ReadAllTextAsync(fixture.Path(".migration-evidence/target/state-1-ui.json")));
+    }
+
+    [TestMethod]
+    public async Task SyncReport_VerifiesPendingRequiredTodoOnlyAfterMappedStatesClose()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "UWMIG001",
+            Category = "app-resources",
+            Priority = "required",
+            Summary = "Finish app resources.",
+            Reason = "The app resource migration requires semantic verification."
+        });
+        await fixture.SaveReportAsync(report);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(
+            ".migration-evidence/state-plan.json");
+        plan.States[0].TodoIds = ["UWMIG001"];
+        await EnforcementStore.WriteAtomicAsync(
+            fixture.Root, ".migration-evidence/state-plan.json", plan);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        await fixture.WriteTargetEvidenceAsync();
+        plan = await fixture.LoadAsync<StatePlanDocument>(
+            ".migration-evidence/state-plan.json");
+        plan.States[0].Target.Evidence =
+        [
+            ".migration-evidence/states/state-1/target.png",
+            ".migration-evidence/states/state-1/stdout.log"
+        ];
+        await EnforcementStore.WriteAtomicAsync(
+            fixture.Root, ".migration-evidence/state-plan.json", plan);
+
+        var open = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+
+        Assert.AreEqual("blocked", open.Status);
+        Assert.AreEqual(
+            "pending",
+            (await fixture.LoadReportAsync()).Todos.Single().Status);
+
+        await fixture.VerifyStateAsync();
+        var closed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+
+        Assert.AreEqual("passed", closed.Status);
+        Assert.AreEqual(
+            "verified",
+            (await fixture.LoadReportAsync()).Todos.Single().Status);
+    }
+
+    [TestMethod]
+    public async Task SyncReport_UnreferencedPendingRequiredTodoBlocksClosure()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+        var initiallyComplete =
+            await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        Assert.AreEqual("complete", initiallyComplete.Disposition?.Kind);
+
+        var report = await fixture.LoadReportAsync();
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "UWMIG002",
+            Category = "activation",
+            Priority = "required",
+            Summary = "Finish activation behavior.",
+            Reason = "The required activation work is not mapped to a state."
+        });
+        await fixture.SaveReportAsync(report);
+
+        var reassessed = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        Assert.AreEqual("blocked", reassessed.Status);
+        Assert.AreEqual("report-closure", reassessed.Frontier?.Kind);
+
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root);
+
+        Assert.AreEqual("blocked", snapshot.Status);
+        Assert.AreNotEqual("complete", snapshot.Disposition?.Kind);
+        var gate = snapshot.Gates.Single(item => item.Id == "report-closure");
+        Assert.AreEqual("blocked", gate.Status);
+        StringAssert.Contains(gate.Reason, "UWMIG002");
+        StringAssert.Contains(gate.Reason, "not referenced by any state");
+        Assert.AreEqual(
+            "pending",
+            (await fixture.LoadReportAsync()).Todos.Single().Status);
+    }
+
+    [TestMethod]
+    public async Task SyncReport_PreservesExistingTerminalTodoStatuses()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        report.Todos.AddRange(
+        [
+            new MigrationTodo
+            {
+                Id = "UWMIG001",
+                Category = "app-resources",
+                Priority = "required",
+                Status = "accepted",
+                Summary = "Accepted app resource decision.",
+                Reason = "The decision was explicitly accepted."
+            },
+            new MigrationTodo
+            {
+                Id = "UWMIG003",
+                Category = "code",
+                Priority = "required",
+                Status = "verified",
+                Summary = "Verified code migration.",
+                Reason = "The code behavior was already verified."
+            }
+        ]);
+        await fixture.SaveReportAsync(report);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(
+            ".migration-evidence/state-plan.json");
+        plan.States[0].TodoIds = ["UWMIG001", "UWMIG003"];
+        await EnforcementStore.WriteAtomicAsync(
+            fixture.Root, ".migration-evidence/state-plan.json", plan);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root);
+
+        Assert.AreEqual("passed", snapshot.Status);
+        var statuses = (await fixture.LoadReportAsync()).Todos
+            .ToDictionary(todo => todo.Id, todo => todo.Status);
+        Assert.AreEqual("accepted", statuses["UWMIG001"]);
+        Assert.AreEqual("verified", statuses["UWMIG003"]);
+    }
+
+    [TestMethod]
+    [DataRow("source-screenshot")]
+    [DataRow("target-tree")]
+    public async Task SyncReport_RejectsMissingOrInvalidCanonicalEvidence(
+        string invalidEvidence)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+        if (invalidEvidence == "source-screenshot")
+        {
+            File.Delete(fixture.Path(
+                ".migration-evidence/states/state-1/source.png"));
+        }
+        else
+        {
+            await File.WriteAllTextAsync(
+                fixture.Path(".migration-evidence/states/state-1/stdout.log"),
+                """{"success":true,"message":"The action completed."}""");
+        }
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root));
+    }
+
+    [TestMethod]
+    public async Task SyncReport_RejectsEvidencePathOutsideTargetRoot()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+        var plan = await fixture.LoadAsync<StatePlanDocument>(
+            ".migration-evidence/state-plan.json");
+        plan.States[0].Source.Evidence[0] = "../outside.png";
+        await EnforcementStore.WriteAtomicAsync(
+            fixture.Root, ".migration-evidence/state-plan.json", plan);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root));
+
+        StringAssert.Contains(exception.Message, "outside.png");
     }
 
     [TestMethod]
@@ -911,7 +1102,21 @@ public sealed partial class RunnerAcceptanceTests
                 }
             };
             report.MechanicalVerification.Status = "passed";
-            await EnforcementStore.WriteTextAtomicAsync(root, ".migration-evidence/source.txt", "Source oracle captured.");
+            await WritePngAsync(
+                System.IO.Path.Combine(
+                    root.FullName,
+                    ".migration-evidence",
+                    "states",
+                    "state-1",
+                    "source.png"));
+            await EnforcementStore.WriteTextAtomicAsync(
+                root,
+                ".migration-evidence/states/state-1/source-ui.json",
+                """{"windows":[{"elements":[{"type":"Window","name":"Source"}]}]}""");
+            await EnforcementStore.WriteTextAtomicAsync(
+                root,
+                ".migration-evidence/states/state-1/source-action.json",
+                """{"success":true,"message":"The action completed."}""");
             await File.WriteAllTextAsync(
                 System.IO.Path.Combine(root.FullName, "migration-report.json"),
                 JsonSerializer.Serialize(
@@ -932,7 +1137,12 @@ public sealed partial class RunnerAcceptanceTests
                             Source = new StateObservation
                             {
                                 Status = "captured",
-                                Evidence = [".migration-evidence/source.txt"]
+                                Evidence =
+                                [
+                                    ".migration-evidence/states/state-1/source.png",
+                                    ".migration-evidence/states/state-1/source-action.json",
+                                    ".migration-evidence/states/state-1/source-ui.json"
+                                ]
                             },
                             Target = new StateObservation
                             {
@@ -953,12 +1163,41 @@ public sealed partial class RunnerAcceptanceTests
         internal async Task VerifyStateAsync()
         {
             var plan = await LoadAsync<StatePlanDocument>(".migration-evidence/state-plan.json");
-            await EnforcementStore.WriteTextAtomicAsync(Root, ".migration-evidence/target.txt", "Target state observed.");
+            await WriteTargetEvidenceAsync();
             plan.States[0].Target.Status = "passed";
-            plan.States[0].Target.Evidence = [".migration-evidence/target.txt"];
+            plan.States[0].Target.Evidence =
+            [
+                ".migration-evidence/states/state-1/target.png",
+                ".migration-evidence/states/state-1/action.log",
+                ".migration-evidence/states/state-1/stdout.log"
+            ];
             plan.States[0].Comparison.Status = "verified";
             await EnforcementStore.WriteAtomicAsync(Root, ".migration-evidence/state-plan.json", plan);
         }
+
+        internal async Task WriteTargetEvidenceAsync()
+        {
+            await WritePngAsync(Path(
+                ".migration-evidence/states/state-1/target.png"));
+            await File.WriteAllTextAsync(
+                Path(".migration-evidence/states/state-1/action.log"),
+                """{"success":true,"message":"The action completed."}""");
+            await File.WriteAllTextAsync(
+                Path(".migration-evidence/states/state-1/stdout.log"),
+                """{"windows":[{"elements":[{"type":"Window","name":"Target"}]}]}""");
+        }
+
+        internal async Task<MigrationReport> LoadReportAsync() =>
+            JsonSerializer.Deserialize(
+                await File.ReadAllTextAsync(Path("migration-report.json")),
+                MigrateJsonContext.Default.MigrationReport)!;
+
+        internal async Task SaveReportAsync(MigrationReport report) =>
+            await File.WriteAllTextAsync(
+                Path("migration-report.json"),
+                JsonSerializer.Serialize(
+                    report,
+                    MigrateJsonContext.Default.MigrationReport));
 
         internal string Path(string relativePath) =>
             System.IO.Path.Combine(
@@ -973,6 +1212,15 @@ public sealed partial class RunnerAcceptanceTests
                 relativePath);
             Assert.IsNull(error);
             return value!;
+        }
+
+        private static async Task WritePngAsync(string path)
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            await File.WriteAllBytesAsync(
+                path,
+                Convert.FromBase64String(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
         }
 
         public void Dispose() => TestDirectories.Delete(Root);

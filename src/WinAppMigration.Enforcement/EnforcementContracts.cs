@@ -559,6 +559,8 @@ public sealed record EnforcementEvaluationInput
     public WorkflowProgress? Progress { get; init; }
     public RunDisposition? PersistedDisposition { get; init; }
     public required PipelineValidationSummary ReportValidation { get; init; }
+    public required bool ReportClosureReady { get; init; }
+    public required string ReportClosureReason { get; init; }
     public int MaximumSignatureAttempts { get; init; } = 2;
     public DateTimeOffset GeneratedAt { get; init; } = DateTimeOffset.UtcNow;
 }
