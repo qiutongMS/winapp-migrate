@@ -1304,6 +1304,11 @@ public class MigrateCommandTests : MigrateCommandTestBase
             .Any(item => item.GetString()!.Contains(
                 "generic TextBlock",
                 StringComparison.Ordinal)));
+        Assert.IsTrue(guidance.GetProperty("forbiddenShortcuts")
+            .EnumerateArray()
+            .Any(item => item.GetString()!.Contains(
+                "NavigationViewItem ControlTemplate",
+                StringComparison.Ordinal)));
         Assert.IsTrue(guidance.GetProperty("completionConditions")
             .EnumerateArray()
             .Any(item => item.GetString()!.Contains(
@@ -1356,6 +1361,112 @@ public class MigrateCommandTests : MigrateCommandTestBase
             Path.Combine(target.FullName, "migration-report.json"),
             TestContext.CancellationToken));
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
+            .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
+    }
+
+    [TestMethod]
+    public async Task Migrate_ReportsInlineNavigationViewSelectorSwitchFallback()
+    {
+        var source = await CreateUwpSourceAsync("InlineSelectorApp");
+        await WriteAsync(source, "MainPage.xaml", """
+            <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                  xmlns:selectors="using:Independent.Navigation">
+              <Page.Resources>
+                <DataTemplate x:Key="TextTemplate"><TextBlock Text="{Binding}" /></DataTemplate>
+              </Page.Resources>
+              <NavigationView>
+                <NavigationView.MenuItemTemplateSelector>
+                  <selectors:MixedItemSelector TextTemplate="{StaticResource TextTemplate}" />
+                </NavigationView.MenuItemTemplateSelector>
+              </NavigationView>
+            </Page>
+            """);
+        await WriteAsync(source, "MixedItemSelector.cs", """
+            using Windows.UI.Xaml;
+            using Windows.UI.Xaml.Controls;
+            namespace Independent.Navigation;
+            public sealed class MixedItemSelector : DataTemplateSelector
+            {
+                public DataTemplate TextTemplate { get; set; }
+
+                protected override DataTemplate SelectTemplateCore(
+                    object item,
+                    DependencyObject container) =>
+                    item switch
+                    {
+                        string => TextTemplate,
+                        _ => base.SelectTemplateCore(item, container)
+                    };
+            }
+            """);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "inline-selector-output"));
+        ArrangeTemplateCreation(target, "InlineSelectorApp");
+
+        var (exit, output) = await InvokeAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        var todo = report.RootElement.GetProperty("todos").EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "UWMIG014");
+        CollectionAssert.AreEquivalent(
+            new[] { "MixedItemSelector.cs", "MainPage.xaml" },
+            todo.GetProperty("locations").EnumerateArray()
+                .Select(location => location.GetProperty("path").GetString())
+                .ToArray());
+    }
+
+    [TestMethod]
+    public async Task Migrate_NullReturningSelectorHelperDoesNotReportTodo()
+    {
+        var source = await CreateUwpSourceAsync("SelectorHelperApp");
+        await WriteAsync(source, "MainPage.xaml", """
+            <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                  xmlns:local="using:Independent.Navigation">
+              <Page.Resources>
+                <DataTemplate x:Key="DefaultTemplate"><TextBlock Text="Default" /></DataTemplate>
+                <local:SafeSelector x:Key="SafeSelector"
+                                    DefaultTemplate="{StaticResource DefaultTemplate}" />
+              </Page.Resources>
+              <NavigationView MenuItemTemplateSelector="{StaticResource SafeSelector}" />
+            </Page>
+            """);
+        await WriteAsync(source, "SafeSelector.cs", """
+            using Windows.UI.Xaml;
+            using Windows.UI.Xaml.Controls;
+            namespace Independent.Navigation;
+            public sealed class SafeSelector : DataTemplateSelector
+            {
+                public DataTemplate DefaultTemplate { get; set; }
+
+                protected override DataTemplate SelectTemplateCore(object item)
+                {
+                    return DefaultTemplate;
+                }
+
+                private static DataTemplate UnusedFallback()
+                {
+                    return null;
+                }
+            }
+            """);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "selector-helper-output"));
+        ArrangeTemplateCreation(target, "SelectorHelperApp");
+
+        var (exit, output) = await InvokeAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
             .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
     }
 

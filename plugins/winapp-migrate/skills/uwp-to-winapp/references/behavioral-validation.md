@@ -103,36 +103,45 @@ Retain screenshots as evidence files, but do not open every capture through a to
 
 Prefer user-provided baseline evidence when it already covers the plan. Otherwise:
 
-1. Capture a pre-launch window inventory in its own command, retaining only `hwnd`, `processId`, `title`, and `className`.
-2. Launch the exact source project separately:
+1. Launch the exact report-recorded source project through the source gateway:
 
    ```powershell
-   winapp run "<source.csproj>" --arch <x64|arm64|x86> --detach --json
+   winapp-migrate uwp source run "<target>" --arch <x64|arm64|x86>
    ```
 
-3. If project mode reports a build failure, use its structured diagnostics. Never edit the source project for baseline capture.
-4. Treat a compiled and registered source that fails activation as a runtime failure. Make one diagnostic launch without incompatible `--detach` and `--json` options:
+   The gateway resolves the source root and project only from
+   `migration-report.json`, records the pre/post launch window inventories,
+   and returns the newly created HWNDs authorized for source capture. Do not
+   pass a source path or invoke raw WinApp CLI.
+2. If project mode reports a build failure, use the persisted structured diagnostics. Never edit the source project for baseline capture.
+3. Treat a compiled and registered source that fails activation as a runtime failure. Make one gateway-mediated diagnostic launch:
 
    ```powershell
-   winapp run "<source.csproj>" --arch <x64|arm64|x86> --debug-output
+   winapp-migrate uwp source diagnose "<target>" --arch <x64|arm64|x86>
    ```
 
-5. If a Debug-only startup failure is plausible, make at most one Release attempt. After bounded recovery, record affected states as `unverified`.
-6. Poll `winapp ui list-windows --json` and the returned PID for at most 10 seconds. A UWP top-level window can belong to `ApplicationFrameHost`; identify it by the before/after HWND difference, title, and timing. Never stop `ApplicationFrameHost`.
+4. If a Debug-only startup failure is plausible, make at most one Release attempt. After bounded recovery, record affected states as `unverified`.
+5. Use only an HWND in the run receipt's `authorizedWindows`. The gateway derives this capability from the before/after inventory because a UWP top-level window can belong to `ApplicationFrameHost`. Never stop `ApplicationFrameHost`.
 
 Capture states with the resolved HWND:
 
 ```powershell
-winapp ui inspect -w <hwnd> -d 8 --json
-winapp ui screenshot -w <hwnd> --focus --json -o "<evidence-path>.png"
-winapp ui invoke "<semantic-name>" -w <hwnd> --json
+winapp-migrate uwp source capture "<target>" -- inspect -w <hwnd> -d 8 --json
+winapp-migrate uwp source capture "<target>" -- screenshot -w <hwnd> --focus --json -o "<source-evidence-path>.png"
+winapp-migrate uwp source capture "<target>" -- invoke "<semantic-name>" -w <hwnd> --json
 ```
 
-Persist command JSON rather than relying on terminal scrollback. After each action, inspect again and confirm the expected state before taking its screenshot. Prefer visible semantic names because they can survive framework-specific AutomationId changes.
+The gateway persists command JSON, raw stdout/stderr, and a per-probe receipt
+under the report-declared source evidence root. Screenshot output must also
+remain under that root. After each action, inspect again and confirm the
+expected state before taking its screenshot. Prefer visible semantic names
+because they can survive framework-specific AutomationId changes.
 
 Use `blocked` only for a known external prerequisite such as unavailable permissions, data, hardware, or credentials. Use `unverified` after bounded capture or comparison finishes without usable evidence and no specific outstanding prerequisite remains.
 
-After source capture, close the exact source HWND through its UIA Close element and confirm it disappears. If it has no UIA Close element, stop only the exact source PID returned by `winapp run`. Never clean up by broad process name.
+After source capture, close the exact source HWND through `uwp source capture`
+and confirm it disappears. If it has no UIA Close element, stop only the exact
+source PID returned by `uwp source run`. Never clean up by broad process name.
 
 After persisting the completed required source states, immediately run
 `winapp-migrate uwp closure assess "<target>"` again and require
@@ -159,10 +168,11 @@ diagnostics, exit codes, fingerprints, and attestations. Do not substitute a
 wrapper script or copied analyzer DLL. Replay the active sentinel before
 peripheral features.
 
-For the target, never invoke raw `winapp run`, `winapp build`, or `winapp ui`.
-Those calls bypass target fingerprinting, replay identity,
-and evidence provenance, so their output cannot close a state. Source baseline
-capture remains outside this target-only boundary.
+Never invoke raw `winapp run`, `winapp build`, or `winapp ui` for either side.
+Those calls bypass source identity/window authorization or target
+fingerprinting/replay identity and evidence provenance, so their output cannot
+close a state. The installed Copilot plugin guard denies these calls in an active
+migration session; do not disable or bypass it.
 
 If the detached app exits, turns blank, or never exposes a usable window, run
 one foreground diagnostic launch through the gateway:

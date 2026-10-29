@@ -80,6 +80,9 @@ carry its risks into the finding, and reject every forbidden shortcut. Copy the
 selected strategy ID into the finding's resolution strategy and map its
 completion conditions to state-plan evidence. If no candidate applies, perform
 source-first diagnosis rather than inventing a hybrid or editing the report.
+When delegating implementation, pass the relevant guidance and proven strategy
+preconditions into the delegated task; a subagent must not reconstruct the
+contract from the TODO summary alone.
 
 Choose the least invasive strategy that preserves the source invariant:
 

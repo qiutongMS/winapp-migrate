@@ -7,7 +7,7 @@ description: "Use immediately when migrating, porting, or converting a C# UWP ap
 
 Preserve the app; do not redesign it. Keep every page, control, resource, helper, navigation path, and user-visible behavior unless authoritative platform evidence proves there is no WinUI 3 desktop equivalent. Report unsupported behavior explicitly; never omit it silently.
 
-This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.5`. WinApp CLI remains a separate implementation tool, but every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp closure` boundary.
+This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.5`. WinApp CLI remains a separate implementation tool, but every source baseline operation must cross the `winapp-migrate uwp source` boundary and every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp closure` boundary.
 
 ## Tool and contract compatibility
 
@@ -16,7 +16,7 @@ Treat three capabilities as independent:
 | Capability | Required contract | Current compatibility truth |
 |---|---|---|
 | UWP migration and closure | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, and `closure`; migration report schema `1.5`, closure evidence schema `1.0`, workflow progress schema `3.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its target-operation boundary. |
-| Build, register, launch, diagnose, and automate | Gateway-mediated WinApp CLI `run` and `ui` capabilities | WinApp CLI 0.7+ can supply these capabilities. The gateway resolves it from `--winapp`, then `WINAPP_MIGRATE_WINAPP_PATH`, then PATH; it is valid for the raw executable to be absent from the agent's PATH. |
+| Build, register, launch, diagnose, and automate | Gateway-mediated WinApp CLI `run` and `ui` capabilities | WinApp CLI 0.7+ can supply these capabilities. The source and closure gateways resolve it from `--winapp`, then `WINAPP_MIGRATE_WINAPP_PATH`, then PATH; it is valid for the raw executable to be absent from the agent's PATH. |
 | Static WinUI diagnostics | A project `PackageReference` to `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` with `PrivateAssets="all"` | The analyzer is a separate preview/`0.x` NuGet package. WinApp CLI does not inject it, and this plugin does not bundle its DLL. |
 
 Run these checks before changing the source or target:
@@ -28,14 +28,16 @@ winapp-migrate uwp --help
 winapp-migrate uwp migrate --help
 winapp-migrate uwp verify --help
 winapp-migrate uwp decide-project-item --help
+winapp-migrate uwp source --help
 winapp-migrate uwp closure --help
 ```
 
 Verify from the actual output that:
 
-1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, and `closure`;
-2. `winapp-migrate uwp closure --help` exposes `assess`, `attest`, `capture`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
-3. the configured WinApp CLI satisfies the gateway contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
+1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, `source`, and `closure`;
+2. `winapp-migrate uwp source --help` exposes `run`, `capture`, and `diagnose`;
+3. `winapp-migrate uwp closure --help` exposes `assess`, `attest`, `capture`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
+4. the configured WinApp CLI satisfies the gateway contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
 
 Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.5`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
 
@@ -85,7 +87,7 @@ If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is avai
 
 - `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, canonical closure attestations, evidence freshness, closure gates, and its mechanically owned schema `1.5` report fields.
 - This skill owns semantic decisions, dependency-contract preservation, target implementation, and behavioral validation.
-- WinApp CLI owns the underlying build, registration, launch, crash diagnostics, and UI automation. The closure gateway owns every target invocation and its provenance; read-only source baseline capture may still use WinApp CLI directly.
+- WinApp CLI owns the underlying build, registration, launch, crash diagnostics, and UI automation. The source gateway owns the exact source project identity, source launch/window capability, and source evidence provenance. The closure gateway owns every target invocation and its provenance.
 - The analyzer reports static WinUI risks during ordinary builds. It does not create the migration report and does not replace runtime replay.
 
 Do not duplicate `winapp-migrate uwp` checks with ad hoc extension lists or repository-wide searches when current schema `1.5` evidence already covers them. An empty migration TODO list still does not guarantee a buildable, runnable, or behaviorally equivalent app.
@@ -99,7 +101,7 @@ Before semantic edits:
 3. Confirm `source.projectFile` identifies that exact entry project.
 4. Require the overall mechanical result, project graph, project-item accounting, and mechanically eligible activation declarations to be in the report-documented ready state.
 5. If mechanically owned evidence is stale or failed, run `winapp-migrate uwp verify "<target>"`. For a decision-required project item, use the stable item ID and an allowed strategy from `winapp-migrate uwp decide-project-item --help`, then run `verify` again. Never edit mechanically owned fields by hand.
-6. For every required TODO with `guidance`, treat its `facts` and `mechanicallyAppliedTransforms` as tool-owned evidence. A `candidateStrategy` is applicable only when its listed preconditions are proven from the source and target; record the selected strategy in the semantic finding ledger and obey its risks, `forbiddenShortcuts`, and `completionConditions`. Map the TODO to every state needed to prove those conditions. Do not inject guidance as target-code comments or treat a candidate as an automatic repair.
+6. For every required TODO with `guidance`, treat its `facts` and `mechanicallyAppliedTransforms` as tool-owned evidence. A `candidateStrategy` is applicable only when its listed preconditions are proven from the source and target; record the selected strategy in the semantic finding ledger and obey its risks, `forbiddenShortcuts`, and `completionConditions`. Map the TODO to every state needed to prove those conditions. If implementation is delegated, include the relevant facts, selected strategy, risks, forbidden shortcuts, and completion conditions in the delegated task. Do not inject guidance as target-code comments or treat a candidate as an automatic repair.
 7. Read startup, the feature registry or navigation shell, `dependencyAnalysis`, `activationAnalysis`, and enough source to classify the migration as fast or expanded.
 8. Identify the source behavior that proves the app's primary purpose and any user-critical flow.
 

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "matcher": "powershell",
+        "powershell": "& \"${PLUGIN_ROOT}/com.github.copilot/hooks/guard-winapp-boundary.ps1\"",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

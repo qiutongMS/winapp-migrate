@@ -111,6 +111,7 @@ public static partial class MechanicalMigration
                     ForbiddenShortcuts =
                     [
                         "Do not assume a generic TextBlock template preserves native NavigationView items or separators.",
+                        "Do not replace the NavigationViewItem ControlTemplate to recreate selection visuals when a container ContentTemplate preserves the native item behavior.",
                         "Do not treat successful navigation as proof that selected-state visuals are correct.",
                         "Do not return null or delegate the fallback to a base implementation that returns null."
                     ],

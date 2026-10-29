@@ -13,7 +13,7 @@ plugins/winapp-migrate/                    Agent Plugin and migration Skills
   skills/uwp-to-winapp/                    UWP-to-WinApp semantic workflow
 src/WinAppMigration.Cli/                   `winapp-migrate` command line
 src/WinAppMigration.Enforcement/           Shared evidence and closure engine
-src/Pipelines/Uwp/UwpMigration.Contracts/ UWP report schema 1.4 contracts
+src/Pipelines/Uwp/UwpMigration.Contracts/ UWP report schema 1.5 contracts
 src/Pipelines/Uwp/UwpMigration.Enforcement/ UWP report and WinApp CLI adapter
 src/Pipelines/Uwp/UwpMigration.Mechanical/ Deterministic UWP conversion
 tests/Pipelines/Uwp/                       UWP pipeline tests
@@ -21,14 +21,14 @@ tests/Pipelines/Uwp/                       UWP pipeline tests
 
 The common closure layer owns phase state, target fingerprints, evidence
 freshness, diagnostic grouping, canonical replay, and closure
-gates. The UWP adapter binds those shared contracts to schema 1.4 and invokes
+gates. The UWP adapter binds those shared contracts to schema 1.5 and invokes
 released WinApp CLI commands. UWP-specific activation, package, project-item,
 XAML, and C# behavior stays in the UWP pipeline rather than being prematurely
 generalized.
 
 ## UWP pipeline
 
-The UWP pipeline owns schema 1.4 reports, source and dependency inventory,
+The UWP pipeline owns schema 1.5 reports, source and dependency inventory,
 activation declarations, safe filesystem handling, deterministic XAML and C#
 transforms, residual findings, target-project graph verification, MSBuild item
 evaluation, and the six explicit project-item decision strategies.
@@ -38,6 +38,9 @@ winapp-migrate uwp create <source> --output <target>
 winapp-migrate uwp migrate <source> --output <target>
 winapp-migrate uwp verify <target>
 winapp-migrate uwp decide-project-item <target> <item> <strategy> <rationale>
+winapp-migrate uwp source run <target>
+winapp-migrate uwp source diagnose <target>
+winapp-migrate uwp source capture <target> -- <winapp-ui-arguments>
 winapp-migrate uwp closure assess <target>
 winapp-migrate uwp closure attest <target>
 winapp-migrate uwp closure diagnose <target>
@@ -52,6 +55,17 @@ override template-generated package identity values and `--portable-report`
 to record `target.root` as `.`. Together these options let callers stabilize
 the package identity and relocate the target directory without rewriting
 product artifacts after the migration completes.
+
+`source run` resolves the exact source project from `migration-report.json`,
+captures the desktop window inventory before and after launch, and authorizes
+only newly created HWNDs for `source capture`. Source commands run only while
+the durable controller is at `source-oracle`; they persist launch,
+diagnostic, UI, stdout, and stderr provenance below the report-declared source
+evidence root. The run capability is bound to a deterministic fingerprint of
+the source tree, so any source code, XAML, project, or resource change rejects
+later capture. `source diagnose` provides the bounded foreground
+`--debug-output` fallback. Other source UI actions require `-w` or `--window`
+with an HWND authorized by the current source run.
 
 `closure attest` invokes `winapp run` first with `--no-launch --json`, then with
 `--no-build --detach --json` after a successful analyzer-enabled build. It
@@ -81,6 +95,14 @@ canonical replay, while an immediate exact repeat is rejected.
 The gateway resolves WinApp CLI from `--winapp`,
 `WINAPP_MIGRATE_WINAPP_PATH`, or PATH, in that order, so raw `winapp.exe` need
 not be exposed to the migration agent.
+
+The Agent Plugins package ships a Copilot `preToolUse` guard. Once a session
+enters a schema 1.5 migration workspace, direct `winapp run`, `winapp build`,
+and `winapp ui` shell calls are denied even if the agent later changes its
+working directory. Informational `--help` calls remain available. Source and
+target operations must use their respective product gateways; hosts and
+benchmarks remain responsible only for observing whether this product
+boundary was loaded and obeyed.
 
 The former `uwp enforce`, `run`, `ui`, and `sync-report` names remain
 compatibility aliases. `configure` and `wait` are deprecated compatibility
@@ -132,9 +154,9 @@ evidence.
 Build and replay outputs are classified as canonical attestations. Diagnostic
 and UI outputs are classified as development probes. Both carry target
 fingerprint and producer provenance, but only fresh canonical attestations can
-satisfy build, replay, parity, or finalization gates. Raw target WinApp CLI
-output cannot substitute for a gateway attestation. Read-only source baseline
-capture remains outside this target-only boundary.
+satisfy build, replay, parity, or finalization gates. Raw WinApp CLI output cannot substitute for a source or target gateway
+artifact. Source baseline capture uses `uwp source`; target closure uses
+`uwp closure`.
 
 State-plan schema `1.0` additively accepts `slice`, `dependencies` (slice IDs),
 and `criticality` (`required` or `optional`) on each state. Defaults are the
@@ -173,7 +195,7 @@ overwritten or repeated for the same signature/fingerprint. After diagnosis,
 Repeated debug/hypothesis work and replay without new discriminating evidence
 are refused. `--force-replay` and `--max-attempts` bypass none of these guards.
 
-The UWP report remains explicitly versioned as schema 1.4. A future WPF
+The UWP report remains explicitly versioned as schema 1.5. A future WPF
 pipeline will start with its own pipeline schema; it will not reinterpret the
 UWP schema as a universal migration contract.
 

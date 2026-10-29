@@ -19,6 +19,7 @@ internal sealed class UwpCommand : Command
         Subcommands.Add(new MigrateVerifyCommand(msBuildProjectItemEvaluator));
         Subcommands.Add(
             new MigrateProjectItemDecisionCommand(msBuildProjectItemEvaluator));
+        Subcommands.Add(new UwpSourceCommand(enforcementProcessRunner));
         Subcommands.Add(new UwpEnforceCommand(enforcementProcessRunner));
     }
 }
