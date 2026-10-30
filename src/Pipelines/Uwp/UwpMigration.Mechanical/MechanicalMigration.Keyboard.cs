@@ -482,7 +482,11 @@ public static partial class MechanicalMigration
                     baseType,
                     typeInfo,
                     projectContext);
-                if (candidates.Count != 1)
+                if (candidates.Count == 0)
+                {
+                    continue;
+                }
+                if (candidates.Count > 1)
                 {
                     return true;
                 }

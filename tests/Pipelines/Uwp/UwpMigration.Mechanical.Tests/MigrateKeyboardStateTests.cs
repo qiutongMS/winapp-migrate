@@ -654,7 +654,7 @@ public partial class MigrateCommandTests
             1,
             CountOccurrences(
                 unresolvedBaseConsumer,
-                "CoreWindow.GetForCurrentThread().GetKeyState"));
+                "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread"));
 
         using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(target.FullName, "migration-report.json"),
@@ -670,8 +670,56 @@ public partial class MigrateCommandTests
         CollectionAssert.Contains(paths, "DerivedConsumer.cs");
         CollectionAssert.Contains(paths, "ImportedBaseConsumer.cs");
         CollectionAssert.Contains(paths, "AmbiguousBaseConsumer.cs");
-        CollectionAssert.Contains(paths, "UnresolvedBaseConsumer.cs");
+        CollectionAssert.DoesNotContain(paths, "UnresolvedBaseConsumer.cs");
         CollectionAssert.DoesNotContain(paths, "GenuineConsumer.cs");
+    }
+
+    [TestMethod]
+    public async Task Migrate_KeyboardStateRewritesNotifyPropertyChangedViewModelCall()
+    {
+        var source = await CreateUwpSourceAsync("VanArsdelKeyboardApp");
+        await WriteAsync(source, "ProductConfigurationViewModel.cs", """
+            using System.ComponentModel;
+            using Windows.System;
+            using Windows.UI.Core;
+            namespace VanArsdel;
+            public sealed class ProductConfigurationViewModel : INotifyPropertyChanged
+            {
+                public event PropertyChangedEventHandler? PropertyChanged;
+
+                public bool IsControlDown() =>
+                    CoreWindow.GetForCurrentThread().GetKeyState(VirtualKey.Control)
+                        .HasFlag(CoreVirtualKeyStates.Down);
+            }
+            """);
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "vanarsdel-keyboard-output"));
+        ArrangeTemplateCreation(target, "VanArsdelKeyboardApp");
+
+        var (exit, output) = await InvokeAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        var migrated = await File.ReadAllTextAsync(
+            Path.Combine(
+                target.FullName,
+                "ProductConfigurationViewModel.cs"),
+            TestContext.CancellationToken);
+        StringAssert.Contains(
+            migrated,
+            "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)");
+
+        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(target.FullName, "migration-report.json"),
+            TestContext.CancellationToken));
+        var transform = report.RootElement.GetProperty("transforms")
+            .EnumerateArray()
+            .Single(item =>
+                item.GetProperty("id").GetString() == "UWMIG-KEY-STATE");
+        Assert.AreEqual(1, transform.GetProperty("changedFiles").GetInt32());
+        Assert.IsFalse(report.RootElement.GetProperty("todos")
+            .EnumerateArray()
+            .Any(item => item.GetProperty("id").GetString() == "UWMIG015"));
     }
 
     [TestMethod]
