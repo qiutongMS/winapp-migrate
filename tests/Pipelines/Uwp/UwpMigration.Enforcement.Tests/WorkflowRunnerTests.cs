@@ -15,7 +15,7 @@ public sealed partial class RunnerAcceptanceTests
     public async Task Policy_CanConfigureBeforeOperationsButNotAfter()
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var policy = EnforcementPolicy.Balanced();
         policy.SemanticConvergence.SoftMinutes = 14;
         await UwpEnforcementRunner.ConfigurePolicyAsync(fixture.Root, policy);
@@ -145,7 +145,7 @@ public sealed partial class RunnerAcceptanceTests
     public async Task Progress_InvalidPersistedProgressFailsArtifactGate(string mutation)
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var assessed = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var assessed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var node = JsonSerializer.SerializeToNode(assessed.Workflow, EnforcementStore.JsonOptions)!.AsObject();
         switch (mutation)
         {
@@ -167,7 +167,7 @@ public sealed partial class RunnerAcceptanceTests
             default: Assert.Fail("Unknown test mutation."); break;
         }
         await EnforcementStore.WriteTextAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, node.ToJsonString());
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("evidence", snapshot.Frontier?.Kind);
     }
 
@@ -293,7 +293,7 @@ public sealed partial class RunnerAcceptanceTests
         var before = await File.ReadAllTextAsync(fixture.Path(EnforcementStore.AttemptLedgerPath));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() => RecordDiagnosisAsync(fixture));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.RecordFailureAsync(fixture.Root, "runtime", "crash",
+            UwpEnforcementRunner.RecordFailureAsync(fixture.Root, TestWindowOwnerResolver.Shared, "runtime", "crash",
                 "state-1", [".migration-evidence/failure.txt"]));
         Assert.AreEqual(before, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.AttemptLedgerPath)));
         var attempt = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts.Single();
@@ -317,7 +317,7 @@ public sealed partial class RunnerAcceptanceTests
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             runner.DiagnoseAsync(fixture.Root, new UwpEnforcementOptions()));
         await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
-        var corrected = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var corrected = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("build", corrected.Frontier?.Kind);
         Assert.AreEqual(WorkflowStage.SemanticConvergence, corrected.Stage);
     }
@@ -434,7 +434,7 @@ public sealed partial class RunnerAcceptanceTests
     public async Task Store_PolicyProgressAndSnapshotAreAtomicAndRoundTrip()
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var saved = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
         Assert.AreEqual(snapshot.Stage, saved.Stage);
@@ -540,7 +540,7 @@ public sealed partial class RunnerAcceptanceTests
         var process = new InterruptingReplayProcessRunner();
         var runner = new UwpEnforcementRunner(process);
         await Assert.ThrowsExactlyAsync<IOException>(() => runner.RunAsync(fixture.Root, new UwpEnforcementOptions()));
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(WorkflowStage.TargetBootstrap, snapshot.Stage);
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             runner.DiagnoseAsync(fixture.Root, new UwpEnforcementOptions()));
@@ -567,7 +567,7 @@ public sealed partial class RunnerAcceptanceTests
             runner.DiagnoseAsync(fixture.Root, new UwpEnforcementOptions()));
         var attempt = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts.Single();
         await File.WriteAllTextAsync(fixture.Path(".migration-evidence/diagnosis.txt"), "Source/target discriminator");
-        await UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, attempt.Signature, attempt.StateId,
+        await UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, TestWindowOwnerResolver.Shared, attempt.Signature, attempt.StateId,
             ["Source.cs:1"], ["Target.cs:1"], "Preserve activation", "Activation guard was removed",
             "Restore the guard and replay", [".migration-evidence/diagnosis.txt"]);
         await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
@@ -591,9 +591,9 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
-        var closed = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var closed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(WorkflowStage.Closure, closed.Stage);
-        Assert.AreEqual(2, closed.Workflow!.Operations.Count);
+        Assert.AreEqual(4, closed.Workflow!.Operations.Count);
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             runner.DiagnoseAsync(fixture.Root, new UwpEnforcementOptions()));
         StringAssert.Contains(exception.Message, "not permitted");
@@ -618,11 +618,11 @@ public sealed partial class RunnerAcceptanceTests
         var unit = progress.Units.Single(item => item.Stage == WorkflowStage.Closure);
         Assert.AreEqual(1, unit.Operations.UiActions);
         Assert.AreEqual(1, unit.Operations.Replays);
-        Assert.IsTrue(progress.Operations.Skip(2).All(operation => operation.Stage == WorkflowStage.Closure &&
+        Assert.IsTrue(progress.Operations.Skip(4).All(operation => operation.Stage == WorkflowStage.Closure &&
             operation.EvidenceFingerprint is not null));
         Assert.AreEqual(4, process.CallCount);
         await fixture.VerifyStateAsync();
-        var complete = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        var complete = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("complete", complete.Disposition?.Kind);
     }
 
@@ -635,13 +635,13 @@ public sealed partial class RunnerAcceptanceTests
             EnforcementStore.JsonOptions)!.AsObject();
         node["states"]![0]!["criticality"] = "advisory";
         await EnforcementStore.WriteTextAtomicAsync(fixture.Root, planPath, node.ToJsonString());
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("state-plan", snapshot.Frontier?.Kind);
         node["states"]![0]!["criticality"] = "required";
         await EnforcementStore.WriteTextAtomicAsync(fixture.Root, planPath, node.ToJsonString());
         await EnforcementStore.WriteTextAtomicAsync(fixture.Root, EnforcementStore.AttemptLedgerPath,
             """{"schemaVersion":"1.0","attempts":null}""");
-        snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("evidence", snapshot.Frontier?.Kind);
     }
 
@@ -726,7 +726,7 @@ public sealed partial class RunnerAcceptanceTests
     private static async Task RecordRuntimeFailureAsync(RunnerFixture fixture)
     {
         await File.WriteAllTextAsync(fixture.Path(".migration-evidence/failure.txt"), "Observed crash");
-        await UwpEnforcementRunner.RecordFailureAsync(fixture.Root, "runtime", "crash",
+        await UwpEnforcementRunner.RecordFailureAsync(fixture.Root, TestWindowOwnerResolver.Shared, "runtime", "crash",
             "state-1", [".migration-evidence/failure.txt"]);
     }
 
@@ -755,10 +755,12 @@ public sealed partial class RunnerAcceptanceTests
         }
         progress.Events = progress.Events.Select(item => item with { RecordedAt = item.RecordedAt.AddMinutes(-minutes) }).ToList();
         progress.Operations = progress.Operations.Select(item => item with { RecordedAt = item.RecordedAt.AddMinutes(-minutes) }).ToList();
+        foreach (var operation in progress.Operations)
+            StateClosureSeal.Sign(operation);
     }
 
     private static Task<EnforcementSnapshot> RecordDiagnosisAsync(RunnerFixture fixture) =>
-        UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, "crash", "state-1",
+        UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, TestWindowOwnerResolver.Shared, "crash", "state-1",
             ["SourcePage.xaml.cs:10"], ["TargetPage.xaml.cs:10"],
             "Suppress reentrant navigation",
             "The removed guard causes the crash",

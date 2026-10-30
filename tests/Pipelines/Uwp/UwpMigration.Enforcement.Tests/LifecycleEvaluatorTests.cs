@@ -91,6 +91,7 @@ public sealed partial class EnforcementEvaluatorTests
         input.Replay.StartedAt = LifecycleNow.AddMinutes(2);
         input.Replay.CompletedAt = input.Replay.StartedAt.AddSeconds(1);
         input.Replay.Id = "replay-2";
+        SealCanonicalFixture(input with { TargetFingerprint = "changed" });
         var replayed = EnforcementEvaluator.Evaluate(input with
         {
             Progress = changed.Workflow, TargetFingerprint = "changed", GeneratedAt = LifecycleNow.AddMinutes(3)
@@ -169,6 +170,7 @@ public sealed partial class EnforcementEvaluatorTests
         input.Replay!.TargetFingerprint = "changed";
         input.Replay.StartedAt = LifecycleNow.AddMinutes(2);
         input.Replay.CompletedAt = input.Replay.StartedAt.AddSeconds(1);
+        SealCanonicalFixture(input with { TargetFingerprint = "changed" });
         var stale = EnforcementEvaluator.Evaluate(input with
         {
             Progress = changed.Workflow, TargetFingerprint = "changed", GeneratedAt = LifecycleNow.AddMinutes(3)
@@ -259,7 +261,8 @@ public sealed partial class EnforcementEvaluatorTests
         var observation = input with
         {
             Progress = terminal.Workflow, PersistedDisposition = terminal.Disposition,
-            TargetFingerprint = "another-change", GeneratedAt = LifecycleNow.AddDays(1), ArtifactError = null
+            TargetFingerprint = kind == "complete" ? input.TargetFingerprint : "another-change",
+            GeneratedAt = LifecycleNow.AddDays(1), ArtifactError = null
         };
         var observed = EnforcementEvaluator.Evaluate(observation);
         Assert.AreEqual(terminal.Disposition, observed.Disposition);

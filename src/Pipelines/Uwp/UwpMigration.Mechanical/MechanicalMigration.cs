@@ -395,6 +395,14 @@ public static partial class MechanicalMigration
                 ChangedFiles = itemsPanelFiles
             });
 
+            var keyStateFiles = RewriteCoreWindowKeyState(targetRoot);
+            report.Transforms.Add(new MigrationTransform
+            {
+                Id = "UWMIG-KEY-STATE",
+                Summary = "Rewrote unambiguous UWP CoreWindow key-state calls to InputKeyboardSource",
+                ChangedFiles = keyStateFiles
+            });
+
             var dispatcherFiles = RewriteDispatcherAccess(targetRoot);
             report.Transforms.Add(new MigrationTransform
             {

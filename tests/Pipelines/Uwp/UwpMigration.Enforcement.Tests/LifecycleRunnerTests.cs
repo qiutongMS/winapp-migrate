@@ -19,7 +19,7 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
-        var complete = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        var complete = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("complete", complete.Disposition?.Kind);
         Assert.AreEqual("passed", complete.Status);
         var callCount = process.CallCount;
@@ -41,7 +41,7 @@ public sealed partial class RunnerAcceptanceTests
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             runner.DiagnoseAsync(fixture.Root, new UwpEnforcementOptions()));
         Assert.AreEqual("passed", (await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath)).Status);
-        Assert.AreEqual("passed", (await UwpEnforcementRunner.AssessAsync(fixture.Root)).Status);
+        Assert.AreEqual("passed", (await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared)).Status);
         Assert.AreEqual(callCount, process.CallCount);
     }
 
@@ -55,7 +55,7 @@ public sealed partial class RunnerAcceptanceTests
         });
         var runner = new UwpEnforcementRunner(process);
         await Assert.ThrowsExactlyAsync<IOException>(() => runner.RunAsync(fixture.Root, new UwpEnforcementOptions()));
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("infrastructure-failure", snapshot.Disposition?.Kind);
         Assert.AreEqual("process-invocation-failed", snapshot.Disposition?.ReasonCode);
         Assert.AreEqual(WorkflowOperation.Build, snapshot.Workflow!.Operations.Single().Kind);
@@ -79,7 +79,7 @@ public sealed partial class RunnerAcceptanceTests
         {
             await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
             await fixture.VerifyStateAsync();
-            terminal = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+            terminal = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         }
         else if (kind == "blocked-required")
         {
@@ -99,7 +99,8 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsTrue(terminal.Disposition!.Terminal);
         var expected = JsonSerializer.Serialize(terminal.Disposition, EnforcementStore.JsonOptions);
         var callCount = process.CallCount;
-        await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
+        if (kind != "complete")
+            await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
         await File.WriteAllTextAsync(fixture.Path(".migration-evidence/terminal.txt"), "A terminal run cannot consume new evidence.");
         var rejected = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions
         {
@@ -113,16 +114,16 @@ public sealed partial class RunnerAcceptanceTests
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             runner.InvokeUiAsync(fixture.Root, "winapp", ["list"], [".migration-evidence/terminal.txt"]));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.RecordFailureAsync(fixture.Root, "runtime", "terminal", "state-1", [".migration-evidence/terminal.txt"]));
+            UwpEnforcementRunner.RecordFailureAsync(fixture.Root, TestWindowOwnerResolver.Shared, "runtime", "terminal", "state-1", [".migration-evidence/terminal.txt"]));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, "terminal", "state-1",
+            UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, TestWindowOwnerResolver.Shared, "terminal", "state-1",
                 ["source.cs:1"], ["target.cs:1"], "Invariant", "Hypothesis", "Test", [".migration-evidence/terminal.txt"]));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root));
+            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.ConfigurePolicyAsync(fixture.Root, EnforcementPolicy.Balanced()));
         Assert.AreEqual(callCount, process.CallCount);
-        var observed = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var observed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(expected, JsonSerializer.Serialize(observed.Disposition, EnforcementStore.JsonOptions));
         var saved = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         Assert.AreEqual(expectedStatus, saved.Status);
@@ -135,7 +136,7 @@ public sealed partial class RunnerAcceptanceTests
     public async Task ProgressSchema10_ImportsSafeJsonAndPreservesAmbiguousJson(bool ambiguous)
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var initial = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var initial = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var json = JsonSerializer.SerializeToNode(initial.Workflow, EnforcementStore.JsonOptions)!.AsObject();
         json["schemaVersion"] = "1.0";
         json.Remove("slices");
@@ -152,7 +153,7 @@ public sealed partial class RunnerAcceptanceTests
         var original = json.ToJsonString();
         await EnforcementStore.WriteTextAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, original);
         var process = new FakeProcessRunner();
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         if (ambiguous)
         {
             Assert.AreEqual("infrastructure-failure", snapshot.Disposition?.Kind);
@@ -174,7 +175,7 @@ public sealed partial class RunnerAcceptanceTests
     public async Task ProgressSchema10_ZeroUnitsFailsClosedWithoutRestartingEpoch()
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var initial = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var initial = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var json = JsonSerializer.SerializeToNode(initial.Workflow, EnforcementStore.JsonOptions)!.AsObject();
         json["schemaVersion"] = "1.0";
         json["units"] = new JsonArray();

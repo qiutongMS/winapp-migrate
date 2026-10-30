@@ -45,6 +45,8 @@ winapp-migrate uwp closure assess <target>
 winapp-migrate uwp closure attest <target>
 winapp-migrate uwp closure diagnose <target>
 winapp-migrate uwp closure capture <target> -- <winapp-ui-arguments>
+winapp-migrate uwp closure capture <target> --state <state-id> -- <winapp-ui-arguments>
+winapp-migrate uwp closure record-state <target> --state <state-id> --probe <probe.json> [--probe <probe.json>...]
 winapp-migrate uwp closure record-failure <target> <build|runtime> <signature> --evidence <path>
 winapp-migrate uwp closure record-diagnosis <target> <signature> --source-location <path:line> --target-location <path:line> --source-invariant <text> --hypothesis <text> --test <text> --evidence <path>
 winapp-migrate uwp closure finalize <target>
@@ -92,6 +94,83 @@ per-probe manifest while returning a bounded receipt; `--raw-output` restores
 inline forwarding. During closure, one fresh state-intent evidence file may
 authorize a sequence of distinct UI commands for the same fingerprint and
 canonical replay, while an immediate exact repeat is rejected.
+To close a state, declare its machine-checkable `assertions` before capture,
+use `capture --state <id>` for every probe in its ordered sequence, then pass
+the canonical target-relative receipt paths to `record-state`. State-bound
+inspect, screenshot, and action commands require exactly one explicit
+`-w/--window`. Windows checks that HWND's owner against the canonical replay
+process identity (**PID plus process start time**) before and after the command.
+Source, other-process, and reused-PID HWNDs are rejected. Replay identity comes
+from the OS through the resolver, never a caller-provided timestamp; legacy
+PID-only replay/probe receipts must be re-attested/recaptured.
+Use **unbound** `capture -- list-windows --json` for discovery. The product
+checks receipt seals, workflow membership, raw-output hashes, state/source
+contract identity, the recorded HWND/process/command binding, success, and
+current fingerprint/replay freshness. It derives
+`passed`/`verified` and writes a sealed state attestation; editing those status
+strings or receipt markers alone cannot establish closure.
+Closure trust uses the persistent named Windows user CNG key
+`WinAppMigration.StateClosure.v1`. Verification loads its public key
+independently, requires the artifact key to match, and authenticates operation
+IDs/digests, build/replay attestations and raw outputs, probe receipts, and
+state attestations before full re-derivation. An attacker-supplied key cannot
+establish that local provenance. These seals provide **same-user tamper-evidence**,
+not an OS security boundary against arbitrary malicious code running as that
+user (which can use the user's signing key).
+
+Portable checks against an embedded key establish signature integrity only,
+not locally trusted provenance or closure success. Moving a bundle under the
+same user can retain trust, but another user/machine does not automatically
+inherit the local trust anchor. Closure verification also re-resolves every
+bound HWND and process start time: `record-state`, `finalize`, and assessments
+fail closed when the original window/process is gone or reused. Historical
+signature integrity is not a substitute for that live verification. Legacy
+unsigned/unbound operation chains require re-attestation/recapture.
+
+Window and output options accept WinApp's separated, `=`, and `:` forms
+with either alias (for example `-w 42`, `--window=42`, `-w:42`,
+`-o path`, `--output=path`, `-o:path`). Every successful screenshot must
+produce a fresh valid PNG that is snapshotted and hashed in its probe receipt;
+exit zero without that evidence is rejected.
+The pinned WinApp CLI defaults to `screenshot.png` in its process working
+directory. A state-bound screenshot without `-o/--output` runs inside its
+sealed per-probe working directory, so the real default works without
+overwriting target assets or changing the target fingerprint. Explicit output
+paths remain target-relative (or contained absolute paths); unbound captures
+retain WinApp's default in the target directory.
+
+The assertion contract compares mapped source observations with genuine
+`inspect` trees or single-property `get-property --json` results. Selection and
+keyboard focus require `get-property`; they are not inspect fields. The
+selector and native `--property` name must match the assertion contract.
+The returned `elementId` must be a nonempty string, but may be a generated
+runtime slug rather than the requested AutomationId; the sealed command and
+HWND/process/replay binding establish the target, not returned-ID equality.
+The known `element` member is accepted and validated as WinApp's typed
+`UiElement` detail, without permitting verdict fields or malformed collections.
+Native `"True"`/`"False"` strings and expansion enums normalize to their
+typed inspect equivalents; invented verdict fields are never assertions.
+It does not infer visual parity, timing, lifecycle, or other prose claims.
+Unsupported assertions remain unverified. Low-information PNGs are classified
+rather than treated as visual proof. Legal 16-bit/interlaced images whose
+information content is not analyzed are `ValidUnclassified`, not corrupt:
+they may supplement verified nonvisual assertions but never prove visual
+information or parity. Corrupt PNGs remain invalid. Verified nonvisual assertions can close
+without a screenshot, and intentional restoration similarity is not rejected.
+`finalize` reuses the canonical evidence materializer and synchronizes mapped
+TODOs and report summaries. Findings resolve only when all their mapped
+`completionAssertions` are satisfied; prose-only findings remain open.
+State attestations contain product-derived source/target evidence hash
+manifests. Every assessment re-derives those manifests and requires canonical
+screenshot/JSON copies to match the selected original evidence byte-for-byte.
+Replacing a canonical file—even with another valid image/tree—or injecting an
+unbound optional screenshot invalidates completion without changing application
+fingerprints. Finalize restores canonical copies; caller-authored hashes do not
+authorize them.
+Report synchronization also compares every source/target state's ID, status,
+and reason with the derived plan. Matching aggregate statuses or IDs alone
+cannot hide failed/blocked or contradictory per-state observations.
+See [the assertion contract and recording protocol](plugins/winapp-migrate/skills/uwp-to-winapp/references/behavioral-validation.md).
 The gateway resolves WinApp CLI from `--winapp`,
 `WINAPP_MIGRATE_WINAPP_PATH`, or PATH, in that order, so raw `winapp.exe` need
 not be exposed to the migration agent.
@@ -180,9 +259,12 @@ in progress, with stable `kind`, `reasonCode`, `terminal`, `retryable`,
 
 `allowedOperations` lists stage-compatible operation kinds; evidence,
 freshness, diagnosis, and frontier prerequisites still apply. Deferred and
-terminal dispositions list none. Terminal dispositions
-are immutable on later observations, including after a target change. All
-operational entry points reject a terminal run before invoking external tools;
+terminal dispositions list none. A `complete` disposition is retained only
+while the entire current-target build/replay freshness chain, state
+attestations, findings, and report closure remain valid. Target changes or
+stale/missing canonical artifacts automatically reopen invalid completion;
+an old replay cannot preserve success. Other terminal dispositions remain
+immutable. All operational entry points reject a currently terminal run before invoking external tools;
 `assess` remains observational. Infrastructure `retryable` classifies the
 failure, not permission to retry the same terminal run. This release does not
 provide a terminal-run reset or snapshot-management facility. Perform final

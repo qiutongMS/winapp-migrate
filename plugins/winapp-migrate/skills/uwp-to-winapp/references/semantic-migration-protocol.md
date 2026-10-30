@@ -50,12 +50,29 @@ Use stable IDs. Update an existing finding when new evidence has the same root c
 Allowed statuses are:
 
 - `open`: actionable investigation or implementation remains;
-- `resolved`: the completion condition is met and validation evidence is recorded;
+- `resolved`: the mapped machine-verifiable completion contract is met and product validation evidence is recorded;
 - `blocked`: a named external prerequisite prevents progress;
 - `unverified`: bounded investigation completed but source semantics or comparison evidence remains unavailable;
 - `failed`: the latest target probe exposed an unresolved regression.
 
 An app-owned exception, missing implementation, incompatible contract, or substantial port is not `blocked`. While any finding contains an actionable app-owned location or next action, it cannot be left `blocked` or treated as complete.
+
+For machine-verifiable completion, add `completionAssertions` to the finding,
+mapping **every** `stateIds` entry to all assertion IDs required by its
+completion condition:
+
+```json
+"completionAssertions": [
+  { "stateId": "selected-item", "assertionId": "selected-item" }
+]
+```
+
+`closure record-state` resolves a finding only when every mapped state has an
+intact, current product state-closure attestation and every referenced
+assertion exists and passes. It then records the attestation paths and clears
+the completed next actions. Unknown, incomplete, or prose-only conditions
+remain open. Do not manually mark them resolved; copied `passed`/`verified`
+text and generic action `success: true` are not completion contracts.
 
 ## 3. Classify by responsibility
 
@@ -106,7 +123,7 @@ For every open or failed finding:
 3. **Hypothesize:** state one root cause that the next static check, build, or replay can disprove.
 4. **Correct:** fix the shared cause and every location governed by it.
 5. **Verify:** use the cheapest evidence that reaches the completion condition, then replay every affected state when the condition is behavioral.
-6. **Update:** resolve the finding only with validation evidence. If the signature changes, create or reclassify the finding for the new root cause.
+6. **Update:** submit state-bound evidence to `closure record-state`; only a satisfied mapped machine completion contract resolves a finding. Unsupported conditions remain open. If the signature changes, create or reclassify the finding for the new root cause.
 
 Bounded probing limits speculation; it does not convert an actionable defect into `blocked`, `unverified`, or resolved. Persist the truthful failure and next action when the workflow must stop.
 

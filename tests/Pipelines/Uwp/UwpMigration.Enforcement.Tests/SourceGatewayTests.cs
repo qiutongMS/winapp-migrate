@@ -176,7 +176,7 @@ public sealed class SourceGatewayTests
     {
         using var fixture = await SourceFixture.CreateAsync();
         await fixture.CompleteSourceStateAsync();
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Target);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Target, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
         var process = new FakeProcessRunner();
 

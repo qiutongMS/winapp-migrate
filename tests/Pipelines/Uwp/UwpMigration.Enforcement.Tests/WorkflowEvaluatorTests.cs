@@ -216,8 +216,7 @@ public sealed partial class EnforcementEvaluatorTests
         var first = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual("prerequisite", first.ActiveSlice);
         CollectionAssert.AreEqual(new[] { "prerequisite" }, first.ActiveStateIds);
-        prerequisite.Target.Status = "passed";
-        prerequisite.Comparison.Status = "verified";
+        AttestState(input, prerequisite);
         var second = EnforcementEvaluator.Evaluate(input with { Progress = first.Workflow });
         Assert.AreEqual("dependent", second.ActiveSlice);
         Assert.IsTrue(second.Workflow!.Events.Any(item =>
@@ -268,8 +267,7 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual("continue-with-debt", deferred.Status);
         var next = EnforcementEvaluator.Evaluate(input with { Progress = deferred.Workflow });
         Assert.AreEqual("independent", next.ActiveSlice);
-        input.StatePlan.States[1].Target.Status = "passed";
-        input.StatePlan.States[1].Comparison.Status = "verified";
+        AttestState(input, input.StatePlan.States[1]);
         var blocked = EnforcementEvaluator.Evaluate(input with { Progress = next.Workflow });
         Assert.IsNull(blocked.ActiveSlice);
         Assert.AreEqual("required-blocked", blocked.Frontier?.Kind);

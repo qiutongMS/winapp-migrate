@@ -154,7 +154,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Path(".migration-evidence/raw-winapp-output.json"),
             """{"AUMID":"Contoso.App","ProcessId":4242}""");
 
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("build", snapshot.Frontier?.Kind);
         Assert.AreEqual(
@@ -170,7 +170,7 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
 
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("passed",
             snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
@@ -330,7 +330,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Path(failureEvidence),
             "runtime failure");
         var failure = await UwpEnforcementRunner.RecordFailureAsync(
-            fixture.Root,
+            fixture.Root, TestWindowOwnerResolver.Shared,
             "runtime",
             "0x800f1000",
             "state-1",
@@ -343,7 +343,7 @@ public sealed partial class RunnerAcceptanceTests
             "source retained a selection guard; target removed it");
 
         var snapshot = await UwpEnforcementRunner.RecordDiagnosisAsync(
-            fixture.Root,
+            fixture.Root, TestWindowOwnerResolver.Shared,
             "0x800f1000",
             "state-1",
             ["OuterNavPage.xaml.cs:100"],
@@ -368,7 +368,7 @@ public sealed partial class RunnerAcceptanceTests
         var evidence = ".migration-evidence/enforcement/failure.log";
         await File.WriteAllTextAsync(fixture.Path(evidence), "failure");
         await UwpEnforcementRunner.RecordFailureAsync(
-            fixture.Root,
+            fixture.Root, TestWindowOwnerResolver.Shared,
             "runtime",
             "crash",
             "state-1",
@@ -376,7 +376,7 @@ public sealed partial class RunnerAcceptanceTests
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.RecordDiagnosisAsync(
-                fixture.Root,
+                fixture.Root, TestWindowOwnerResolver.Shared,
                 "crash",
                 "state-1",
                 ["source.cs:1"],
@@ -668,7 +668,7 @@ public sealed partial class RunnerAcceptanceTests
         await fixture.VerifyStateAsync();
 
         var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
-            fixture.Root);
+            fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("passed", snapshot.Status);
         Assert.IsNull(snapshot.Frontier);
@@ -722,7 +722,7 @@ public sealed partial class RunnerAcceptanceTests
         await fixture.VerifyStateAsync();
 
         var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
-            fixture.Root);
+            fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("passed", snapshot.Status);
         var finalized = await fixture.LoadReportAsync();
@@ -769,7 +769,7 @@ public sealed partial class RunnerAcceptanceTests
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root, ".migration-evidence/state-plan.json", plan);
 
-        var open = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        var open = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("blocked", open.Status);
         Assert.AreEqual(
@@ -777,7 +777,7 @@ public sealed partial class RunnerAcceptanceTests
             (await fixture.LoadReportAsync()).Todos.Single().Status);
 
         await fixture.VerifyStateAsync();
-        var closed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        var closed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("passed", closed.Status);
         Assert.AreEqual(
@@ -793,7 +793,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
         var initiallyComplete =
-            await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+            await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("complete", initiallyComplete.Disposition?.Kind);
 
         var report = await fixture.LoadReportAsync();
@@ -807,12 +807,12 @@ public sealed partial class RunnerAcceptanceTests
         });
         await fixture.SaveReportAsync(report);
 
-        var reassessed = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var reassessed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("blocked", reassessed.Status);
         Assert.AreEqual("report-closure", reassessed.Frontier?.Kind);
 
         var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
-            fixture.Root);
+            fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("blocked", snapshot.Status);
         Assert.AreNotEqual("complete", snapshot.Disposition?.Kind);
@@ -862,7 +862,7 @@ public sealed partial class RunnerAcceptanceTests
         await fixture.VerifyStateAsync();
 
         var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
-            fixture.Root);
+            fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("passed", snapshot.Status);
         var statuses = (await fixture.LoadReportAsync()).Todos
@@ -888,13 +888,16 @@ public sealed partial class RunnerAcceptanceTests
         }
         else
         {
+            var plan = await fixture.LoadAsync<StatePlanDocument>(".migration-evidence/state-plan.json");
+            var rawTree = plan.States[0].Target.Evidence.Single(path => path.EndsWith("/stdout.log", StringComparison.Ordinal) &&
+                File.ReadAllText(fixture.Path(path)).Contains("windows", StringComparison.Ordinal));
             await File.WriteAllTextAsync(
-                fixture.Path(".migration-evidence/states/state-1/stdout.log"),
+                fixture.Path(rawTree),
                 """{"success":true,"message":"The action completed."}""");
         }
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root));
+            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
     }
 
     [TestMethod]
@@ -911,7 +914,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, ".migration-evidence/state-plan.json", plan);
 
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root));
+            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
 
         StringAssert.Contains(exception.Message, "outside.png");
     }
@@ -938,7 +941,7 @@ public sealed partial class RunnerAcceptanceTests
             });
         await File.WriteAllTextAsync(reportPath, report.ToJsonString());
 
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
         Assert.AreEqual("build", snapshot.Frontier?.Kind);
@@ -951,7 +954,7 @@ public sealed partial class RunnerAcceptanceTests
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.RecordFailureAsync(
-                fixture.Root,
+                fixture.Root, TestWindowOwnerResolver.Shared,
                 "runtime",
                 "crash",
                 stateId: null,
@@ -965,7 +968,7 @@ public sealed partial class RunnerAcceptanceTests
 
         await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
             UwpEnforcementRunner.RecordFailureAsync(
-                fixture.Root,
+                fixture.Root, TestWindowOwnerResolver.Shared,
                 "runtime",
                 "crash",
                 stateId: null,
@@ -974,7 +977,7 @@ public sealed partial class RunnerAcceptanceTests
         await File.WriteAllTextAsync(evidence, "crash");
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.RecordFailureAsync(
-                fixture.Root,
+                fixture.Root, TestWindowOwnerResolver.Shared,
                 "runtime",
                 "crash",
                 "unknown-state",
@@ -994,7 +997,7 @@ public sealed partial class RunnerAcceptanceTests
             plan);
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root));
+            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
     }
 
     [TestMethod]
@@ -1005,7 +1008,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Path(".migration-evidence/state-plan.json"),
             "{");
 
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("state-plan", snapshot.Frontier?.Kind);
     }
@@ -1019,7 +1022,7 @@ public sealed partial class RunnerAcceptanceTests
             EnforcementStore.BuildAttestationPath,
             "{");
 
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("evidence", snapshot.Frontier?.Kind);
         Assert.IsTrue(File.Exists(
@@ -1034,7 +1037,7 @@ public sealed partial class RunnerAcceptanceTests
         try
         {
             await Assert.ThrowsExactlyAsync<FileNotFoundException>(() =>
-                UwpEnforcementRunner.AssessAsync(target));
+                UwpEnforcementRunner.AssessAsync(target, TestWindowOwnerResolver.Shared));
 
             Assert.IsFalse(Directory.Exists(System.IO.Path.Combine(
                 target.FullName,
@@ -1078,13 +1081,25 @@ public sealed partial class RunnerAcceptanceTests
 
     private sealed class FakeProcessRunner(
         params EnforcementProcessResult[] results)
-        : IEnforcementProcessRunner
+        : IEnforcementProcessRunner, IWindowOwnerResolver
     {
         private readonly Queue<EnforcementProcessResult> _results =
             new(results);
 
         internal int CallCount { get; private set; }
         internal List<string[]> Calls { get; } = [];
+
+        public bool TryGetProcessId(long windowHandle, out int processId)
+        {
+            processId = windowHandle == TestWindowOwnerResolver.WindowHandle ? 4242 : 0;
+            return processId > 0;
+        }
+
+        public bool TryGetProcessIdentity(int processId, out ProcessIdentity identity)
+        {
+            identity = new ProcessIdentity(processId, TestWindowOwnerResolver.ProcessStartedAt);
+            return processId > 0;
+        }
 
         public Task<EnforcementProcessResult> RunAsync(
             string fileName,
@@ -1157,7 +1172,7 @@ public sealed partial class RunnerAcceptanceTests
             await EnforcementStore.WriteTextAtomicAsync(
                 root,
                 ".migration-evidence/states/state-1/source-ui.json",
-                """{"windows":[{"elements":[{"type":"Window","name":"Source"}]}]}""");
+                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
             await EnforcementStore.WriteTextAtomicAsync(
                 root,
                 ".migration-evidence/states/state-1/source-action.json",
@@ -1179,6 +1194,18 @@ public sealed partial class RunnerAcceptanceTests
                             Id = "state-1",
                             Actions = ["Attempt to open the known state."],
                             ExpectedOutcome = "Known state is accounted for.",
+                            Assertions =
+                            [
+                                new()
+                                {
+                                    Id = "main-name",
+                                    Kind = "ui-property-equals-source",
+                                    ProbeIndex = 0,
+                                    SourceEvidence = ".migration-evidence/states/state-1/source-ui.json",
+                                    AutomationId = "main",
+                                    Property = "name"
+                                }
+                            ],
                             Source = new StateObservation
                             {
                                 Status = "captured",
@@ -1207,17 +1234,17 @@ public sealed partial class RunnerAcceptanceTests
 
         internal async Task VerifyStateAsync()
         {
-            var plan = await LoadAsync<StatePlanDocument>(".migration-evidence/state-plan.json");
             await WriteTargetEvidenceAsync();
-            plan.States[0].Target.Status = "passed";
-            plan.States[0].Target.Evidence =
-            [
-                ".migration-evidence/states/state-1/target.png",
-                ".migration-evidence/states/state-1/action.log",
-                ".migration-evidence/states/state-1/stdout.log"
-            ];
-            plan.States[0].Comparison.Status = "verified";
-            await EnforcementStore.WriteAtomicAsync(Root, ".migration-evidence/state-plan.json", plan);
+            const string intent = ".migration-evidence/state-closure-intent.json";
+            var replay = await LoadAsync<ReplayAttestation>(EnforcementStore.ReplayAttestationPath);
+            var runner = new UwpEnforcementRunner(new EvidenceProcessRunner(this),
+                windowOwnerResolver: new TestWindowOwnerResolver(replay.ProcessId!.Value));
+            await EnforcementStore.WriteTextAtomicAsync(Root, intent,
+                JsonSerializer.Serialize(new { stateId = "state-1", replayAttestationId = replay.Id }));
+            var inspect = await runner.InvokeUiAsync(Root, "winapp", ["inspect", "--json", "-w", "42"], [intent], "state-1");
+            var screenshot = await runner.InvokeUiAsync(Root, "winapp",
+                ["screenshot", "-o", ".migration-evidence/states/state-1/target.png", "--json", "-w", "42"], [intent], "state-1");
+            await UwpEnforcementRunner.RecordStateAsync(Root, new TestWindowOwnerResolver(replay.ProcessId!.Value), "state-1", [inspect.ArtifactPath, screenshot.ArtifactPath]);
         }
 
         internal async Task WriteTargetEvidenceAsync()
@@ -1229,7 +1256,7 @@ public sealed partial class RunnerAcceptanceTests
                 """{"success":true,"message":"The action completed."}""");
             await File.WriteAllTextAsync(
                 Path(".migration-evidence/states/state-1/stdout.log"),
-                """{"windows":[{"elements":[{"type":"Window","name":"Target"}]}]}""");
+                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
         }
 
         internal async Task<MigrationReport> LoadReportAsync() =>
@@ -1264,8 +1291,23 @@ public sealed partial class RunnerAcceptanceTests
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
             await File.WriteAllBytesAsync(
                 path,
-                Convert.FromBase64String(
-                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+                PngTestData.Create());
+        }
+
+        private sealed class EvidenceProcessRunner(RunnerFixture fixture) : IEnforcementProcessRunner
+        {
+            public async Task<EnforcementProcessResult> RunAsync(
+                string fileName, DirectoryInfo workingDirectory, IReadOnlyList<string> arguments,
+                CancellationToken cancellationToken = default)
+            {
+                if (arguments[1] == "screenshot")
+                {
+                    await WritePngAsync(fixture.Path(".migration-evidence/states/state-1/target.png"));
+                    return new EnforcementProcessResult(0, """{"success":true}""", "");
+                }
+                return new EnforcementProcessResult(0,
+                    await File.ReadAllTextAsync(fixture.Path(".migration-evidence/states/state-1/stdout.log"), cancellationToken), "");
+            }
         }
 
         public void Dispose() => TestDirectories.Delete(Root);

@@ -173,6 +173,7 @@ public static class WorkflowOperations
         unit.Operations.Increment(operation);
         progress.Operations.Add(new WorkflowOperationRecord
         {
+            Id = Guid.NewGuid().ToString("N"),
             Kind = operation, Stage = unit.Stage, SliceId = unit.SliceId,
             TargetFingerprint = input.TargetFingerprint, RecordedAt = now,
             ReplayAttestationId = operation == WorkflowOperation.UiAction
@@ -180,6 +181,7 @@ public static class WorkflowOperations
                 : null,
             EvidenceFingerprint = evidenceFingerprint, Signature = signature
         });
+        StateClosureSeal.Sign(progress.Operations[^1]);
         progress.LastObservedAt = now;
         snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now);
         WorkflowDispositions.Update(snapshot, now);

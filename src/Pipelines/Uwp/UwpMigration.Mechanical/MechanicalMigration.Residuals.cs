@@ -167,6 +167,7 @@ public static partial class MechanicalMigration
             var inChar = false;
             var verbatimString = false;
             var escaped = false;
+            var rawStringQuoteCount = 0;
 
             for (var index = 0; index < text.Length; index++)
             {
@@ -176,6 +177,29 @@ public static partial class MechanicalMigration
                 if (current is '\r' or '\n')
                 {
                     escaped = false;
+                    continue;
+                }
+
+                if (rawStringQuoteCount > 0)
+                {
+                    mask[index] = ' ';
+                    if (current != '"')
+                    {
+                        continue;
+                    }
+
+                    var quoteCount = 1;
+                    while (index + quoteCount < text.Length
+                        && text[index + quoteCount] == '"')
+                    {
+                        mask[index + quoteCount] = ' ';
+                        quoteCount++;
+                    }
+                    if (quoteCount >= rawStringQuoteCount)
+                    {
+                        rawStringQuoteCount = 0;
+                    }
+                    index += quoteCount - 1;
                     continue;
                 }
 
@@ -241,6 +265,38 @@ public static partial class MechanicalMigration
                     inBlockComment = true;
                     continue;
                 }
+                if (TryMaskInterpolatedString(
+                    text,
+                    mask,
+                    index,
+                    out var interpolatedStringEnd))
+                {
+                    index = interpolatedStringEnd;
+                    continue;
+                }
+                var rawPrefixEnd = index;
+                while (rawPrefixEnd < text.Length && text[rawPrefixEnd] == '$')
+                {
+                    rawPrefixEnd++;
+                }
+                var rawQuoteCount = 0;
+                while (rawPrefixEnd + rawQuoteCount < text.Length
+                    && text[rawPrefixEnd + rawQuoteCount] == '"')
+                {
+                    rawQuoteCount++;
+                }
+                if (rawQuoteCount >= 3)
+                {
+                    for (var maskedIndex = index;
+                        maskedIndex < rawPrefixEnd + rawQuoteCount;
+                        maskedIndex++)
+                    {
+                        mask[maskedIndex] = ' ';
+                    }
+                    rawStringQuoteCount = rawQuoteCount;
+                    index = rawPrefixEnd + rawQuoteCount - 1;
+                    continue;
+                }
                 if (current == '@' && next == '"')
                 {
                     mask[index] = mask[++index] = ' ';
@@ -262,6 +318,442 @@ public static partial class MechanicalMigration
             }
 
             return new string(mask);
+        }
+
+        private static bool TryMaskInterpolatedString(
+            string text,
+            char[] mask,
+            int start,
+            out int end)
+        {
+            var dollarCount = 0;
+            var quoteIndex = -1;
+            var quoteCount = 0;
+            var verbatim = false;
+            if (text[start] == '$')
+            {
+                while (start + dollarCount < text.Length
+                    && text[start + dollarCount] == '$')
+                {
+                    dollarCount++;
+                }
+                var prefixEnd = start + dollarCount;
+                if (dollarCount == 1
+                    && prefixEnd + 1 < text.Length
+                    && text[prefixEnd] == '@'
+                    && text[prefixEnd + 1] == '"')
+                {
+                    quoteIndex = prefixEnd + 1;
+                    quoteCount = 1;
+                    verbatim = true;
+                }
+                else
+                {
+                    while (prefixEnd + quoteCount < text.Length
+                        && text[prefixEnd + quoteCount] == '"')
+                    {
+                        quoteCount++;
+                    }
+                    if (quoteCount == 1 || quoteCount >= 3)
+                    {
+                        quoteIndex = prefixEnd;
+                    }
+                }
+            }
+            else if (start + 2 < text.Length
+                && text[start] == '@'
+                && text[start + 1] == '$'
+                && text[start + 2] == '"')
+            {
+                dollarCount = 1;
+                quoteIndex = start + 2;
+                quoteCount = 1;
+                verbatim = true;
+            }
+            if (quoteIndex < 0)
+            {
+                end = -1;
+                return false;
+            }
+
+            MaskNonCodeRange(text, mask, start, quoteIndex + quoteCount - 1);
+            var delimiterWidth = quoteCount >= 3 ? dollarCount : 1;
+            for (var index = quoteIndex + quoteCount;
+                index < text.Length;
+                index++)
+            {
+                if (quoteCount >= 3)
+                {
+                    if (text[index] == '"')
+                    {
+                        var closingQuotes = CountRun(text, index, '"');
+                        if (closingQuotes >= quoteCount)
+                        {
+                            MaskNonCodeRange(
+                                text,
+                                mask,
+                                index,
+                                index + closingQuotes - 1);
+                            end = index + closingQuotes - 1;
+                            return true;
+                        }
+                    }
+                    if (text[index] == '{'
+                        && CountRun(text, index, '{') >= delimiterWidth)
+                    {
+                        MaskNonCodeRange(
+                            text,
+                            mask,
+                            index,
+                            index + delimiterWidth - 1);
+                        if (TryMaskInterpolationExpression(
+                            text,
+                            mask,
+                            index + delimiterWidth,
+                            delimiterWidth,
+                            out var expressionEnd))
+                        {
+                            index = expressionEnd;
+                            continue;
+                        }
+                    }
+                    if (text[index] is not '\r' and not '\n')
+                    {
+                        mask[index] = ' ';
+                    }
+                    continue;
+                }
+
+                var current = text[index];
+                var next =
+                    index + 1 < text.Length ? text[index + 1] : '\0';
+                if (!verbatim && current == '\\')
+                {
+                    MaskNonCodeRange(
+                        text,
+                        mask,
+                        index,
+                        Math.Min(index + 1, text.Length - 1));
+                    index++;
+                    continue;
+                }
+                if (verbatim && current == '"' && next == '"')
+                {
+                    MaskNonCodeRange(text, mask, index, index + 1);
+                    index++;
+                    continue;
+                }
+                if (current == '"')
+                {
+                    mask[index] = ' ';
+                    end = index;
+                    return true;
+                }
+                if (current == '{' && next == '{'
+                    || current == '}' && next == '}')
+                {
+                    MaskNonCodeRange(text, mask, index, index + 1);
+                    index++;
+                    continue;
+                }
+                if (current == '{')
+                {
+                    mask[index] = ' ';
+                    if (TryMaskInterpolationExpression(
+                        text,
+                        mask,
+                        index + 1,
+                        1,
+                        out var expressionEnd))
+                    {
+                        index = expressionEnd;
+                        continue;
+                    }
+                }
+                if (current is not '\r' and not '\n')
+                {
+                    mask[index] = ' ';
+                }
+            }
+
+            end = text.Length - 1;
+            return true;
+        }
+
+        private static bool TryMaskInterpolationExpression(
+            string text,
+            char[] mask,
+            int start,
+            int delimiterWidth,
+            out int end)
+        {
+            var braceDepth = 0;
+            var parenthesisDepth = 0;
+            var bracketDepth = 0;
+            var ternaryDepth = 0;
+            for (var index = start; index < text.Length; index++)
+            {
+                var current = text[index];
+                var next =
+                    index + 1 < text.Length ? text[index + 1] : '\0';
+                if (current == '}'
+                    && braceDepth == 0
+                    && CountRun(text, index, '}') >= delimiterWidth)
+                {
+                    MaskNonCodeRange(
+                        text,
+                        mask,
+                        index,
+                        index + delimiterWidth - 1);
+                    end = index + delimiterWidth - 1;
+                    return true;
+                }
+                if (TryMaskInterpolatedString(
+                    text,
+                    mask,
+                    index,
+                    out var interpolatedEnd))
+                {
+                    index = interpolatedEnd;
+                    continue;
+                }
+                if (current == '/' && next == '/')
+                {
+                    var commentEnd = index + 2;
+                    while (commentEnd < text.Length
+                        && text[commentEnd] is not '\r' and not '\n')
+                    {
+                        commentEnd++;
+                    }
+                    MaskNonCodeRange(
+                        text,
+                        mask,
+                        index,
+                        commentEnd - 1);
+                    index = commentEnd - 1;
+                    continue;
+                }
+                if (current == '/' && next == '*')
+                {
+                    var commentEnd = text.IndexOf(
+                        "*/",
+                        index + 2,
+                        StringComparison.Ordinal);
+                    commentEnd = commentEnd < 0
+                        ? text.Length - 1
+                        : commentEnd + 1;
+                    MaskNonCodeRange(
+                        text,
+                        mask,
+                        index,
+                        commentEnd);
+                    index = commentEnd;
+                    continue;
+                }
+                if (TryFindNestedStringOrCharacterEnd(
+                    text,
+                    index,
+                    out var nestedEnd))
+                {
+                    MaskNonCodeRange(
+                        text,
+                        mask,
+                        index,
+                        nestedEnd);
+                    index = nestedEnd;
+                    continue;
+                }
+                if (current == '?'
+                    && next is not '?' and not '.' and not '['
+                    && (index == 0 || text[index - 1] != '?'))
+                {
+                    ternaryDepth++;
+                }
+                if (current == ':'
+                    && (next == ':'
+                        || index > 0 && text[index - 1] == ':'))
+                {
+                    continue;
+                }
+                if (current == ':' && ternaryDepth > 0)
+                {
+                    ternaryDepth--;
+                    continue;
+                }
+                if (current == ':'
+                    && braceDepth == 0
+                    && parenthesisDepth == 0
+                    && bracketDepth == 0)
+                {
+                    MaskNonCodeRange(text, mask, index, index);
+                    for (var formatIndex = index + 1;
+                        formatIndex < text.Length;
+                        formatIndex++)
+                    {
+                        if (text[formatIndex] == '}'
+                            && CountRun(text, formatIndex, '}') >= delimiterWidth)
+                        {
+                            MaskNonCodeRange(
+                                text,
+                                mask,
+                                formatIndex,
+                                formatIndex + delimiterWidth - 1);
+                            end = formatIndex + delimiterWidth - 1;
+                            return true;
+                        }
+                        if (text[formatIndex] is not '\r' and not '\n')
+                        {
+                            mask[formatIndex] = ' ';
+                        }
+                    }
+                    end = text.Length - 1;
+                    return false;
+                }
+                if (current == '{')
+                {
+                    braceDepth++;
+                }
+                else if (current == '}' && braceDepth > 0)
+                {
+                    braceDepth--;
+                }
+                else if (current == '(')
+                {
+                    parenthesisDepth++;
+                }
+                else if (current == ')' && parenthesisDepth > 0)
+                {
+                    parenthesisDepth--;
+                }
+                else if (current == '[')
+                {
+                    bracketDepth++;
+                }
+                else if (current == ']' && bracketDepth > 0)
+                {
+                    bracketDepth--;
+                }
+            }
+
+            end = text.Length - 1;
+            return false;
+        }
+
+        private static int CountRun(
+            string text,
+            int start,
+            char value)
+        {
+            var count = 0;
+            while (start + count < text.Length
+                && text[start + count] == value)
+            {
+                count++;
+            }
+            return count;
+        }
+
+        private static void MaskNonCodeRange(
+            string text,
+            char[] mask,
+            int start,
+            int end)
+        {
+            for (var index = start;
+                index <= end && index < text.Length;
+                index++)
+            {
+                if (text[index] is not '\r' and not '\n')
+                {
+                    mask[index] = ' ';
+                }
+            }
+        }
+
+        private static bool TryFindNestedStringOrCharacterEnd(
+            string text,
+            int start,
+            out int end)
+        {
+            var prefixEnd = start;
+            while (prefixEnd < text.Length && text[prefixEnd] == '$')
+            {
+                prefixEnd++;
+            }
+            var rawQuoteCount = 0;
+            while (prefixEnd + rawQuoteCount < text.Length
+                && text[prefixEnd + rawQuoteCount] == '"')
+            {
+                rawQuoteCount++;
+            }
+            if (rawQuoteCount >= 3)
+            {
+                for (var index = prefixEnd + rawQuoteCount;
+                    index < text.Length;
+                    index++)
+                {
+                    if (text[index] != '"')
+                    {
+                        continue;
+                    }
+                    var quoteCount = 1;
+                    while (index + quoteCount < text.Length
+                        && text[index + quoteCount] == '"')
+                    {
+                        quoteCount++;
+                    }
+                    if (quoteCount >= rawQuoteCount)
+                    {
+                        end = index + quoteCount - 1;
+                        return true;
+                    }
+                    index += quoteCount - 1;
+                }
+                end = text.Length - 1;
+                return true;
+            }
+
+            var quoteIndex = start;
+            var verbatim = false;
+            if (start + 1 < text.Length
+                && text[start] == '@'
+                && text[start + 1] == '"')
+            {
+                quoteIndex = start + 1;
+                verbatim = true;
+            }
+            else if (text[start] is not '"' and not '\'')
+            {
+                end = -1;
+                return false;
+            }
+
+            var quote = text[quoteIndex];
+            for (var index = quoteIndex + 1;
+                index < text.Length;
+                index++)
+            {
+                if (verbatim && text[index] == '"'
+                    && index + 1 < text.Length
+                    && text[index + 1] == '"')
+                {
+                    index++;
+                    continue;
+                }
+                if (!verbatim && text[index] == '\\')
+                {
+                    index++;
+                    continue;
+                }
+                if (text[index] == quote)
+                {
+                    end = index;
+                    return true;
+                }
+            }
+
+            end = text.Length - 1;
+            return true;
         }
 
         private static void AddWindowingResidualTodo(string targetRoot, MigrationReport report)

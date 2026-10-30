@@ -16,7 +16,7 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var clock = new ManualTimeProvider(DeadlineNow);
-        await UwpEnforcementRunner.AssessAsync(fixture.Root);
+        await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         clock.OnTimerCreated = () => clock.Advance(TimeSpan.FromSeconds(1));
         var runner = new UwpEnforcementRunner(
             new DelegateProcessRunner(_ =>
@@ -64,7 +64,7 @@ public sealed partial class RunnerAcceptanceTests
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
             fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
-        await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root);
+        await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var command = new UwpEnforceCommand(new FakeProcessRunner());
         var parseResult = command.Parse(["wait", fixture.Root.FullName]);
         var original = Console.Out;

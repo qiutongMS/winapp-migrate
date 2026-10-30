@@ -53,6 +53,9 @@ public sealed class MigrationState
     [JsonPropertyName("expectedOutcome")]
     public required string ExpectedOutcome { get; set; }
 
+    [JsonPropertyName("assertions")]
+    public List<StateAssertion> Assertions { get; set; } = [];
+
     [JsonPropertyName("source")]
     public required StateObservation Source { get; set; }
 
@@ -73,6 +76,9 @@ public sealed class StateObservation
 
     [JsonPropertyName("reason")]
     public string? Reason { get; set; }
+
+    [JsonPropertyName("attestation")]
+    public string? Attestation { get; set; }
 }
 
 public sealed class StateComparison
@@ -135,10 +141,58 @@ public sealed class SemanticFinding
 
     [JsonPropertyName("validationEvidence")]
     public List<string> ValidationEvidence { get; set; } = [];
+
+    [JsonPropertyName("completionAssertions")]
+    public List<FindingCompletionAssertion> CompletionAssertions { get; set; } = [];
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class StateAssertion
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("kind")]
+    public required string Kind { get; set; }
+
+    [JsonPropertyName("probeIndex")]
+    public int ProbeIndex { get; set; }
+
+    [JsonPropertyName("sourceEvidence")]
+    public required string SourceEvidence { get; set; }
+
+    [JsonPropertyName("automationId")]
+    public required string AutomationId { get; set; }
+
+    [JsonPropertyName("property")]
+    public required string Property { get; set; }
+
+    [JsonPropertyName("selector")]
+    public string? Selector { get; set; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class FindingCompletionAssertion
+{
+    [JsonPropertyName("stateId")]
+    public required string StateId { get; set; }
+
+    [JsonPropertyName("assertionId")]
+    public required string AssertionId { get; set; }
 }
 
 public sealed class BuildAttestation
 {
+    [JsonPropertyName("stdoutSha256")]
+    public string? StandardOutputSha256 { get; set; }
+    [JsonPropertyName("stderrSha256")]
+    public string? StandardErrorSha256 { get; set; }
+    [JsonPropertyName("seal")]
+    public string? Seal { get; set; }
+    [JsonPropertyName("sealPublicKey")]
+    public string? SealPublicKey { get; set; }
+    [JsonPropertyName("operationId")]
+    public string? OperationId { get; set; }
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -195,6 +249,16 @@ public sealed class BuildAttestation
 
 public sealed class ReplayAttestation
 {
+    [JsonPropertyName("stdoutSha256")]
+    public string? StandardOutputSha256 { get; set; }
+    [JsonPropertyName("stderrSha256")]
+    public string? StandardErrorSha256 { get; set; }
+    [JsonPropertyName("seal")]
+    public string? Seal { get; set; }
+    [JsonPropertyName("sealPublicKey")]
+    public string? SealPublicKey { get; set; }
+    [JsonPropertyName("operationId")]
+    public string? OperationId { get; set; }
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -241,6 +305,9 @@ public sealed class ReplayAttestation
 
     [JsonPropertyName("processId")]
     public int? ProcessId { get; set; }
+
+    [JsonPropertyName("processStartedAt")]
+    public DateTimeOffset? ProcessStartedAt { get; set; }
 
     [JsonPropertyName("aumid")]
     public string? Aumid { get; set; }
@@ -399,6 +466,26 @@ public sealed class DiagnosticRunAttestation
 
 public sealed class UiDevelopmentProbe
 {
+    [JsonPropertyName("operationId")]
+    public string? OperationId { get; set; }
+    [JsonPropertyName("seal")]
+    public string? Seal { get; set; }
+
+    [JsonPropertyName("sealPublicKey")]
+    public string? SealPublicKey { get; set; }
+
+    [JsonPropertyName("windowHandle")]
+    public long? WindowHandle { get; set; }
+
+    [JsonPropertyName("windowProcessId")]
+    public int? WindowProcessId { get; set; }
+
+    [JsonPropertyName("windowProcessStartedAt")]
+    public DateTimeOffset? WindowProcessStartedAt { get; set; }
+
+    [JsonPropertyName("workingDirectory")]
+    public string? WorkingDirectory { get; set; }
+
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -421,6 +508,27 @@ public sealed class UiDevelopmentProbe
 
     [JsonPropertyName("commandSignature")]
     public string CommandSignature { get; set; } = string.Empty;
+
+    [JsonPropertyName("stateId")]
+    public string? StateId { get; set; }
+
+    [JsonPropertyName("stateContractFingerprint")]
+    public string? StateContractFingerprint { get; set; }
+
+    [JsonPropertyName("stdoutSha256")]
+    public string? StandardOutputSha256 { get; set; }
+
+    [JsonPropertyName("stderrSha256")]
+    public string? StandardErrorSha256 { get; set; }
+
+    [JsonPropertyName("screenshot")]
+    public string? ScreenshotPath { get; set; }
+
+    [JsonPropertyName("screenshotSha256")]
+    public string? ScreenshotSha256 { get; set; }
+
+    [JsonPropertyName("infrastructureFailure")]
+    public bool InfrastructureFailure { get; set; }
 
     [JsonPropertyName("startedAt")]
     public DateTimeOffset StartedAt { get; set; }
@@ -530,16 +638,23 @@ public sealed class EnforcementFrontier
     public int? AttemptsRemaining { get; set; }
 }
 
+public sealed record PipelineValidationState(string Id, string? Status, string? Reason);
+
 public sealed record PipelineValidationSummary(
     string SourceStatus,
     IReadOnlyList<string> SourceStates,
     string TargetStatus,
     IReadOnlyList<string> TargetStates,
     string ParityStatus,
-    string Reason);
+    string Reason)
+{
+    public IReadOnlyList<PipelineValidationState> SourceObservations { get; init; } = [];
+    public IReadOnlyList<PipelineValidationState> TargetObservations { get; init; } = [];
+}
 
 public sealed record EnforcementEvaluationInput
 {
+    public IWindowOwnerResolver? WindowOwnerResolver { get; init; }
     public required DirectoryInfo TargetRoot { get; init; }
     public required string TargetFingerprint { get; init; }
     public required bool MechanicalReady { get; init; }

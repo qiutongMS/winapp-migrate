@@ -36,7 +36,7 @@ Verify from the actual output that:
 
 1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, `source`, and `closure`;
 2. `winapp-migrate uwp source --help` exposes `run`, `capture`, and `diagnose`;
-3. `winapp-migrate uwp closure --help` exposes `assess`, `attest`, `capture`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
+3. `winapp-migrate uwp closure --help` exposes `assess`, `attest`, `capture`, `record-state`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
 4. the configured WinApp CLI satisfies the gateway contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
 
 Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.5`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
@@ -262,16 +262,30 @@ and source states. Use optional schema `1.0` `slice`, `dependencies` (slice IDs)
 and `criticality` fields to group states by dependency or architecture boundary.
 During semantic convergence, let the gateway record automatic provenance for
 each target UI probe. Do not create hand-written justification JSON for every
-`list-windows`, `inspect`, `invoke`, or `screenshot`; update the state plan once
-the state outcome is known. `closure capture` writes a bounded receipt by
+`list-windows`, `inspect`, `invoke`, or `screenshot`. Declare the complete
+machine-checkable state `assertions` first, use `closure capture --state <id>`,
+and submit the ordered receipts to `closure record-state` when the sequence
+is complete. Never manually set target `passed` or comparison `verified`.
+State-bound inspect, screenshot, and actions require an explicit `-w/--window`
+owned by the canonical replay's PID and process start time; PID reuse does
+not preserve replay authority. Use unbound `list-windows` for discovery.
+Keep bound windows/processes alive through record-state and final verification:
+the product re-resolves ownership instead of trusting stored PID/start fields.
+Only the independently loaded named local CNG key anchors closure provenance;
+an embedded-key portable signature check is not locally trusted closure.
+Use state-bound `get-property <selector> -p <native-property> --json` for
+selection/focus: pinned `inspect` does not expose those properties.
+Keep the selector/property arguments consistent with the planned assertion;
+use real `expandState`/`ExpandCollapseState` enums, never synthetic `isExpanded`.
+`closure capture` writes a bounded receipt by
 default and persists raw stdout/stderr plus
 `probes/<probe-id>/probe.json`. Read only the relevant persisted output; use
 `--raw-output` only when that focused payload is itself needed.
 The gateway selects only the first dependency-ready semantically unresolved slice. Required
 blocked work stops; optional debt never verifies a state or unlocks a dependent
 slice. Follow snapshot `activeSlice`, `activeStateIds`, and `frontier`. Whenever
-state evidence completes a slice, persist the state-plan update and immediately
-run `closure assess` before editing the next slice. That assessment records the
+state evidence completes a slice, consume the assessment returned by
+`record-state` before editing the next slice. That assessment records the
 resolution and activates the next dependency-ready slice.
 A target change makes resolved evidence stale without returning those slices
 to semantic implementation work. Closure selects stale resolved evidence with
@@ -280,7 +294,10 @@ findings can reopen semantic work before terminal completion.
 Inspect snapshot `disposition`, not just the legacy `status`.
 `continue-with-debt` is nonterminal. `complete`, genuinely
 `blocked-required`, and `infrastructure-failure` are durable terminal outcomes
-and reject target operations. Historical `total-hard-limit`,
+and reject target operations while valid. A completed workflow whose current
+target build/replay chain or closure evidence becomes stale automatically
+reopens; it cannot retain success through an old replay. Other terminal
+outcomes remain immutable. Historical `total-hard-limit`,
 `unit-hard-limit`, `operation-ceiling`, and `stage-soft-limit` dispositions are
 retired and resume during schema import.
 
@@ -306,7 +323,8 @@ fingerprint, replay attestation ID, state ID, and expected outcome. Pass that
 same file to each distinct action in the state sequence:
 
 ```powershell
-winapp-migrate uwp closure capture "<target>" --discriminating-evidence "<state-intent>" -- <ui-arguments>
+winapp-migrate uwp closure capture "<target>" --state "<state-id>" --discriminating-evidence "<state-intent>" -- <ui-command-and-arguments> -w <target-hwnd>
+winapp-migrate uwp closure record-state "<target>" --state "<state-id>" --probe "<action-probe.json>" --probe "<inspect-probe.json>"
 ```
 
 The gateway binds the intent to the target fingerprint and canonical replay,
@@ -319,12 +337,21 @@ invoke raw `winapp ui` or infer an HWND from launch output.
 
 Treat every independently observable clause in `expectedOutcome` as an
 assertion, not as descriptive prose. Record direct final evidence for each
-clause before setting the state to passed/verified. Navigation to a destination
+clause before asking `record-state` to derive closure. Navigation to a destination
 does not prove that its navigation item is selected; visible text does not prove
 `IsSelected`, toggle state, value retention, focus, enabled state, or restored
 state. Query the relevant property after the decisive action and retain that
 result with the final tree. If any expected property is false or missing, keep
 the state failed or unverified and reopen the linked finding.
+Only the supported typed source/target assertion contract can derive success;
+do not replace unsupported clauses with agent-authored verdict booleans or
+prose. Unsupported visual, timing, lifecycle, or other claims remain unverified.
+Low-information screenshots cannot establish visual parity, but do not reject
+intentional restoration similarity or valid structured nonvisual assertions.
+CRC/chunk-valid 16-bit/interlaced PNGs may be valid-unclassified supplemental
+evidence for those nonvisual assertions; they cannot prove visual information.
+Findings resolve only through satisfied mapped `completionAssertions`;
+free-text-only completion conditions stay open.
 
 This final pass attempts to disprove completion. Do not reuse a development process or old evidence. Reopen a finding when the clean sequence changes the signature or fails.
 
@@ -345,6 +372,9 @@ winapp-migrate uwp closure finalize "<target>"
 ```
 
 Do not hand-edit its derived validation summary.
+Every assessment verifies canonical copy hashes against re-derived state
+evidence and checks complete per-state report statuses/reasons. Valid-looking
+replacement artifacts or matching aggregate statuses are not closure proof.
 Never fabricate or manually repair `winapp-migrate uwp`-owned mechanical
 evidence. Runtime parity and migration completion are separate claims: paired
 source/target evidence may establish parity while required migration work

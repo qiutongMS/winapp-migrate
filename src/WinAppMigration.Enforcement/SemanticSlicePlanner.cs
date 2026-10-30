@@ -28,9 +28,25 @@ public static class SemanticSlicePlanner
                 state.Dependencies is null ||
                 state.Dependencies.Any(string.IsNullOrWhiteSpace) ||
                 state.Source is null || state.Target is null || state.Comparison is null ||
-                state.Source.Evidence is null || state.Target.Evidence is null)
+                state.Source.Evidence is null || state.Target.Evidence is null ||
+                state.Assertions is null)
             {
-                reason = $"State {state.Id} has invalid slice, criticality, dependency, or observation metadata.";
+                reason = $"State {state.Id} has invalid slice, criticality, dependency, observation status, or assertion metadata.";
+                return false;
+            }
+            if (state.Source.Status is not ("not-run" or "captured" or "blocked" or "unverified"))
+            {
+                reason = $"State {state.Id} source status {state.Source.Status} is invalid; use captured, blocked, or unverified (not-run only before an attempt).";
+                return false;
+            }
+            if (state.Target.Status is not ("not-run" or "passed" or "blocked" or "unverified" or "failed"))
+            {
+                reason = $"State {state.Id} target status {state.Target.Status} is invalid; use passed, blocked, unverified, or failed (not-run only before an attempt).";
+                return false;
+            }
+            if (state.Comparison.Status is not ("not-run" or "verified" or "blocked" or "unverified" or "failed"))
+            {
+                reason = $"State {state.Id} comparison status {state.Comparison.Status} is invalid; use verified, blocked, unverified, or failed (not-run only before an attempt).";
                 return false;
             }
         }
@@ -91,13 +107,13 @@ public static class SemanticSlicePlanner
 
     public static IReadOnlyList<SemanticSlice> Assess(
         DirectoryInfo root, StatePlanDocument plan, ReplayAttestation? freshReplay,
-        WorkflowProgress? progress = null)
+        WorkflowProgress? progress = null, DateTimeOffset? now = null, IWindowOwnerResolver? windowOwnerResolver = null)
     {
         return plan.States.GroupBy(SliceId, StringComparer.Ordinal)
             .Select(group =>
             {
                 var states = group.ToArray();
-                var reasons = states.Select(state => StateReason(root, state, freshReplay)).ToArray();
+                var reasons = states.Select(state => StateReason(root, state, freshReplay, now ?? DateTimeOffset.UtcNow, windowOwnerResolver)).ToArray();
                 return new SemanticSlice(
                     group.Key,
                     states[0].Criticality,
@@ -125,7 +141,7 @@ public static class SemanticSlicePlanner
                     !debt.Any(item => item.SliceId == dependency))));
 
     private static string? StateReason(
-        DirectoryInfo root, MigrationState state, ReplayAttestation? replay)
+        DirectoryInfo root, MigrationState state, ReplayAttestation? replay, DateTimeOffset now, IWindowOwnerResolver? windowOwnerResolver)
     {
         if (state.Source.Status != "captured")
             return $"State {state.Id} source status {state.Source.Status} is not captured.";
@@ -137,8 +153,10 @@ public static class SemanticSlicePlanner
             return $"State {state.Id} comparison status {state.Comparison.Status} is not closed; use verified, blocked, unverified, or failed.";
         if (replay is null)
             return $"State {state.Id} requires a fresh canonical replay.";
-        return EvidenceExists(root, state.Target.Evidence, replay.StartedAt, out var reason)
-            ? null : $"State {state.Id}: {reason}";
+        if (!EvidenceExists(root, state.Target.Evidence, replay.StartedAt, out var reason))
+            return $"State {state.Id}: {reason}";
+        return StateClosureProtocol.Verify(root, state, replay, now, out var closureReason, windowOwnerResolver)
+            ? null : closureReason;
     }
 
     private static bool EvidenceExists(

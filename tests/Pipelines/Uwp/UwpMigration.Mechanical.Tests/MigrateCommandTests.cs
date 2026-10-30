@@ -14,7 +14,7 @@ namespace UwpMigration.Mechanical.Tests;
 
 [TestClass]
 [DoNotParallelize]
-public class MigrateCommandTests : MigrateCommandTestBase
+public partial class MigrateCommandTests : MigrateCommandTestBase
 {
     private async Task WriteAsync(DirectoryInfo dir, string relative, string content)
     {

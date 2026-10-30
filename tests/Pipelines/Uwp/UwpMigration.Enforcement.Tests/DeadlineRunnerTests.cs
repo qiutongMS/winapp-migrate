@@ -152,7 +152,7 @@ public sealed partial class RunnerAcceptanceTests
     private static async Task SeedElapsedTimeAsync(RunnerFixture fixture, int previousMinutes)
     {
         if (!File.Exists(fixture.Path(EnforcementStore.ProgressPath)))
-            await UwpEnforcementRunner.AssessAsync(fixture.Root);
+            await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
         progress.StartedAt = DeadlineNow.AddMinutes(-previousMinutes);
         progress.LastObservedAt = DeadlineNow;
@@ -169,9 +169,21 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     private sealed class DelegateProcessRunner(Func<CancellationToken, Task<EnforcementProcessResult>> invoke)
-        : IEnforcementProcessRunner
+        : IEnforcementProcessRunner, IWindowOwnerResolver
     {
         public int CallCount { get; private set; }
+
+        public bool TryGetProcessId(long windowHandle, out int processId)
+        {
+            processId = 4242;
+            return windowHandle > 0;
+        }
+
+        public bool TryGetProcessIdentity(int processId, out ProcessIdentity identity)
+        {
+            identity = new ProcessIdentity(processId, TestWindowOwnerResolver.ProcessStartedAt);
+            return processId > 0;
+        }
 
         public Task<EnforcementProcessResult> RunAsync(
             string executable, DirectoryInfo workingDirectory, IReadOnlyList<string> arguments,

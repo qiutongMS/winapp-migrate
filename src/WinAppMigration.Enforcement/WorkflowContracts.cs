@@ -229,6 +229,21 @@ public sealed record WorkflowProgressEvent
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowOperationRecord
 {
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    [JsonPropertyName("seal")]
+    public string? Seal { get; set; }
+    [JsonPropertyName("sealPublicKey")]
+    public string? SealPublicKey { get; set; }
+    [JsonPropertyName("artifactId")]
+    public string? ArtifactId { get; set; }
+    [JsonPropertyName("artifactSha256")]
+    public string? ArtifactSha256 { get; set; }
+    [JsonPropertyName("probeId")]
+    public string? ProbeId { get; set; }
+    [JsonPropertyName("probeSha256")]
+    public string? ProbeSha256 { get; set; }
+
     [JsonRequired, JsonPropertyName("kind")]
     public WorkflowOperation Kind { get; init; }
     [JsonRequired, JsonPropertyName("stage")]

@@ -11,26 +11,28 @@ namespace WinAppMigration.Cli.Pipelines.Uwp;
 
 internal sealed class UwpEnforceCommand : Command
 {
-    public UwpEnforceCommand(IEnforcementProcessRunner processRunner)
+    public UwpEnforceCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver? windowOwnerResolver = null)
         : base(
             "closure",
             "Assess migration closure and produce fingerprint-bound canonical attestations through WinApp CLI.")
     {
+        windowOwnerResolver ??= processRunner as IWindowOwnerResolver ?? WindowsWindowOwnerResolver.Instance;
         Aliases.Add("enforce");
-        Subcommands.Add(new AssessCommand());
-        Subcommands.Add(new WaitCommand(processRunner));
-        Subcommands.Add(new RunCommand(processRunner));
-        Subcommands.Add(new DiagnoseCommand(processRunner));
-        Subcommands.Add(new UiCommand(processRunner));
-        Subcommands.Add(new SynchronizeCommand());
-        Subcommands.Add(new RecordFailureCommand());
-        Subcommands.Add(new RecordDiagnosisCommand());
+        Subcommands.Add(new AssessCommand(windowOwnerResolver));
+        Subcommands.Add(new WaitCommand(processRunner, windowOwnerResolver));
+        Subcommands.Add(new RunCommand(processRunner, windowOwnerResolver));
+        Subcommands.Add(new DiagnoseCommand(processRunner, windowOwnerResolver));
+        Subcommands.Add(new UiCommand(processRunner, windowOwnerResolver));
+        Subcommands.Add(new RecordStateCommand(windowOwnerResolver));
+        Subcommands.Add(new SynchronizeCommand(windowOwnerResolver));
+        Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
+        Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
         Subcommands.Add(new ConfigureCommand());
     }
 
     private sealed class WaitCommand : Command
     {
-        internal WaitCommand(IEnforcementProcessRunner processRunner)
+        internal WaitCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "wait",
                 "Deprecated compatibility command. Wait for a durable closure disposition or an optional host observation timeout; elapsed time never changes closure state.")
@@ -55,7 +57,7 @@ internal sealed class UwpEnforceCommand : Command
                     {
                         var timeoutValue = parseResult.GetValue(timeoutSeconds);
                         var pollValue = parseResult.GetValue(pollIntervalMilliseconds) ?? 500;
-                        var runner = new UwpEnforcementRunner(processRunner);
+                        var runner = new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver);
                         return await runner.WaitForTerminalAsync(
                             parseResult.GetValue(target)!,
                             parseResult.GetValue(attempts) ?? 2,
@@ -104,7 +106,7 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class AssessCommand : Command
     {
-        internal AssessCommand()
+        internal AssessCommand(IWindowOwnerResolver windowOwnerResolver)
             : base("assess", "Assess deterministic migration checklist, evidence freshness, active semantic work, and durable closure disposition without invoking external tools.")
         {
             var target = TargetArgument();
@@ -118,6 +120,7 @@ internal sealed class UwpEnforceCommand : Command
                 {
                     var snapshot = await UwpEnforcementRunner.AssessAsync(
                         parseResult.GetValue(target)!,
+                        windowOwnerResolver,
                         parseResult.GetValue(attempts) ?? 2,
                         cancellationToken);
                     return WriteSnapshot(snapshot, parseResult.GetValue(full));
@@ -127,7 +130,7 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class RunCommand : Command
     {
-        internal RunCommand(IEnforcementProcessRunner processRunner)
+        internal RunCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "attest",
                 "Run the next checklist-authorized canonical build or replay through WinApp CLI and bind its attestation to the target fingerprint.")
@@ -196,7 +199,7 @@ internal sealed class UwpEnforceCommand : Command
                         MaximumSignatureAttempts =
                             parseResult.GetValue(attempts) ?? 2
                     };
-                    var runner = new UwpEnforcementRunner(processRunner);
+                    var runner = new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver);
                     var snapshot = await runner.RunAsync(
                         parseResult.GetValue(target)!,
                         options,
@@ -208,7 +211,7 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class DiagnoseCommand : Command
     {
-        internal DiagnoseCommand(IEnforcementProcessRunner processRunner)
+        internal DiagnoseCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "diagnose",
                 "Forward a checklist-authorized development diagnostic probe to WinApp CLI. Probe output is fingerprint-bound but never satisfies canonical build, replay, parity, or finalization gates.")
@@ -239,7 +242,7 @@ internal sealed class UwpEnforceCommand : Command
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
-                    var runner = new UwpEnforcementRunner(processRunner);
+                    var runner = new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver);
                     var attestation = await runner.DiagnoseAsync(
                         parseResult.GetValue(target)!,
                         new UwpEnforcementOptions
@@ -269,15 +272,19 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class UiCommand : Command
     {
-        internal UiCommand(IEnforcementProcessRunner processRunner)
+        internal UiCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver? windowOwnerResolver)
             : base(
                 "capture",
-                "Forward checklist-authorized target UI capture to WinApp CLI as a development probe and return a bounded receipt. Closure requires --discriminating-evidence. Place UI arguments after --.")
+                "Capture a target development probe. --state binds a planned contract and requires a replay-owned -w/--window. Use unbound list-windows for discovery. Closure requires --discriminating-evidence. Place UI arguments after --.")
         {
             Aliases.Add("ui");
             var target = TargetArgument();
             var winApp = WinAppOption();
             var discriminatingEvidence = DiscriminatingEvidenceOption();
+            var state = new Option<string?>("--state")
+            {
+                Description = "Bind this probe to a planned state/contract and an explicit HWND owned by the canonical replay process."
+            };
             var rawOutput = new Option<bool>("--raw-output")
             {
                 Description = "Write the raw WinApp CLI stdout and stderr instead of the bounded probe receipt. Raw output is always persisted to the receipt paths."
@@ -291,13 +298,16 @@ internal sealed class UwpEnforceCommand : Command
             Arguments.Add(arguments);
             Options.Add(winApp);
             Options.Add(discriminatingEvidence);
+            Options.Add(state);
             Options.Add(rawOutput);
             SetAction((parseResult, cancellationToken) =>
                 new UiAction(
                     processRunner,
+                    windowOwnerResolver,
                     target,
                     winApp,
                     discriminatingEvidence,
+                    state,
                     rawOutput,
                     arguments).InvokeAsync(
                         parseResult,
@@ -305,9 +315,35 @@ internal sealed class UwpEnforceCommand : Command
         }
     }
 
+    private sealed class RecordStateCommand : Command
+    {
+        internal RecordStateCommand(IWindowOwnerResolver windowOwnerResolver)
+            : base("record-state", "Derive state closure from ordered, successful state-bound probes and supported source/target assertions. Then use finalize to synchronize canonical evidence, TODOs, and report.")
+        {
+            var target = TargetArgument();
+            var state = new Option<string>("--state") { Required = true, Description = "Exact planned state ID." };
+            var probes = new Option<string[]>("--probe")
+            {
+                Required = true,
+                Arity = ArgumentArity.OneOrMore,
+                AllowMultipleArgumentsPerToken = false,
+                Description = "Target-relative canonical probe.json path in sequence order. Repeat for each probe."
+            };
+            var full = FullOutputOption();
+            Arguments.Add(target);
+            Options.Add(state);
+            Options.Add(probes);
+            Options.Add(full);
+            SetAction((parseResult, cancellationToken) => InvokeGuardedAsync(async () =>
+                WriteSnapshot(await UwpEnforcementRunner.RecordStateAsync(
+                    parseResult.GetValue(target)!, windowOwnerResolver, parseResult.GetValue(state)!,
+                    parseResult.GetValue(probes) ?? [], cancellationToken), parseResult.GetValue(full))));
+        }
+    }
+
     private sealed class SynchronizeCommand : Command
     {
-        internal SynchronizeCommand()
+        internal SynchronizeCommand(IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "finalize",
                 "Synchronize migration-report validation summaries from canonical closure evidence and reassess final parity.")
@@ -325,6 +361,7 @@ internal sealed class UwpEnforceCommand : Command
                     var snapshot =
                         await UwpEnforcementRunner.SynchronizeReportAsync(
                             parseResult.GetValue(target)!,
+                            windowOwnerResolver,
                             parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
                     return WriteSnapshot(snapshot, parseResult.GetValue(full));
@@ -334,7 +371,7 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class RecordFailureCommand : Command
     {
-        internal RecordFailureCommand()
+        internal RecordFailureCommand(IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "record-failure",
                 "Record an observed build or runtime failure signature against the current target fingerprint.")
@@ -376,6 +413,7 @@ internal sealed class UwpEnforceCommand : Command
                     var snapshot =
                         await UwpEnforcementRunner.RecordFailureAsync(
                             parseResult.GetValue(target)!,
+                            windowOwnerResolver,
                             parseResult.GetValue(kind)!,
                             parseResult.GetValue(signature)!,
                             parseResult.GetValue(state),
@@ -389,7 +427,7 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class RecordDiagnosisCommand : Command
     {
-        internal RecordDiagnosisCommand()
+        internal RecordDiagnosisCommand(IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "record-diagnosis",
                 "Record source-first semantic diagnosis for a previously recorded runtime failure.")
@@ -462,6 +500,7 @@ internal sealed class UwpEnforceCommand : Command
                     var snapshot =
                         await UwpEnforcementRunner.RecordDiagnosisAsync(
                             parseResult.GetValue(target)!,
+                            windowOwnerResolver,
                             parseResult.GetValue(signature)!,
                             parseResult.GetValue(state),
                             parseResult.GetValue(sourceLocations) ?? [],
@@ -530,9 +569,11 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class UiAction(
         IEnforcementProcessRunner processRunner,
+        IWindowOwnerResolver? windowOwnerResolver,
         Argument<DirectoryInfo> target,
         Option<string?> winApp,
         Option<string[]> discriminatingEvidence,
+        Option<string?> state,
         Option<bool> rawOutput,
         Argument<string[]> arguments)
         : AsynchronousCommandLineAction
@@ -543,13 +584,14 @@ internal sealed class UwpEnforceCommand : Command
         {
             try
             {
-                var runner = new UwpEnforcementRunner(processRunner);
+                var runner = new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver);
                 var targetRoot = parseResult.GetValue(target)!;
                 var probe = await runner.InvokeUiAsync(
                     targetRoot,
                     ResolveWinAppExecutable(parseResult.GetValue(winApp)),
                     parseResult.GetValue(arguments) ?? [],
                     parseResult.GetValue(discriminatingEvidence) ?? [],
+                    parseResult.GetValue(state),
                     cancellationToken);
                 if (parseResult.GetValue(rawOutput))
                 {

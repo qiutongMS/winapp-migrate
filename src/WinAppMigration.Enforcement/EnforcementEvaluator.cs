@@ -58,21 +58,11 @@ public static class EnforcementEvaluator
             input.FindingLedger,
             input.FindingLedgerError,
             out var findingReason,
-            out var findingFrontier);
+            out var findingFrontier, input);
         AddGate(gates, "findings", findingsValid, findingReason);
 
-        var workflowError = input.ArtifactError ?? WorkflowValidation.DispositionError(input.PersistedDisposition) ??
-            WorkflowValidation.EvidenceArtifactError(input.Attempts, input.Build, input.Replay) ??
-            WorkflowValidation.DiagnosticError(input.Diagnostic) ??
-            WorkflowValidation.PolicyError(input.Policy) ??
-            WorkflowValidation.ProgressError(input.Progress, input.Policy, input.GeneratedAt);
-        var artifactsValid =
-            string.IsNullOrWhiteSpace(workflowError) &&
-            input.Attempts.SchemaVersion == AttemptLedger.CurrentSchemaVersion &&
-            (input.Build is null ||
-             input.Build.SchemaVersion == BuildAttestation.CurrentSchemaVersion) &&
-            (input.Replay is null ||
-             input.Replay.SchemaVersion == ReplayAttestation.CurrentSchemaVersion);
+        var workflowError = ArtifactError(input);
+        var artifactsValid = ArtifactsValid(input, workflowError);
         AddGate(
             gates,
             "enforcement-artifacts",
@@ -108,21 +98,7 @@ public static class EnforcementEvaluator
                 ? "The target references the WinUI analyzer with PrivateAssets=all."
                 : "The target must reference Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer with PrivateAssets=all.");
 
-        var buildFresh = artifactsValid &&
-            input.Build is
-            {
-                Success: true,
-                StructuredOutput: true,
-                AnalyzerPrivateAssets: true
-            } &&
-            input.Build.SchemaVersion ==
-                BuildAttestation.CurrentSchemaVersion &&
-            !string.IsNullOrWhiteSpace(input.Build.AnalyzerPackage) &&
-            input.Build.StartedAt <= input.Build.CompletedAt &&
-            input.Build.TargetFingerprint.Equals(
-                input.TargetFingerprint,
-                StringComparison.Ordinal) &&
-            AttestationEvidenceExists(input.TargetRoot, input.Build);
+        var buildFresh = BuildIsFresh(input, artifactsValid);
         AddGate(
             gates,
             "fresh-build",
@@ -130,26 +106,10 @@ public static class EnforcementEvaluator
             BuildReason(
                 input.TargetRoot,
                 input.Build,
-                input.TargetFingerprint));
-
-        var replayFresh =
-            buildFresh &&
-            input.Replay is
-            {
-                Success: true,
-                ProcessId: > 0
-            } &&
-            input.Replay.SchemaVersion ==
-                ReplayAttestation.CurrentSchemaVersion &&
-            input.Replay.TargetFingerprint.Equals(
                 input.TargetFingerprint,
-                StringComparison.Ordinal) &&
-            input.Replay.BuildAttestationId.Equals(
-                input.Build!.Id,
-                StringComparison.Ordinal) &&
-            input.Build.CompletedAt <= input.Replay.StartedAt &&
-            input.Replay.StartedAt <= input.Replay.CompletedAt &&
-            AttestationEvidenceExists(input.TargetRoot, input.Replay);
+                input.GeneratedAt));
+
+        var replayFresh = ReplayIsFresh(input, buildFresh);
         AddGate(
             gates,
             "canonical-replay",
@@ -158,12 +118,13 @@ public static class EnforcementEvaluator
                 input.TargetRoot,
                 input.Replay,
                 input.Build,
-                input.TargetFingerprint));
+                input.TargetFingerprint,
+                input.GeneratedAt));
 
         var slices = planValid
-            ? SemanticSlicePlanner.Assess(input.TargetRoot, input.StatePlan!, replayFresh ? input.Replay : null, input.Progress)
+            ? SemanticSlicePlanner.Assess(input.TargetRoot, input.StatePlan!, replayFresh ? input.Replay : null, input.Progress, input.GeneratedAt, input.WindowOwnerResolver)
             : [];
-        slices = ApplyFindingWork(slices, input.FindingLedger);
+        slices = ApplyFindingWork(slices, input.FindingLedger, input);
         if (artifactsValid)
         {
             var activeFailures = FailureProtocol.ActiveRuntimeFailures(input).ToArray();
@@ -182,7 +143,7 @@ public static class EnforcementEvaluator
                     Findings = input.FindingLedger!.Findings.Where(finding =>
                         finding.StateIds.Count == 0 ||
                         activeSlice.States.Any(state => finding.StateIds.Contains(state.Id, StringComparer.Ordinal))).ToList()
-                }, input.FindingLedgerError, out findingReason, out findingFrontier);
+                }, input.FindingLedgerError, out findingReason, out findingFrontier, input);
         var sourceReason = "A valid state plan is required for source-oracle capture.";
         var sourceReady = planValid &&
             SemanticSlicePlanner.SourceReady(input.TargetRoot, input.StatePlan!, out sourceReason);
@@ -302,7 +263,17 @@ public static class EnforcementEvaluator
     private static EnforcementEvaluationInput ReopenInvalidCompletion(
         EnforcementEvaluationInput input)
     {
-        if (input.ReportClosureReady)
+        var artifactError = ArtifactError(input);
+        if (input.ReportClosureReady &&
+            (input.PersistedDisposition is not { Kind: "complete", Terminal: true } &&
+             input.Progress?.Disposition is not { Kind: "complete", Terminal: true } ||
+             input.MechanicalReady && input.AnalyzerReferencePresent && input.AnalyzerPrivateAssets &&
+             ReplayIsFresh(input, BuildIsFresh(input, ArtifactsValid(input, artifactError))) &&
+             ValidateStatePlan(input.StatePlan, input.StatePlanError, out _) &&
+             ValidateReportSummary(input.StatePlan!, input.ReportValidation, out _) &&
+             ValidateFindings(input.FindingLedger, input.FindingLedgerError, out _, out _, input) &&
+             input.StatePlan!.States.All(state => state is not null &&
+                 StateClosureProtocol.Verify(input.TargetRoot, state, input.Replay, input.GeneratedAt, out _, input.WindowOwnerResolver))))
         {
             return input;
         }
@@ -318,7 +289,7 @@ public static class EnforcementEvaluator
             input.Progress.Disposition = new RunDisposition
             {
                 Kind = "continue",
-                ReasonCode = "report-closure-reopened",
+                ReasonCode = "closure-evidence-reopened",
                 Terminal = false,
                 Retryable = true,
                 AllowedOperations = [],
@@ -326,8 +297,44 @@ public static class EnforcementEvaluator
             };
         }
 
-        return input with { PersistedDisposition = persistedDisposition };
+        return input with { PersistedDisposition = persistedDisposition, ArtifactError = artifactError };
     }
+
+    private static string? ArtifactError(EnforcementEvaluationInput input) =>
+        input.ArtifactError ?? WorkflowValidation.DispositionError(input.PersistedDisposition) ??
+        WorkflowValidation.EvidenceArtifactError(input.Attempts, input.Build, input.Replay) ??
+        WorkflowValidation.DiagnosticError(input.Diagnostic) ??
+        WorkflowValidation.PolicyError(input.Policy) ??
+        WorkflowValidation.ProgressError(input.Progress, input.Policy, input.GeneratedAt);
+
+    private static bool ArtifactsValid(EnforcementEvaluationInput input, string? error) =>
+        string.IsNullOrWhiteSpace(error) &&
+        input.Attempts.SchemaVersion == AttemptLedger.CurrentSchemaVersion &&
+        (input.Build is null || input.Build.SchemaVersion == BuildAttestation.CurrentSchemaVersion) &&
+        (input.Replay is null || input.Replay.SchemaVersion == ReplayAttestation.CurrentSchemaVersion);
+
+    private static bool BuildIsFresh(EnforcementEvaluationInput input, bool artifactsValid) =>
+        artifactsValid &&
+        input.Build is { Success: true, StructuredOutput: true, AnalyzerPrivateAssets: true } &&
+        input.Build.SchemaVersion == BuildAttestation.CurrentSchemaVersion &&
+        !string.IsNullOrWhiteSpace(input.Build.AnalyzerPackage) &&
+        input.Build.StartedAt <= input.Build.CompletedAt && input.Build.CompletedAt <= input.GeneratedAt &&
+        CanonicalAttestationTrust.Verify(input.TargetRoot, input.Build) &&
+        string.Equals(input.Build.TargetFingerprint, input.TargetFingerprint, StringComparison.Ordinal) &&
+        AttestationEvidenceExists(input.TargetRoot, input.Build);
+
+    private static bool ReplayIsFresh(EnforcementEvaluationInput input, bool buildFresh) =>
+        buildFresh &&
+        input.Replay is { Success: true, ProcessId: > 0 } &&
+        input.Replay.SchemaVersion == ReplayAttestation.CurrentSchemaVersion &&
+        CanonicalAttestationTrust.Verify(input.TargetRoot, input.Replay) &&
+        string.Equals(input.Replay.TargetFingerprint, input.TargetFingerprint, StringComparison.Ordinal) &&
+        string.Equals(input.Replay.BuildAttestationId, input.Build!.Id, StringComparison.Ordinal) &&
+        input.Build.CompletedAt <= input.Replay.StartedAt &&
+        input.Replay.StartedAt <= input.Replay.CompletedAt && input.Replay.CompletedAt <= input.GeneratedAt &&
+        input.Replay.ProcessStartedAt is { } processStart && processStart > DateTimeOffset.MinValue &&
+        processStart <= input.Replay.CompletedAt &&
+        AttestationEvidenceExists(input.TargetRoot, input.Replay);
 
     private static bool FindingCollectionsValid(SemanticFindingLedger? ledger) =>
         ledger is { SchemaVersion: SemanticFindingLedger.CurrentSchemaVersion, Findings: not null } &&
@@ -336,7 +343,7 @@ public static class EnforcementEvaluator
             finding.NextActions is not null && finding.ValidationEvidence is not null);
 
     private static IReadOnlyList<SemanticSlice> ApplyFindingWork(
-        IReadOnlyList<SemanticSlice> slices, SemanticFindingLedger? ledger)
+        IReadOnlyList<SemanticSlice> slices, SemanticFindingLedger? ledger, EnforcementEvaluationInput input)
     {
         if (!FindingCollectionsValid(ledger)) return slices;
         return slices.Select((slice, index) =>
@@ -347,7 +354,7 @@ public static class EnforcementEvaluator
                     finding.StateIds.Count == 0 ? index == 0 :
                     slice.States.Any(state => finding.StateIds.Contains(state.Id, StringComparer.Ordinal))).ToList()
             };
-            return ValidateFindings(relevant, null, out var reason, out _)
+            return ValidateFindings(relevant, null, out var reason, out _, input)
                 ? slice : slice with { Complete = false, Resolved = false, Reason = reason };
         }).ToArray();
     }
@@ -429,6 +436,8 @@ public static class EnforcementEvaluator
         StatePlanDocument plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        if (!SemanticSlicePlanner.Validate(plan, out var validationReason))
+            throw new InvalidDataException(validationReason);
         var stateIds = plan.States.Select(state => state.Id).ToArray();
         var source = ExpectedSourceStatus(plan);
         var target = ExpectedTargetStatus(plan);
@@ -445,7 +454,13 @@ public static class EnforcementEvaluator
             target,
             stateIds,
             parity,
-            reason);
+            reason)
+        {
+            SourceObservations = plan.States.Select(state => new PipelineValidationState(
+                state.Id, state.Source.Status, state.Source.Reason)).ToArray(),
+            TargetObservations = plan.States.Select(state => new PipelineValidationState(
+                state.Id, state.Target.Status, state.Target.Reason)).ToArray()
+        };
     }
 
     private static bool ValidateStatePlan(
@@ -504,7 +519,8 @@ public static class EnforcementEvaluator
         SemanticFindingLedger? ledger,
         string? loadError,
         out string reason,
-        out EnforcementFrontier? frontier)
+        out EnforcementFrontier? frontier,
+        EnforcementEvaluationInput input)
     {
         frontier = null;
         if (!string.IsNullOrWhiteSpace(loadError))
@@ -567,10 +583,12 @@ public static class EnforcementEvaluator
             }
             if (finding.Status == "resolved" &&
                 (finding.ValidationEvidence.Count == 0 ||
-                 finding.NextActions.Count > 0))
+                 finding.NextActions.Count > 0 ||
+                 !StateClosureProtocol.FindingSatisfied(input.TargetRoot, finding,
+                     input.StatePlan, input.Replay, input.GeneratedAt, input.WindowOwnerResolver)))
             {
                 reason =
-                    $"Resolved finding {finding.Id} requires validation evidence and no remaining actions.";
+                    $"Resolved finding {finding.Id} requires a satisfied mapped machine-verifiable completion contract, validation evidence, and no remaining actions.";
                 frontier = FindingFrontier(finding, reason);
                 return false;
             }
@@ -606,6 +624,17 @@ public static class EnforcementEvaluator
             string.IsNullOrWhiteSpace(summary.Reason))
         {
             reason = "A non-fully-verified report summary requires a reason.";
+            return false;
+        }
+        var sourceEntries = plan.States.Select(state =>
+            new PipelineValidationState(state.Id, state.Source.Status, state.Source.Reason));
+        var targetEntries = plan.States.Select(state =>
+            new PipelineValidationState(state.Id, state.Target.Status, state.Target.Reason));
+        if (summary.SourceObservations is null || summary.TargetObservations is null ||
+            !summary.SourceObservations.SequenceEqual(sourceEntries) ||
+            !summary.TargetObservations.SequenceEqual(targetEntries))
+        {
+            reason = "migration-report.json per-state status/reason entries do not match the derived state plan observations.";
             return false;
         }
 
@@ -790,7 +819,8 @@ public static class EnforcementEvaluator
                 Reason = BuildReason(
                     input.TargetRoot,
                     input.Build,
-                    input.TargetFingerprint),
+                    input.TargetFingerprint,
+                    input.GeneratedAt),
                 Signature = input.Build?.Signature,
                 AttemptsRemaining = AttemptsRemaining(
                     input,
@@ -807,7 +837,8 @@ public static class EnforcementEvaluator
                     input.TargetRoot,
                     input.Replay,
                     input.Build,
-                    input.TargetFingerprint),
+                    input.TargetFingerprint,
+                    input.GeneratedAt),
                 Signature = input.Replay?.Signature,
                 AttemptsRemaining = AttemptsRemaining(
                     input,
@@ -863,7 +894,8 @@ public static class EnforcementEvaluator
     private static string BuildReason(
         DirectoryInfo targetRoot,
         BuildAttestation? build,
-        string fingerprint)
+        string fingerprint,
+        DateTimeOffset now)
     {
         if (build is null)
         {
@@ -889,7 +921,7 @@ public static class EnforcementEvaluator
         {
             return "The build attestation does not identify the analyzer package.";
         }
-        if (build.StartedAt > build.CompletedAt)
+        if (build.StartedAt > build.CompletedAt || build.CompletedAt > now)
         {
             return "The build attestation has an invalid time range.";
         }
@@ -906,7 +938,8 @@ public static class EnforcementEvaluator
         DirectoryInfo targetRoot,
         ReplayAttestation? replay,
         BuildAttestation? build,
-        string fingerprint)
+        string fingerprint,
+        DateTimeOffset now)
     {
         if (replay is null)
         {
@@ -926,7 +959,7 @@ public static class EnforcementEvaluator
             return "The replay does not use the current build attestation.";
         }
         if (build.CompletedAt > replay.StartedAt ||
-            replay.StartedAt > replay.CompletedAt)
+            replay.StartedAt > replay.CompletedAt || replay.CompletedAt > now)
         {
             return "The replay attestation has an invalid time range.";
         }
@@ -938,6 +971,9 @@ public static class EnforcementEvaluator
         {
             return "WinApp CLI did not return a detached process ID.";
         }
+        if (replay.ProcessStartedAt is not { } processStart || processStart == DateTimeOffset.MinValue ||
+            processStart > replay.CompletedAt)
+            return "The canonical replay lacks a valid stable process identity (PID and process start time); re-attest it.";
         return replay.Success
             ? $"Canonical replay {replay.RunId} is current."
             : $"The latest replay failed with signature {replay.Signature ?? "unknown"}.";

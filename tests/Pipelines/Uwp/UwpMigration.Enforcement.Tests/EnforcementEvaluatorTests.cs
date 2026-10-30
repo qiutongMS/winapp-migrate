@@ -231,9 +231,9 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("state", snapshot.Frontier?.Kind);
+        Assert.AreEqual("state-plan", snapshot.Frontier?.Kind);
         StringAssert.Contains(
-            snapshot.Frontier!.Reason,
+            snapshot.Gates.Single(gate => gate.Id == "state-plan").Reason,
             "use verified, blocked, unverified, or failed");
     }
 
@@ -242,7 +242,7 @@ public sealed partial class EnforcementEvaluatorTests
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
-        var evidence = fixture.Path("evidence.txt");
+        var evidence = fixture.Path(input.StatePlan!.States[0].Target.Evidence[1]);
         File.SetLastWriteTimeUtc(
             evidence,
             input.Replay!.StartedAt.AddSeconds(-1).UtcDateTime);
@@ -569,9 +569,10 @@ public sealed partial class EnforcementEvaluatorTests
                 ]
             };
             var fingerprint = TargetFingerprint.Compute(_root);
-            return new EnforcementEvaluationInput
+            var input = new EnforcementEvaluationInput
             {
                 TargetRoot = _root,
+                WindowOwnerResolver = new TestWindowOwnerResolver(123),
                 GeneratedAt = LifecycleNow,
                 TargetFingerprint = fingerprint,
                 MechanicalReady = true,
@@ -607,6 +608,7 @@ public sealed partial class EnforcementEvaluatorTests
                     ExitCode = 0,
                     Success = true,
                     ProcessId = 123,
+                    ProcessStartedAt = TestWindowOwnerResolver.ProcessStartedAt,
                     StandardOutputPath = "replay-stdout.json",
                     StandardErrorPath = "replay-stderr.log"
                 },
@@ -616,6 +618,8 @@ public sealed partial class EnforcementEvaluatorTests
                 ReportClosureReady = true,
                 ReportClosureReason = "Required report work and canonical evidence are complete."
             };
+            AttestState(input);
+            return input;
         }
 
         internal string Path(string relative) =>

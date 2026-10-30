@@ -1197,6 +1197,7 @@ public static partial class MechanicalMigration
                 });
             }
             RefreshNullTemplateSelectorTodo(targetRoot, report);
+            RefreshCoreWindowResidualTodo(targetRoot, report);
         }
 
         private static bool TryReadInspectableText(string path, out string text)
