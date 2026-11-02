@@ -726,7 +726,7 @@ public sealed partial class RunnerAcceptanceTests
 
         Assert.AreEqual("passed", snapshot.Status);
         var finalized = await fixture.LoadReportAsync();
-        Assert.AreEqual("1.5", finalized.SchemaVersion);
+        Assert.AreEqual("1.6", finalized.SchemaVersion);
         var legacyTodo = finalized.Todos.Single(todo =>
             todo.Id == "UWMIG-LEGACY");
         Assert.AreEqual("accepted", legacyTodo.Status);
@@ -734,7 +734,14 @@ public sealed partial class RunnerAcceptanceTests
             "The schema upgrade must not discard old report data.",
             legacyTodo.Reason);
         Assert.AreEqual(42, legacyTodo.Locations.Single().Line);
-        Assert.IsNull(legacyTodo.Guidance);
+        Assert.IsNotNull(legacyTodo.Guidance);
+        Assert.AreEqual(
+            "provisional",
+            legacyTodo.Guidance.Classification?.Status);
+        Assert.IsFalse(
+            legacyTodo.Guidance.CandidateStrategiesExhaustive);
+        Assert.IsNotEmpty(legacyTodo.Guidance.Facts);
+        Assert.AreEqual("valid", finalized.TodoGraph.Status);
     }
 
     [TestMethod]

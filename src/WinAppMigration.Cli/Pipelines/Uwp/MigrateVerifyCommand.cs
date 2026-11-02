@@ -225,6 +225,20 @@ internal sealed class MigrateVerifyCommand : Command
                 $"Target project graph: {verification.TargetProjectGraph.Status}; " +
                 $"{verification.TargetProjectGraph.NestedProjects.Count} nested project(s); " +
                 $"{verification.TargetProjectGraph.Issues.Count} issue(s).");
+            Console.Out.WriteLine(
+                $"TODO graph: {report.TodoGraph.Status}; " +
+                $"{report.TodoGraph.ExecutionWaves.Count} execution wave(s); " +
+                $"{report.TodoGraph.Issues.Count} issue(s).");
+            foreach (var wave in report.TodoGraph.ExecutionWaves)
+            {
+                Console.Out.WriteLine(
+                    $"  Wave {wave.Index}: {string.Join(", ", wave.TodoIds)}");
+            }
+            foreach (var issue in report.TodoGraph.Issues)
+            {
+                Console.Out.WriteLine(
+                    $"  [TODO graph:{issue.Code}] {issue.Message}");
+            }
             return verification.Status == "passed" ? 0 : 1;
         }
     }

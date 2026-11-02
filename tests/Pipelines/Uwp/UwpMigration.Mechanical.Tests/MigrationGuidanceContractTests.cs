@@ -35,9 +35,25 @@ public class MigrationGuidanceContractTests
                             {
                                 Id = "test-fact",
                                 Summary = "The target contains the test condition.",
+                                Authority = "authoritative-detection",
                                 Locations = [new() { Path = "Selector.cs", Line = 8 }]
                             }
                         ],
+                        Classification = new MigrationGuidanceClassification
+                        {
+                            Status = "ambiguous",
+                            Summary = "Two project-specific contracts are plausible.",
+                            Candidates =
+                            [
+                                new()
+                                {
+                                    Type = "owner-a",
+                                    Confidence = "medium",
+                                    Reason = "The first owner is reachable."
+                                }
+                            ],
+                            DiscriminatingTests = ["Probe the owning window."]
+                        },
                         MechanicallyAppliedTransforms =
                         [
                             new()
@@ -58,7 +74,18 @@ public class MigrationGuidanceContractTests
                             }
                         ],
                         ForbiddenShortcuts = ["Do not guess the owner."],
-                        CompletionConditions = ["The behavior is verified."]
+                        CompletionConditions = ["The behavior is verified."],
+                        CompletionChecks =
+                        [
+                            new()
+                            {
+                                Id = "test-check",
+                                Summary = "The state assertion passes.",
+                                VerificationKind = "state-assertion",
+                                Target = "test-state",
+                                Expected = "passed"
+                            }
+                        ]
                     }
                 }
             ]
@@ -71,11 +98,19 @@ public class MigrationGuidanceContractTests
             json,
             MigrateJsonContext.Default.MigrationReport)!;
 
-        Assert.AreEqual("1.5", roundTripped.SchemaVersion);
+        Assert.AreEqual("1.6", roundTripped.SchemaVersion);
         var guidance = roundTripped.Todos.Single().Guidance!;
         Assert.AreEqual("test-reason", guidance.ReasonCode);
         Assert.AreEqual("test-fact", guidance.Facts.Single().Id);
+        Assert.AreEqual(
+            "authoritative-detection",
+            guidance.Facts.Single().Authority);
         Assert.AreEqual(8, guidance.Facts.Single().Locations.Single().Line);
+        Assert.AreEqual("ambiguous", guidance.Classification!.Status);
+        Assert.AreEqual(
+            "medium",
+            guidance.Classification.Candidates.Single().Confidence);
+        Assert.IsFalse(guidance.CandidateStrategiesExhaustive);
         Assert.AreEqual(
             "TEST-TRANSFORM",
             guidance.MechanicallyAppliedTransforms.Single().Id);
@@ -88,6 +123,9 @@ public class MigrationGuidanceContractTests
         CollectionAssert.AreEqual(
             new[] { "The behavior is verified." },
             guidance.CompletionConditions);
+        Assert.AreEqual(
+            "state-assertion",
+            guidance.CompletionChecks.Single().VerificationKind);
     }
 
     [TestMethod]

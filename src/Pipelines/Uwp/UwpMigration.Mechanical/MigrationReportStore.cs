@@ -21,6 +21,7 @@ internal static class MigrationReportStore
             "1.2",
             "1.3",
             "1.4",
+            "1.5",
             MigrationReport.CurrentSchemaVersion
         };
 
@@ -271,6 +272,22 @@ internal static class MigrationReportStore
         foreach (var todo in report.Todos)
         {
             todo.Locations ??= [];
+            todo.AffectedStates ??= [];
+            todo.AffectedFeatures ??= [];
+            todo.DependsOn ??= [];
+            todo.TouchSet ??= new MigrationTodoTouchSet();
+            todo.TouchSet.Paths ??= [];
+            todo.TouchSet.ProjectItems ??= [];
+            todo.TouchSet.ConflictKeys ??= [];
+            todo.WorkSlices ??= [];
+            foreach (var workSlice in todo.WorkSlices)
+            {
+                workSlice.Locations ??= [];
+                workSlice.TouchSet ??= new MigrationTodoTouchSet();
+                workSlice.TouchSet.Paths ??= [];
+                workSlice.TouchSet.ProjectItems ??= [];
+                workSlice.TouchSet.ConflictKeys ??= [];
+            }
             if (todo.Guidance is null)
             {
                 continue;
@@ -280,9 +297,15 @@ internal static class MigrationReportStore
             todo.Guidance.CandidateStrategies ??= [];
             todo.Guidance.ForbiddenShortcuts ??= [];
             todo.Guidance.CompletionConditions ??= [];
+            todo.Guidance.CompletionChecks ??= [];
             foreach (var fact in todo.Guidance.Facts)
             {
                 fact.Locations ??= [];
+            }
+            if (todo.Guidance.Classification is not null)
+            {
+                todo.Guidance.Classification.Candidates ??= [];
+                todo.Guidance.Classification.DiscriminatingTests ??= [];
             }
             foreach (var strategy in todo.Guidance.CandidateStrategies)
             {
@@ -291,6 +314,7 @@ internal static class MigrationReportStore
                 strategy.Risks ??= [];
             }
         }
+        report.TodoGraph = MigrationTodoGraphBuilder.Build(report.Todos);
         report.DependencyAnalysis ??= new MigrationDependencyAnalysis();
         report.ActivationAnalysis ??= new MigrationActivationAnalysis();
         report.ProjectItemDecisions ??= [];

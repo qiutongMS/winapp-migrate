@@ -13,7 +13,7 @@ plugins/winapp-migrate/                    Agent Plugin and migration Skills
   skills/uwp-to-winapp/                    UWP-to-WinApp semantic workflow
 src/WinAppMigration.Cli/                   `winapp-migrate` command line
 src/WinAppMigration.Enforcement/           Shared evidence and closure engine
-src/Pipelines/Uwp/UwpMigration.Contracts/ UWP report schema 1.5 contracts
+src/Pipelines/Uwp/UwpMigration.Contracts/ UWP report schema 1.6 contracts
 src/Pipelines/Uwp/UwpMigration.Enforcement/ UWP report and WinApp CLI adapter
 src/Pipelines/Uwp/UwpMigration.Mechanical/ Deterministic UWP conversion
 tests/Pipelines/Uwp/                       UWP pipeline tests
@@ -21,17 +21,24 @@ tests/Pipelines/Uwp/                       UWP pipeline tests
 
 The common closure layer owns phase state, target fingerprints, evidence
 freshness, diagnostic grouping, canonical replay, and closure
-gates. The UWP adapter binds those shared contracts to schema 1.5 and invokes
+gates. The UWP adapter binds those shared contracts to schema 1.6 and invokes
 released WinApp CLI commands. UWP-specific activation, package, project-item,
 XAML, and C# behavior stays in the UWP pipeline rather than being prematurely
 generalized.
 
 ## UWP pipeline
 
-The UWP pipeline owns schema 1.5 reports, source and dependency inventory,
+The UWP pipeline owns schema 1.6 reports, source and dependency inventory,
 activation declarations, safe filesystem handling, deterministic XAML and C#
 transforms, residual findings, target-project graph verification, MSBuild item
 evaluation, and the six explicit project-item decision strategies.
+
+Schema 1.6 also emits structured TODO guidance and `todoGraph`: authoritative
+detection facts remain separate from provisional classification, strategies
+are non-exhaustive, completion checks and touch/conflict sets are typed, and
+dependency edges produce deterministic execution waves. Invalid unknown edges
+or cycles are surfaced with no flattened wave plan. See
+[Migration TODO guidance and graph](plugins/winapp-migrate/skills/uwp-to-winapp/references/migration-todo-graph.md).
 
 ```text
 winapp-migrate uwp create <source> --output <target>
@@ -176,7 +183,7 @@ The gateway resolves WinApp CLI from `--winapp`,
 not be exposed to the migration agent.
 
 The Agent Plugins package ships a Copilot `preToolUse` guard. Once a session
-enters a schema 1.5 migration workspace, direct `winapp run`, `winapp build`,
+enters a schema 1.6 migration workspace, direct `winapp run`, `winapp build`,
 and `winapp ui` shell calls are denied even if the agent later changes its
 working directory. Informational `--help` calls remain available. Source and
 target operations must use their respective product gateways; hosts and
@@ -277,7 +284,7 @@ overwritten or repeated for the same signature/fingerprint. After diagnosis,
 Repeated debug/hypothesis work and replay without new discriminating evidence
 are refused. `--force-replay` and `--max-attempts` bypass none of these guards.
 
-The UWP report remains explicitly versioned as schema 1.5. A future WPF
+The UWP report remains explicitly versioned as schema 1.6. A future WPF
 pipeline will start with its own pipeline schema; it will not reinterpret the
 UWP schema as a universal migration contract.
 

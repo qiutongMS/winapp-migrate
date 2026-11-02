@@ -8,7 +8,7 @@ public sealed class MigrationContractVersionsTests
     [TestMethod]
     public void MechanicalReportVersionMatchesQualifiedSchema()
     {
-        Assert.AreEqual("1.5", MigrationContractVersions.MechanicalReport);
+        Assert.AreEqual("1.6", MigrationContractVersions.MechanicalReport);
         Assert.AreEqual(
             MigrationContractVersions.MechanicalReport,
             MigrationReport.CurrentSchemaVersion);

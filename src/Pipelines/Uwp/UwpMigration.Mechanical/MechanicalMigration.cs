@@ -309,18 +309,9 @@ public static partial class MechanicalMigration
             {
                 Console.Out.WriteLine($"    Preserved WinUI scaffold startup file(s), did NOT copy UWP: {string.Join(", ", preservedStartup)}");
                 Console.Out.WriteLine("      Migrate app-level resources from the UWP App.xaml manually (the WinUI startup bootstrap was kept).");
-                report.Todos.Add(new MigrationTodo
-                {
-                    Id = "UWMIG001",
-                    Category = "app-resources",
-                    Priority = "required",
-                    Summary = "Merge application resources and startup behavior from the preserved UWP App files",
-                    Reason = "The WinUI startup files were kept because UWP App.xaml and App.xaml.cs cannot safely overwrite the desktop bootstrap.",
-                    Locations = preservedStartup.Select(path => new MigrationLocation
-                    {
-                        Path = NormalizePath(Path.Combine(".uwp-source", path + ".reference"))
-                    }).ToList()
-                });
+                report.Todos.Add(CreateAppResourcesTodo(
+                    preservedStartup,
+                    sourceProject is not null));
             }
 
             // ── 2. Preserve UWP .csproj / .appxmanifest under .uwp-source/ ───────
@@ -452,6 +443,7 @@ public static partial class MechanicalMigration
             {
                 Console.Out.WriteLine($"  [{todo.Priority}] {todo.Category}: {todo.Summary}");
             }
+            WriteTodoExecutionPlan(report);
             Console.Out.WriteLine("Details: migration-report.json");
             Console.Out.WriteLine("This result is not guaranteed to build or run.");
             Console.Out.WriteLine("=====================================");
@@ -535,18 +527,9 @@ public static partial class MechanicalMigration
             }
             else
             {
-                report.Todos.Add(new MigrationTodo
-                {
-                    Id = "UWMIG003",
-                    Category = "project-dependencies",
-                    Priority = "required",
-                    Summary = "Review UWP project references, linked content, and dependencies",
-                    Reason = "Use dependencyAnalysis for the source project-reference graph. Project/package references and files linked from outside the source root require an explicit target-compatibility decision before they can be migrated safely.",
-                    Locations = csprojs.Select(path => new MigrationLocation
-                    {
-                        Path = NormalizePath(Path.Combine(".uwp-source", Path.GetFileName(path) + ".reference"))
-                    }).ToList()
-                });
+                report.Todos.Add(CreateProjectDependenciesTodo(
+                    csprojs,
+                    report.DependencyAnalysis));
             }
 
             foreach (var relativePath in preservedStartup)
@@ -589,22 +572,30 @@ public static partial class MechanicalMigration
             }
             if (manifests.Count > 0)
             {
-                var extensionText = activationCategories.Count == 0
-                    ? ""
-                    : $" Activation categories: {string.Join(", ", activationCategories)}. " +
-                      $"Mechanical declaration status: {report.ActivationAnalysis.Status}.";
-                report.Todos.Add(new MigrationTodo
-                {
-                    Id = "UWMIG002",
-                    Category = "manifest",
-                    Priority = "required",
-                    Summary = "Review UWP manifest capabilities and extensions for WinUI 3 desktop",
-                    Reason = "Safe activation declarations may be migrated mechanically, but application lifecycle routing and runtime activation behavior still require semantic implementation and validation." + extensionText,
-                    Locations = manifests.Select(path => new MigrationLocation
-                    {
-                        Path = NormalizePath(Path.GetRelativePath(targetRoot, path))
-                    }).ToList()
-                });
+                report.Todos.Add(CreateManifestTodo(
+                    targetRoot,
+                    manifests,
+                    activationCategories,
+                    report.ActivationAnalysis,
+                    report.Todos.Any(todo => todo.Id == "UWMIG001")));
+            }
+        }
+
+        private static void WriteTodoExecutionPlan(MigrationReport report)
+        {
+            Console.Out.WriteLine(
+                $"TODO graph: {report.TodoGraph.Status}; " +
+                $"{report.TodoGraph.ExecutionWaves.Count} execution wave(s); " +
+                $"{report.TodoGraph.Issues.Count} issue(s)");
+            foreach (var wave in report.TodoGraph.ExecutionWaves)
+            {
+                Console.Out.WriteLine(
+                    $"  Wave {wave.Index}: {string.Join(", ", wave.TodoIds)}");
+            }
+            foreach (var issue in report.TodoGraph.Issues)
+            {
+                Console.Out.WriteLine(
+                    $"  [TODO graph:{issue.Code}] {issue.Message}");
             }
         }
 

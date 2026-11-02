@@ -8,7 +8,7 @@ namespace UwpMigration.Contracts;
 
 public sealed class MigrationReport
 {
-    public const string CurrentSchemaVersion = "1.5";
+    public const string CurrentSchemaVersion = "1.6";
 
     [JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -30,6 +30,9 @@ public sealed class MigrationReport
 
     [JsonPropertyName("todos")]
     public List<MigrationTodo> Todos { get; set; } = [];
+
+    [JsonPropertyName("todoGraph")]
+    public MigrationTodoGraph TodoGraph { get; set; } = new();
 
     [JsonPropertyName("dependencyAnalysis")]
     public MigrationDependencyAnalysis DependencyAnalysis { get; set; } = new();
@@ -735,6 +738,21 @@ public sealed class MigrationTodo
     [JsonPropertyName("locations")]
     public List<MigrationLocation> Locations { get; set; } = [];
 
+    [JsonPropertyName("affectedStates")]
+    public List<string> AffectedStates { get; set; } = [];
+
+    [JsonPropertyName("affectedFeatures")]
+    public List<string> AffectedFeatures { get; set; } = [];
+
+    [JsonPropertyName("dependsOn")]
+    public List<string> DependsOn { get; set; } = [];
+
+    [JsonPropertyName("touchSet")]
+    public MigrationTodoTouchSet TouchSet { get; set; } = new();
+
+    [JsonPropertyName("workSlices")]
+    public List<MigrationTodoWorkSlice> WorkSlices { get; set; } = [];
+
     [JsonPropertyName("guidance")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MigrationRepairGuidance? Guidance { get; set; }
@@ -748,8 +766,15 @@ public sealed class MigrationRepairGuidance
     [JsonPropertyName("facts")]
     public List<MigrationGuidanceFact> Facts { get; set; } = [];
 
+    [JsonPropertyName("classification")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MigrationGuidanceClassification? Classification { get; set; }
+
     [JsonPropertyName("mechanicallyAppliedTransforms")]
     public List<MigrationGuidanceTransform> MechanicallyAppliedTransforms { get; set; } = [];
+
+    [JsonPropertyName("candidateStrategiesExhaustive")]
+    public bool CandidateStrategiesExhaustive { get; set; }
 
     [JsonPropertyName("candidateStrategies")]
     public List<MigrationGuidanceStrategy> CandidateStrategies { get; set; } = [];
@@ -759,6 +784,9 @@ public sealed class MigrationRepairGuidance
 
     [JsonPropertyName("completionConditions")]
     public List<string> CompletionConditions { get; set; } = [];
+
+    [JsonPropertyName("completionChecks")]
+    public List<MigrationCompletionCheck> CompletionChecks { get; set; } = [];
 }
 
 public sealed class MigrationGuidanceFact
@@ -769,8 +797,38 @@ public sealed class MigrationGuidanceFact
     [JsonPropertyName("summary")]
     public required string Summary { get; set; }
 
+    [JsonPropertyName("authority")]
+    public string Authority { get; set; } = "authoritative-detection";
+
     [JsonPropertyName("locations")]
     public List<MigrationLocation> Locations { get; set; } = [];
+}
+
+public sealed class MigrationGuidanceClassification
+{
+    [JsonPropertyName("status")]
+    public required string Status { get; set; }
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; set; }
+
+    [JsonPropertyName("candidates")]
+    public List<MigrationClassificationCandidate> Candidates { get; set; } = [];
+
+    [JsonPropertyName("discriminatingTests")]
+    public List<string> DiscriminatingTests { get; set; } = [];
+}
+
+public sealed class MigrationClassificationCandidate
+{
+    [JsonPropertyName("type")]
+    public required string Type { get; set; }
+
+    [JsonPropertyName("confidence")]
+    public required string Confidence { get; set; }
+
+    [JsonPropertyName("reason")]
+    public required string Reason { get; set; }
 }
 
 public sealed class MigrationGuidanceTransform
@@ -798,6 +856,101 @@ public sealed class MigrationGuidanceStrategy
 
     [JsonPropertyName("risks")]
     public List<string> Risks { get; set; } = [];
+}
+
+public sealed class MigrationCompletionCheck
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; set; }
+
+    [JsonPropertyName("verificationKind")]
+    public required string VerificationKind { get; set; }
+
+    [JsonPropertyName("target")]
+    public required string Target { get; set; }
+
+    [JsonPropertyName("expected")]
+    public required string Expected { get; set; }
+}
+
+public sealed class MigrationTodoTouchSet
+{
+    [JsonPropertyName("paths")]
+    public List<string> Paths { get; set; } = [];
+
+    [JsonPropertyName("projectItems")]
+    public List<string> ProjectItems { get; set; } = [];
+
+    [JsonPropertyName("conflictKeys")]
+    public List<string> ConflictKeys { get; set; } = [];
+}
+
+public sealed class MigrationTodoWorkSlice
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; set; }
+
+    [JsonPropertyName("locations")]
+    public List<MigrationLocation> Locations { get; set; } = [];
+
+    [JsonPropertyName("touchSet")]
+    public MigrationTodoTouchSet TouchSet { get; set; } = new();
+}
+
+public sealed class MigrationTodoGraph
+{
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "not-generated";
+
+    [JsonPropertyName("edges")]
+    public List<MigrationTodoDependencyEdge> Edges { get; set; } = [];
+
+    [JsonPropertyName("executionWaves")]
+    public List<MigrationTodoExecutionWave> ExecutionWaves { get; set; } = [];
+
+    [JsonPropertyName("issues")]
+    public List<MigrationTodoGraphIssue> Issues { get; set; } = [];
+}
+
+public sealed class MigrationTodoDependencyEdge
+{
+    [JsonPropertyName("prerequisiteId")]
+    public required string PrerequisiteId { get; set; }
+
+    [JsonPropertyName("dependentId")]
+    public required string DependentId { get; set; }
+}
+
+public sealed class MigrationTodoExecutionWave
+{
+    [JsonPropertyName("index")]
+    public int Index { get; set; }
+
+    [JsonPropertyName("todoIds")]
+    public List<string> TodoIds { get; set; } = [];
+}
+
+public sealed class MigrationTodoGraphIssue
+{
+    [JsonPropertyName("code")]
+    public required string Code { get; set; }
+
+    [JsonPropertyName("todoId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TodoId { get; set; }
+
+    [JsonPropertyName("dependencyId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DependencyId { get; set; }
+
+    [JsonPropertyName("message")]
+    public required string Message { get; set; }
 }
 
 public sealed class MigrationLocation

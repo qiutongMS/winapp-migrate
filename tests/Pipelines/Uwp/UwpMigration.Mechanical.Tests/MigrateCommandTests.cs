@@ -236,7 +236,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
-        Assert.AreEqual("1.5", report.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.AreEqual("1.6", report.RootElement.GetProperty("schemaVersion").GetString());
         Assert.AreEqual("mechanical-migration-complete", report.RootElement.GetProperty("status").GetString());
         Assert.IsTrue(report.RootElement.GetProperty("todos").GetArrayLength() >= 2);
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()

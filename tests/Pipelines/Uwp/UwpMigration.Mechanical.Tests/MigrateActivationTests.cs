@@ -54,7 +54,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
 
         Assert.AreEqual(0, exit, output);
         using var report = await ReadReportAsync(target);
-        Assert.AreEqual("1.5", report.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.AreEqual("1.6", report.RootElement.GetProperty("schemaVersion").GetString());
         var analysis = report.RootElement.GetProperty("activationAnalysis");
         Assert.AreEqual("passed", analysis.GetProperty("status").GetString());
         var contracts = analysis.GetProperty("contracts").EnumerateArray().ToList();
@@ -607,7 +607,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
 
         Assert.AreEqual(0, exit, output);
         using var upgraded = await ReadReportAsync(target);
-        Assert.AreEqual("1.5", upgraded.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.AreEqual("1.6", upgraded.RootElement.GetProperty("schemaVersion").GetString());
         Assert.AreEqual(
             "not-required",
             upgraded.RootElement
@@ -669,7 +669,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
 
         Assert.AreEqual(0, exit, output);
         using var upgraded = await ReadReportAsync(target);
-        Assert.AreEqual("1.5", upgraded.RootElement
+        Assert.AreEqual("1.6", upgraded.RootElement
             .GetProperty("schemaVersion").GetString());
         var legacyTodo = upgraded.RootElement.GetProperty("todos")
             .EnumerateArray()
@@ -685,7 +685,20 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
             37,
             legacyTodo.GetProperty("locations")[0]
                 .GetProperty("line").GetInt32());
-        Assert.IsFalse(legacyTodo.TryGetProperty("guidance", out _));
+        var guidance = legacyTodo.GetProperty("guidance");
+        Assert.AreEqual(
+            "provisional",
+            guidance.GetProperty("classification")
+                .GetProperty("status").GetString());
+        Assert.IsFalse(
+            guidance.GetProperty("candidateStrategiesExhaustive")
+                .GetBoolean());
+        Assert.IsTrue(
+            guidance.GetProperty("facts").GetArrayLength() > 0);
+        Assert.AreEqual(
+            "valid",
+            upgraded.RootElement.GetProperty("todoGraph")
+                .GetProperty("status").GetString());
     }
 
     [TestMethod]
