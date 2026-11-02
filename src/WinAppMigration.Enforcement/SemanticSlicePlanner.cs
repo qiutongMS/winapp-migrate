@@ -125,6 +125,7 @@ public static class SemanticSlicePlanner
                     reasons.FirstOrDefault(reason => reason is not null) ?? $"Slice {group.Key} is verified.")
                 {
                     Resolved = reasons.All(reason => reason is null) ||
+                        states.All(state => StateClosureProtocol.HasHistoricalParity(root, state)) ||
                         progress?.Slices.Any(slice => slice.SliceId == group.Key && slice.Resolved) == true &&
                         !states.Any(state => state.Target.Status is "failed" or "blocked" ||
                             state.Comparison.Status is "failed" or "blocked")

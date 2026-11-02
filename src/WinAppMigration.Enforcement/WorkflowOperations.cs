@@ -38,7 +38,7 @@ public static class WorkflowOperations
 
     public static bool TryBegin(
         EnforcementEvaluationInput input, EnforcementSnapshot snapshot, WorkflowOperation operation,
-        IReadOnlyList<string> evidence, string? signature, out string reason)
+        IReadOnlyList<string> evidence, string? signature, out string reason, StateSliceBinding? intended = null)
     {
         if (WorkflowDispositions.RejectTerminal(snapshot, out reason)) return false;
         reason = "Valid enforcement artifacts and a permitted stage budget are required.";
@@ -94,6 +94,17 @@ public static class WorkflowOperations
         {
             reason = snapshot.Frontier.Reason;
             return false;
+        }
+        var binding = intended ?? StateAttribution.Authorize(input);
+        StateAttribution.Validate(input.StatePlan, binding);
+        var failureIntent = operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
+            FailureProtocol.ActiveRuntimeFailures(input).Any(attempt =>
+                attempt.StateId == binding.StateId && attempt.SliceId == binding.SliceId);
+        if (intended is not null && !failureIntent)
+        {
+            var authorized = StateAttribution.Authorize(input, binding.StateId);
+            if (authorized != binding)
+                throw new InvalidDataException("Operation intent does not match the current authorized slice contract.");
         }
         var progress = snapshot.Workflow;
         var now = input.GeneratedAt;
@@ -159,7 +170,8 @@ public static class WorkflowOperations
             return false;
         }
         if (operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
-            previous.Any(item => item.Signature == signature))
+            previous.Any(item => item.Signature == signature &&
+                item.StateId == binding.StateId && item.IntendedSliceId == binding.SliceId))
         {
             reason = "This signature and target fingerprint already received this diagnosis/hypothesis operation; change the target before repeating it.";
             return false;
@@ -174,6 +186,7 @@ public static class WorkflowOperations
         progress.Operations.Add(new WorkflowOperationRecord
         {
             RequiredContractHash = input.RequiredContractHash,
+            StateId = binding.StateId, IntendedSliceId = binding.SliceId,
             Id = Guid.NewGuid().ToString("N"),
             Kind = operation, Stage = unit.Stage, SliceId = unit.SliceId,
             TargetFingerprint = input.TargetFingerprint, RecordedAt = now,

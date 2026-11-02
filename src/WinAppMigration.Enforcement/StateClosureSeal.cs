@@ -191,6 +191,27 @@ internal static class StateClosureSeal
         });
     }
 
+    internal static void Sign(DiagnosticRunAttestation value)
+    {
+        WithSigner(signer =>
+        {
+            value.Seal = null;
+            value.SealPublicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
+            value.Seal = CreateSeal(signer, "diagnostic\n" + JsonSerializer.Serialize(value, EnforcementStore.JsonOptions));
+        });
+    }
+
+    internal static bool Verify(DiagnosticRunAttestation value)
+    {
+        var seal = value.Seal;
+        try
+        {
+            value.Seal = null;
+            return VerifyPayload("diagnostic\n" + JsonSerializer.Serialize(value, EnforcementStore.JsonOptions), seal, value.SealPublicKey);
+        }
+        finally { value.Seal = seal; }
+    }
+
     internal static bool Verify(RequiredStateContractDocument document)
     {
         var seal = document.Seal;

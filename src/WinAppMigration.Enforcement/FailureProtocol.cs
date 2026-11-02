@@ -7,7 +7,7 @@ public static class FailureProtocol
 {
     public static IEnumerable<EnforcementAttempt> ActiveRuntimeFailures(EnforcementEvaluationInput input) =>
         input.Attempts.Attempts.Where(attempt => attempt.Kind == "runtime")
-            .GroupBy(attempt => (attempt.Signature, attempt.TargetFingerprint))
+            .GroupBy(attempt => (attempt.Signature, attempt.TargetFingerprint, attempt.StateId, attempt.SliceId))
             .Select(group => group.OrderByDescending(attempt =>
                     EnforcementEvaluator.DiagnosisIsComplete(input.TargetRoot, attempt))
                 .ThenByDescending(attempt => attempt.RecordedAt).First())

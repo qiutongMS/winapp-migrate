@@ -333,16 +333,15 @@ public sealed class UwpEnforcementRunner
         await RequireNonterminalAsync(workspace.Target, current, cancellationToken);
         if (current.Workflow is null)
             throw new InvalidDataException("Valid workflow policy and progress are required.");
-        if (current.Stage == WorkflowStage.SemanticConvergence && stateId is not null &&
-            current.ActiveStateIds.Count > 0 && !current.ActiveStateIds.Contains(stateId, StringComparer.Ordinal))
-            throw new InvalidDataException("Record failure against the active dependency-ready semantic slice, not a future slice.");
-        stateId ??= current.ActiveStateIds.FirstOrDefault();
-        var sliceId = workspace.Input.StatePlan?.States
-            .Where(state => state.Id == stateId).Select(SemanticSlicePlanner.SliceId).FirstOrDefault();
+        var binding = ResolveObservedFailureIntent(workspace, current, evidence, stateId);
+        stateId = binding.Binding.StateId;
+        var sliceId = binding.Binding.SliceId;
         var normalizedSignature = NormalizeSignature(kind, signature);
         if (workspace.Attempts.Attempts.Any(attempt =>
             attempt.Kind == kind && attempt.TargetFingerprint == workspace.Fingerprint &&
-            attempt.Signature == normalizedSignature && (kind == "runtime" || attempt.Diagnosis is not null)))
+            attempt.Signature == normalizedSignature && attempt.OperationId == binding.OperationId &&
+            attempt.StateId == stateId && attempt.SliceId == sliceId &&
+            (kind == "runtime" || attempt.Diagnosis is not null)))
             throw new InvalidDataException("A runtime failure tuple cannot be re-recorded or rebound; complete its source-first diagnosis and change the target.");
         current.Workflow.StartedAt ??= workspace.Input.GeneratedAt;
         current.Workflow.OperationsStartedAt ??= workspace.Input.GeneratedAt;
@@ -355,6 +354,7 @@ public sealed class UwpEnforcementRunner
             RecordedAt = workspace.Input.GeneratedAt,
             StateId = stateId,
             SliceId = sliceId,
+            OperationId = binding.OperationId,
             Evidence = [.. evidence]
         });
         await EnforcementStore.WriteAtomicAsync(
@@ -369,6 +369,35 @@ public sealed class UwpEnforcementRunner
         var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
         return snapshot;
+    }
+
+    private static (StateSliceBinding Binding, string? OperationId) ResolveObservedFailureIntent(
+        Workspace workspace, EnforcementSnapshot snapshot, IReadOnlyList<string> evidence, string? requestedState)
+    {
+        foreach (var operation in snapshot.Workflow!.Operations.Where(item => item.TargetFingerprint == workspace.Fingerprint).Reverse())
+        {
+            var matches = false;
+            if (operation.ProbeId is { } probeId)
+            {
+                var (probe, error) = EnforcementStore.TryLoadAsync<UiDevelopmentProbe>(workspace.Target,
+                    $"{EnforcementStore.EnforcementDirectory}/probes/{probeId}/probe.json").GetAwaiter().GetResult();
+                if (error is not null) throw new InvalidDataException(error);
+                matches = probe is not null && operation.ProbeSha256 == StateClosureProtocol.FileHash(workspace.Target, probe.ArtifactPath) &&
+                    evidence.Any(path => path == probe.ArtifactPath || path == probe.StandardOutputPath || path == probe.StandardErrorPath ||
+                        path == probe.ScreenshotPath);
+            }
+            if (workspace.Input.Replay is { } replay && replay.OperationId == operation.Id)
+                matches |= evidence.Any(path => path == replay.StandardOutputPath || path == replay.StandardErrorPath);
+            if (workspace.Input.Diagnostic is { } diagnostic && diagnostic.OperationId == operation.Id)
+                matches |= evidence.Any(path => path == diagnostic.StandardOutputPath || path == diagnostic.StandardErrorPath);
+            if (!matches) continue;
+            var binding = new StateSliceBinding(operation.StateId, operation.IntendedSliceId);
+            StateAttribution.Validate(workspace.Input.StatePlan, binding);
+            if (requestedState is not null && requestedState != binding.StateId)
+                throw new InvalidDataException("Caller --state differs from the evidence operation's immutable start intent.");
+            return (binding, operation.Id);
+        }
+        return (StateAttribution.Authorize(workspace.Input, requestedState), null);
     }
 
     public static Task<EnforcementSnapshot> RecordDiagnosisAsync(
@@ -434,11 +463,6 @@ public sealed class UwpEnforcementRunner
         }
 
         var normalizedSignature = NormalizeSignature("runtime", signature);
-        if (workspace.Attempts.Attempts.Any(candidate =>
-            candidate.Signature == normalizedSignature &&
-            candidate.TargetFingerprint == workspace.Fingerprint &&
-            candidate.Diagnosis is not null))
-            throw new InvalidDataException("A completed diagnosis for this signature and target fingerprint cannot be overwritten or recorded again.");
         var attempt = workspace.Attempts.Attempts
             .Where(candidate =>
                 candidate.Kind.Equals("runtime", StringComparison.Ordinal) &&
@@ -457,6 +481,8 @@ public sealed class UwpEnforcementRunner
                 (string.IsNullOrWhiteSpace(stateId)
                     ? "."
                     : $" and state {stateId}."));
+        if (attempt.Diagnosis is not null)
+            throw new InvalidDataException("A completed diagnosis for this failure tuple cannot be overwritten or recorded again.");
 
         foreach (var relativePath in evidence)
         {
@@ -482,8 +508,9 @@ public sealed class UwpEnforcementRunner
         }
 
         var current = EnforcementEvaluator.Evaluate(workspace.Input);
+        StateAttribution.Validate(workspace.Input.StatePlan, new StateSliceBinding(attempt.StateId, attempt.SliceId));
         if (!await BeginOperationAsync(workspace, current, WorkflowOperation.Hypothesis,
-                evidence, normalizedSignature, cancellationToken))
+                evidence, normalizedSignature, new StateSliceBinding(attempt.StateId, attempt.SliceId), cancellationToken))
             throw new InvalidDataException(current.Frontier!.Reason);
         attempt.Diagnosis = new FailureDiagnosis
         {
@@ -542,10 +569,14 @@ public sealed class UwpEnforcementRunner
         var failure = workspace.Attempts.Attempts
             .Where(attempt => attempt.Kind == "runtime" && attempt.TargetFingerprint == workspace.Fingerprint)
             .OrderByDescending(attempt => attempt.RecordedAt).FirstOrDefault();
+        var diagnosisIntent = failure is null ? StateAttribution.Authorize(workspace.Input) :
+            new StateSliceBinding(failure.StateId, failure.SliceId);
+        StateAttribution.Validate(workspace.Input.StatePlan, diagnosisIntent);
         if (!await BeginOperationAsync(workspace, snapshot, WorkflowOperation.DiagnosticRun,
-                options.DiscriminatingEvidence, failure?.Signature, cancellationToken))
+                options.DiscriminatingEvidence, failure?.Signature, diagnosisIntent, cancellationToken))
             throw new InvalidDataException(snapshot.Frontier!.Reason);
 
+        var intended = snapshot.Workflow!.Operations[^1];
         var id = CreateId("diagnostic");
         var directory =
             $"{EnforcementStore.EnforcementDirectory}/diagnostics/{id}";
@@ -568,12 +599,13 @@ public sealed class UwpEnforcementRunner
             cancellationToken);
         var attestation = new DiagnosticRunAttestation
         {
+            OperationId = intended.Id,
             Id = id,
             TargetFingerprint = workspace.Fingerprint,
             Signature = failure?.Signature ?? (result.ExitCode == 0 ? null :
                 DiagnosticGrouper.CreateSignature("runtime", [], FirstNonEmpty(result.Error, result.Output))),
-            StateId = failure?.StateId ?? snapshot.ActiveStateIds.FirstOrDefault(),
-            SliceId = failure?.SliceId ?? snapshot.ActiveSlice,
+            StateId = intended.StateId,
+            SliceId = intended.IntendedSliceId,
             StartedAt = startedAt,
             CompletedAt = completedAt,
             Command = [options.WinAppExecutable, .. arguments],
@@ -581,6 +613,7 @@ public sealed class UwpEnforcementRunner
             StandardOutputPath = stdout,
             StandardErrorPath = stderr
         };
+        StateClosureSeal.Sign(attestation);
         await EnforcementStore.WriteAtomicAsync(
             workspace.Target,
             EnforcementStore.DiagnosticAttestationPath,
@@ -591,15 +624,12 @@ public sealed class UwpEnforcementRunner
             var signature = attestation.Signature!;
             var operationIndex = snapshot.Workflow!.Operations.FindLastIndex(operation =>
                 operation.Kind == WorkflowOperation.DiagnosticRun);
-            var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
             snapshot.Workflow.Operations[operationIndex] =
                 snapshot.Workflow.Operations[operationIndex] with { Signature = signature };
-            StateClosureSeal.Sign(snapshot.Workflow.Operations[operationIndex]);
-            await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
-            WorkflowOperationAuthentication.CommitHead(workspace.Target, previousHead, snapshot.Workflow.Operations);
-            await RecordAttemptAsync(workspace, "runtime", signature,
-                snapshot.ActiveStateIds.FirstOrDefault(), [stdout, stderr], cancellationToken);
         }
+        await AuthenticateOperationAsync(workspace, snapshot, attestation.Id, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
+        if (result.ExitCode != 0 && failure is null)
+            await RecordAttemptAsync(workspace, "runtime", attestation.Signature!, snapshot.Workflow.Operations[^1], [stdout, stderr], cancellationToken);
         var updated = await LoadWorkspaceAsync(target, options.MaximumSignatureAttempts, cancellationToken, _timeProvider, _windowOwnerResolver);
         await WriteSnapshotAsync(updated.Target, EnforcementEvaluator.Evaluate(updated.Input), cancellationToken);
         return attestation;
@@ -664,6 +694,7 @@ public sealed class UwpEnforcementRunner
         var stateContractFingerprint = plannedState is null
             ? null : StateClosureProtocol.ContractFingerprint(workspace.Target, plannedState);
         var requiredHash = plannedState is null ? null : RequiredStateContracts.Require(workspace.Target, plannedState, _timeProvider.GetUtcNow());
+        var captureIntent = StateAttribution.Authorize(workspace.Input, stateId);
         long? windowHandle = null;
         int? windowProcessId = null;
         DateTimeOffset? windowProcessStartedAt = null;
@@ -708,7 +739,7 @@ public sealed class UwpEnforcementRunner
             [],
             string.Join('\u001f', command));
         if (!await BeginOperationAsync(workspace, snapshot, WorkflowOperation.UiAction,
-                discriminatingEvidence, signature, cancellationToken))
+                discriminatingEvidence, signature, captureIntent, cancellationToken))
             throw new InvalidDataException(snapshot.Frontier!.Reason);
 
         var workingDirectory = workspace.Target;
@@ -744,6 +775,7 @@ public sealed class UwpEnforcementRunner
             ReplayAttestationId = snapshot.Replay!.Id,
             CommandSignature = signature,
             StateId = stateId,
+            SliceId = stateId is null ? null : captureIntent.SliceId,
             StateContractFingerprint = stateContractFingerprint,
             WindowHandle = windowHandle,
             WindowProcessId = windowProcessId,
@@ -1495,6 +1527,7 @@ public sealed class UwpEnforcementRunner
         UwpEnforcementOptions options,
         CancellationToken cancellationToken)
     {
+        var intended = snapshot.Workflow!.Operations[^1];
         var id = CreateId("build");
         var directory = $"{EnforcementStore.EnforcementDirectory}/builds/{id}";
         var stdout = $"{directory}/stdout.json";
@@ -1534,6 +1567,7 @@ public sealed class UwpEnforcementRunner
                 FirstNonEmpty(parsed.Error, result.Error, result.Output));
         var attestation = new BuildAttestation
         {
+            StateId = intended.StateId, SliceId = intended.IntendedSliceId,
             RequiredContractHash = workspace.Input.RequiredContractHash,
             StandardOutputSha256 = StateClosureProtocol.FileHash(workspace.Target, stdout),
             StandardErrorSha256 = StateClosureProtocol.FileHash(workspace.Target, stderr),
@@ -1566,7 +1600,7 @@ public sealed class UwpEnforcementRunner
                 workspace,
                 "build",
                 signature!,
-                stateId: null,
+                intended,
                 [stdout, stderr],
                 cancellationToken);
         }
@@ -1578,6 +1612,7 @@ public sealed class UwpEnforcementRunner
         UwpEnforcementOptions options,
         CancellationToken cancellationToken)
     {
+        var intended = snapshot.Workflow!.Operations[^1];
         var id = CreateId("replay");
         var directory = $"{EnforcementStore.EnforcementDirectory}/replays/{id}";
         var stdout = $"{directory}/launch.json";
@@ -1631,8 +1666,8 @@ public sealed class UwpEnforcementRunner
             RunId = Guid.NewGuid().ToString("N"),
             TargetFingerprint = workspace.Fingerprint,
             BuildAttestationId = workspace.Build!.Id,
-            StateId = snapshot.ActiveStateIds.FirstOrDefault(),
-            SliceId = snapshot.ActiveSlice,
+            StateId = intended.StateId,
+            SliceId = intended.IntendedSliceId,
             StartedAt = startedAt,
             CompletedAt = completedAt,
             Command = [options.WinAppExecutable, .. arguments],
@@ -1659,7 +1694,7 @@ public sealed class UwpEnforcementRunner
                 workspace,
                 "runtime",
                 signature!,
-                stateId: null,
+                intended,
                 [stdout, stderr],
                 cancellationToken);
         }
@@ -1682,19 +1717,20 @@ public sealed class UwpEnforcementRunner
         Workspace workspace,
         string kind,
         string signature,
-        string? stateId,
+        WorkflowOperationRecord intended,
         IReadOnlyList<string> evidence,
         CancellationToken cancellationToken)
     {
-        var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
+        StateAttribution.Validate(workspace.Input.StatePlan, new StateSliceBinding(intended.StateId, intended.IntendedSliceId));
         workspace.Attempts.Attempts.Add(new EnforcementAttempt
         {
             Kind = kind,
             TargetFingerprint = workspace.Fingerprint,
             Signature = signature,
             RecordedAt = _timeProvider.GetUtcNow(),
-            StateId = stateId ?? snapshot.ActiveStateIds.FirstOrDefault(),
-            SliceId = snapshot.ActiveSlice,
+            StateId = intended.StateId,
+            SliceId = intended.IntendedSliceId,
+            OperationId = intended.Id,
             Evidence = [.. evidence]
         });
         await EnforcementStore.WriteAtomicAsync(
@@ -1869,12 +1905,6 @@ public sealed class UwpEnforcementRunner
         var artifactError = buildError ?? replayError ?? attemptsError ??
             diagnosticError ?? stateError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
             WorkflowValidation.DiagnosticError(diagnostic);
-        if ((persistedState?.Disposition is not { Terminal: true } ||
-             WorkflowDispositions.IsRetiredAuthorization(persistedState.Disposition)) &&
-            artifactError is null &&
-            RuntimeFailureRecovery.Recover(attempts, replay, diagnostic,
-                statePlan?.States?.FirstOrDefault(state => state is not null && !string.IsNullOrWhiteSpace(state.Id))))
-            await EnforcementStore.WriteAtomicAsync(target, EnforcementStore.AttemptLedgerPath, attempts, cancellationToken);
         var policy = EnforcementPolicy.Balanced();
         var generatedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
         WorkflowProgress? progress = null;
@@ -1942,6 +1972,17 @@ public sealed class UwpEnforcementRunner
             MaximumSignatureAttempts = maximumSignatureAttempts,
             GeneratedAt = generatedAt
         };
+        if ((persistedState?.Disposition is not { Terminal: true } ||
+             WorkflowDispositions.IsRetiredAuthorization(persistedState.Disposition)) && input.ArtifactError is null)
+        {
+            try
+            {
+                StateAttribution.ValidateFailures(input);
+                if (RuntimeFailureRecovery.Recover(attempts, replay, diagnostic, input))
+                    await EnforcementStore.WriteAtomicAsync(target, EnforcementStore.AttemptLedgerPath, attempts, cancellationToken);
+            }
+            catch (InvalidDataException exception) { input = input with { ArtifactError = exception.Message }; }
+        }
         return new Workspace(
             target,
             reportPath,
@@ -2071,14 +2112,19 @@ public sealed class UwpEnforcementRunner
         await WriteSnapshotAsync(workspace.Target, snapshot, CancellationToken.None);
     }
 
+    private static Task<bool> BeginOperationAsync(
+        Workspace workspace, EnforcementSnapshot snapshot, WorkflowOperation operation,
+        IReadOnlyList<string> evidence, string? signature, CancellationToken cancellationToken) =>
+        BeginOperationAsync(workspace, snapshot, operation, evidence, signature, null, cancellationToken);
+
     private static async Task<bool> BeginOperationAsync(
         Workspace workspace, EnforcementSnapshot snapshot, WorkflowOperation operation,
-        IReadOnlyList<string> evidence, string? signature, CancellationToken cancellationToken)
+        IReadOnlyList<string> evidence, string? signature, StateSliceBinding? intended, CancellationToken cancellationToken)
     {
         if (snapshot.Workflow is null || !WorkflowOperationAuthentication.VerifyAnchored(workspace.Target, snapshot.Workflow.Operations))
             throw new InvalidDataException("Refusing to sign a successor of rolled-back or unauthenticated operation history.");
         var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
-        if (!WorkflowOperations.TryBegin(workspace.Input, snapshot, operation, evidence, signature, out var reason))
+        if (!WorkflowOperations.TryBegin(workspace.Input, snapshot, operation, evidence, signature, out var reason, intended))
         {
             snapshot.Status = snapshot.Budget?.Decision == "continue-with-debt" ? "continue-with-debt" : "blocked";
             snapshot.Frontier = new EnforcementFrontier

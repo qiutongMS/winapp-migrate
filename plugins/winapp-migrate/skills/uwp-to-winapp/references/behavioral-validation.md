@@ -193,6 +193,11 @@ non-exportable CNG key `WinAppMigration.StateClosure.v1`. Its public key is
 loaded independently of artifacts; carried keys must match it for closure.
 Signed operation IDs and artifact digests bind build/replay attestations,
 raw outputs, probe receipts, and state attestations into the local chain.
+Operations seal their intended state/slice before execution. Failure recovery
+and diagnosis preserve that tuple; they never infer the first planned state
+from an ID-less failure. Caller `--state` must match the operation or the
+currently authorized unresolved slice contract, not stale active progress.
+See [operation intent and failure attribution](state-verification-contracts.md#operation-intent-and-failure-attribution).
 An arbitrary replacement key cannot authorize fabricated evidence.
 Portable embedded-key signature integrity is distinct from locally trusted
 verification and cannot declare closure. These seals are same-user

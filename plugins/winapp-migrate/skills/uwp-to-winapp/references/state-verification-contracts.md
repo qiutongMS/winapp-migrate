@@ -38,7 +38,8 @@ preconditions, human action descriptions, expected outcomes, action definitions,
 assertions and step order cannot be removed, weakened or reordered. Source
 observations and target results are not requirements and are recorded later.
 TODO/slice metadata is not an alternative verification authority; this protocol
-does not implement active-slice attribution.
+uses authenticated operation intent for state/slice attribution, not an
+agent-selected progress label.
 
 The first assessment (including the assessment performed by source commands)
 freezes the independently anchored contract. Mutation after source capture or
@@ -136,6 +137,47 @@ Other levels remain `unverified` and cannot clear mapped required work.
 Snapshots expose authenticated, re-derived `stateVerifications`; editing status,
 level, requirement IDs or step receipts in JSON does not change the result.
 Invalid/unsupported query shapes still fail closed rather than becoming parity.
+
+## Operation intent and failure attribution
+
+Before executing a build, replay, UI capture or diagnostic, the gateway seals
+the intended `stateId` and `intendedSliceId` into its workflow operation.
+The operation's existing `sliceId` is the accounting unit, which may be null
+during bootstrap; it is not the intended semantic slice. Completion receipts
+and recovered failures retain the start tuple even if active progress changes
+during the command. Probe receipts also carry their planned `sliceId`.
+
+Authorization uses the same assessed slices as workflow scheduling: dependencies,
+optional debt, mapped open findings and active failures all apply. `--state`
+must identify currently authorized work, or exactly match an evidence-linked
+operation's intent when recording its failure. It cannot select a stale
+`activeStateId` or rebind a receipt. A multi-state slice need not pick an
+arbitrary state: a slice-only tuple is valid; `(null, null)` is explicitly
+unbound. Unknown states/slices, a state without its slice, or mismatched pairs
+are rejected, not repaired.
+
+Interrupted-ledger recovery first uses the authenticated operation tuple.
+Only legacy ID-less evidence may fall back to the persisted
+`activeStateId`/`activeSliceId`, and only when that pair is consistent with the
+current authorized unresolved work. Otherwise it remains unbound; plan order
+never supplies a recovery state. Existing recovered tuples are preserved.
+Legacy claimed nonempty attribution without operation provenance is not
+silently promoted into authenticated attribution.
+
+`record-diagnosis` copies the recorded failure tuple exactly. Diagnosis and
+change-required frontiers do not acquire a different active tuple. Repeated
+signatures are aggregated only within the same state/slice attribution;
+recovery deduplicates operation-backed failures by operation identity.
+Historical failed replay recovery authenticates the producing operation and
+sealed build identity without requiring that build to remain the latest build.
+This only preserves negative evidence; successful closure still requires the
+complete current canonical build/replay/window chain.
+
+Locally trusted historical parity preserves semantic resolution across target
+changes and later unrelated failures. It does not grant evidence freshness,
+clear a new mapped finding/failure, or authorize final closure. Stale resolved
+states are revalidated in closure; only explicitly mapped failures reopen
+semantic work.
 
 ## Semantic ROI visual contracts
 

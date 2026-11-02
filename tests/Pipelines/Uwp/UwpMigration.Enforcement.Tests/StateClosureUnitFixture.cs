@@ -34,6 +34,7 @@ public sealed partial class EnforcementEvaluatorTests
         var probe = new UiDevelopmentProbe
         {
             Id = id, StateId = state.Id,
+            SliceId = SemanticSlicePlanner.SliceId(state),
             OperationId = "op-" + id,
             RequiredContractHash = input.RequiredContractHash,
             StateContractFingerprint = StateClosureProtocol.ContractFingerprint(root, state),
@@ -65,6 +66,7 @@ public sealed partial class EnforcementEvaluatorTests
         progress.Operations.Add(new WorkflowOperationRecord
         {
             Id = probe.OperationId,
+            StateId = probe.StateId, IntendedSliceId = probe.SliceId,
             RequiredContractHash = input.RequiredContractHash,
             Kind = WorkflowOperation.UiAction, Stage = WorkflowStage.SemanticConvergence,
             TargetFingerprint = replay.TargetFingerprint, ReplayAttestationId = replay.Id,
@@ -117,6 +119,8 @@ public sealed partial class EnforcementEvaluatorTests
             progress.Operations.RemoveAll(operation => operation.Id == item.Item1);
             var operation = new WorkflowOperationRecord
             {
+                StateId = item.Item4 == WorkflowOperation.Build ? build.StateId : replay.StateId,
+                IntendedSliceId = item.Item4 == WorkflowOperation.Build ? build.SliceId : replay.SliceId,
                 Id = item.Item1, Kind = item.Item4, TargetFingerprint = input.TargetFingerprint,
                 RequiredContractHash = input.RequiredContractHash,
                 Stage = item.Item4 == WorkflowOperation.Build ? WorkflowStage.MechanicalStabilization : WorkflowStage.TargetBootstrap,

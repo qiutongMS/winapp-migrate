@@ -229,6 +229,10 @@ public sealed record WorkflowProgressEvent
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowOperationRecord
 {
+    [JsonPropertyName("stateId")]
+    public string? StateId { get; init; }
+    [JsonPropertyName("intendedSliceId")]
+    public string? IntendedSliceId { get; init; }
     [JsonPropertyName("sequence")]
     public int Sequence { get; set; }
     [JsonPropertyName("previousOperationSha256")]
@@ -280,6 +284,8 @@ public sealed record WorkflowDebt
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowProgress
 {
+    [JsonPropertyName("activeStateId")]
+    public string? ActiveStateId { get; set; }
     public const string CurrentSchemaVersion = "3.0";
 
     [JsonRequired, JsonPropertyName("schemaVersion")]

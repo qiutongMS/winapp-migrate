@@ -13,6 +13,7 @@ public sealed partial class EnforcementEvaluatorTests
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput() with { Build = null, Replay = null, MechanicalReady = false };
         input.StatePlan!.States[0].Source.Status = "unverified";
+        input.StatePlan.States[0].Target.Status = "unverified";
         var source = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual(WorkflowStage.SourceOracle, source.Stage);
         Assert.AreEqual("source-oracle", source.Phase);
@@ -104,7 +105,7 @@ public sealed partial class EnforcementEvaluatorTests
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput() with { TargetFingerprint = "new", MechanicalReady = false };
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual(WorkflowStage.SemanticConvergence, snapshot.Stage);
+        Assert.AreEqual(WorkflowStage.Closure, snapshot.Stage);
         Assert.AreEqual("mechanical", snapshot.Frontier?.Kind);
     }
 
@@ -532,6 +533,7 @@ public sealed partial class EnforcementEvaluatorTests
         var input = fixture.ClosedInput();
         input.Replay!.Success = false;
         input.Replay.Signature = "runtime-failure";
+        SealCanonicalFixture(input);
         var snapshot = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
         Assert.AreEqual("runtime-failure", snapshot.Frontier?.Signature);

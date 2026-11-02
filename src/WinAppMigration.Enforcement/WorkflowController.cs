@@ -87,6 +87,9 @@ public static class WorkflowController
                 !progress.Debt.Any(debt => debt.SliceId == slice.Id));
         progress.ActiveSliceId = progress.Stage is WorkflowStage.SemanticConvergence or WorkflowStage.Closure
             ? active?.Id : null;
+        var activeStates = active?.States.Where(state => progress.Stage == WorkflowStage.Closure ||
+            EnforcementEvaluator.StateRequiresWork(input, state)).ToArray() ?? [];
+        progress.ActiveStateId = progress.ActiveSliceId is not null && activeStates.Length == 1 ? activeStates[0].Id : null;
         var unit = CurrentUnit(progress, active?.Id);
         Activate(progress, unit, input.GeneratedAt, input.TargetFingerprint);
 
@@ -128,7 +131,7 @@ public static class WorkflowController
                 Reason = "Required slices are complete; optional deferred slices remain explicit debt and are not verified."
             };
         if (frontier is null && progress.Stage == WorkflowStage.Closure && active is not null &&
-            next?.Kind is not ("build" or "replay" or "diagnosis-required" or "change-required"))
+            next?.Kind is not ("mechanical" or "build" or "replay" or "diagnosis-required" or "change-required"))
             frontier = new EnforcementFrontier
             {
                 Kind = "revalidate", SliceId = active.Id,

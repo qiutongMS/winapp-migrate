@@ -262,6 +262,10 @@ public sealed class FindingCompletionAssertion
 
 public sealed class BuildAttestation
 {
+    [JsonPropertyName("stateId")]
+    public string? StateId { get; set; }
+    [JsonPropertyName("sliceId")]
+    public string? SliceId { get; set; }
     [JsonPropertyName("requiredContractHash")]
     public string? RequiredContractHash { get; set; }
     [JsonPropertyName("stdoutSha256")]
@@ -439,6 +443,8 @@ public sealed class AttemptLedger
 
 public sealed class EnforcementAttempt
 {
+    [JsonPropertyName("operationId")]
+    public string? OperationId { get; set; }
     [JsonPropertyName("kind")]
     public required string Kind { get; set; }
 
@@ -502,6 +508,12 @@ public sealed class FailureDiagnosis
 
 public sealed class DiagnosticRunAttestation
 {
+    [JsonPropertyName("operationId")]
+    public string? OperationId { get; set; }
+    [JsonPropertyName("seal")]
+    public string? Seal { get; set; }
+    [JsonPropertyName("sealPublicKey")]
+    public string? SealPublicKey { get; set; }
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -549,6 +561,8 @@ public sealed class DiagnosticRunAttestation
 
 public sealed class UiDevelopmentProbe
 {
+    [JsonPropertyName("sliceId")]
+    public string? SliceId { get; set; }
     [JsonPropertyName("requiredContractHash")]
     public string? RequiredContractHash { get; set; }
     [JsonPropertyName("operationId")]

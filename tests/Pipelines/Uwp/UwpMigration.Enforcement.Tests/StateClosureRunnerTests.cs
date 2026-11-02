@@ -335,6 +335,7 @@ public sealed partial class RunnerAcceptanceTests
         var second = JsonSerializer.Deserialize<MigrationState>(
             JsonSerializer.Serialize(plan.States[0], EnforcementStore.JsonOptions), EnforcementStore.JsonOptions)!;
         second.Id = "state-2";
+        second.Slice = SemanticSlicePlanner.SliceId(plan.States[0]);
         plan.States.Add(second);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
         var probe = await CaptureClosureProbeAsync(fixture, stateId: "state-2");
