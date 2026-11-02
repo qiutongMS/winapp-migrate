@@ -161,7 +161,7 @@ Native `"True"`/`"False"` strings and expansion enums normalize to their
 typed inspect equivalents; invented verdict fields are never assertions.
 Visual parity requires an immutable semantic ROI contract and a supported
 paired source/target comparison. Informative chrome cannot rescue a blank
-image/card region, and restoration requires an explicit return action plus its
+semantic content region, and restoration requires an explicit return action plus its
 post-return comparison. Timing, lifecycle and unmodeled prose claims are not inferred.
 Unsupported assertions remain unverified. Low-information PNGs are classified
 rather than treated as visual proof. Legal 16-bit/interlaced images whose

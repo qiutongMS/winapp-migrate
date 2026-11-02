@@ -104,17 +104,23 @@ public static class RequiredStateContracts
         return document.RequiredContractHash;
     }
 
-    internal static MigrationState Project(MigrationState state) => new()
+    internal static MigrationState Project(MigrationState state)
     {
+        var assertions = JsonSerializer.Deserialize<List<StateAssertion>>(Serialize(state.Assertions), EnforcementStore.JsonOptions)!;
+        foreach (var assertion in assertions.Where(item => item.Kind == "visual-region-equals-source"))
+            assertion.Sufficiency ??= new VisualSufficiency();
+        return new MigrationState
+        {
         Id = state.Id, Criticality = state.Criticality,
         Preconditions = [.. state.Preconditions], Actions = [.. state.Actions], ExpectedOutcome = state.ExpectedOutcome,
-        Assertions = JsonSerializer.Deserialize<List<StateAssertion>>(Serialize(state.Assertions), EnforcementStore.JsonOptions)!,
+        Assertions = assertions,
         Verification = state.Verification is null ? null :
             JsonSerializer.Deserialize<StateVerificationContract>(Serialize(state.Verification), EnforcementStore.JsonOptions),
         Source = new StateObservation { Status = "not-run" },
         Target = new StateObservation { Status = "not-run" },
         Comparison = new StateComparison { Status = "not-run" }
-    };
+        };
+    }
 
     private static void VerifyDocument(DirectoryInfo root, RequiredStateContractDocument document)
     {
@@ -192,10 +198,16 @@ public static class RequiredStateContracts
                 throw new InvalidDataException("Restoration IDs must be unique.");
             foreach (var assertion in state.Assertions.Where(item => item.Kind == "visual-region-equals-source"))
             {
+                var policy = assertion.Sufficiency ?? new VisualSufficiency();
                 if (assertion.Comparison is not ("pixel-exact" or "sampled-mae") ||
                     !double.IsFinite(assertion.MaximumMeanError) || assertion.MaximumMeanError is < 0 or > 0.1 ||
                     assertion.Region is null && (string.IsNullOrWhiteSpace(assertion.AutomationId) ||
-                        assertion.BoundsProbeIndex is null || assertion.BoundsEvidence is null))
+                        assertion.BoundsProbeIndex is null || assertion.BoundsEvidence is null || assertion.SourceCaptureEvidence is null ||
+                        assertion.BoundsAfterProbeIndex is null || assertion.BoundsAfterProbeIndex <= assertion.ProbeIndex) ||
+                    !double.IsFinite(policy.MinimumContentFraction) ||
+                    policy.MinimumContentFraction is <= 0 or > 0.5 ||
+                    policy.MinimumDistinctColors is < 2 or > 4096 ||
+                    policy.MinimumSamplePixels is < 4 or > 16777216)
                     throw new InvalidDataException("Visual contracts require an explicit semantic ROI or bound source/target UIA bounds and a supported comparison.");
                 foreach (var region in new[] { assertion.Region, assertion.SourceRegion }.OfType<VisualRegion>())
                     if (!double.IsFinite(region.X) || !double.IsFinite(region.Y) || !double.IsFinite(region.Width) ||

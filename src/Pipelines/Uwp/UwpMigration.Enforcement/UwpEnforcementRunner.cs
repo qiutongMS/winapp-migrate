@@ -591,9 +591,12 @@ public sealed class UwpEnforcementRunner
             var signature = attestation.Signature!;
             var operationIndex = snapshot.Workflow!.Operations.FindLastIndex(operation =>
                 operation.Kind == WorkflowOperation.DiagnosticRun);
+            var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
             snapshot.Workflow.Operations[operationIndex] =
                 snapshot.Workflow.Operations[operationIndex] with { Signature = signature };
+            StateClosureSeal.Sign(snapshot.Workflow.Operations[operationIndex]);
             await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
+            WorkflowOperationAuthentication.CommitHead(workspace.Target, previousHead, snapshot.Workflow.Operations);
             await RecordAttemptAsync(workspace, "runtime", signature,
                 snapshot.ActiveStateIds.FirstOrDefault(), [stdout, stderr], cancellationToken);
         }
@@ -789,10 +792,12 @@ public sealed class UwpEnforcementRunner
             probe,
             cancellationToken);
         var operation = snapshot.Workflow!.Operations[^1];
+        var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
         operation.ProbeId = probe.Id;
         operation.ProbeSha256 = StateClosureProtocol.FileHash(workspace.Target, artifact);
         StateClosureSeal.Sign(operation);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, EnforcementStore.ProgressPath, snapshot.Workflow, cancellationToken);
+        WorkflowOperationAuthentication.CommitHead(workspace.Target, previousHead, snapshot.Workflow.Operations);
         return probe;
     }
 
@@ -1664,11 +1669,13 @@ public sealed class UwpEnforcementRunner
         string id, string artifactPath, CancellationToken cancellationToken)
     {
         var operation = snapshot.Workflow!.Operations[^1];
+        var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
         operation.ArtifactId = id;
         operation.ArtifactSha256 = StateClosureProtocol.FileHash(workspace.Target, artifactPath);
         StateClosureSeal.Sign(operation);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, EnforcementStore.ProgressPath,
             snapshot.Workflow, cancellationToken);
+        WorkflowOperationAuthentication.CommitHead(workspace.Target, previousHead, snapshot.Workflow.Operations);
     }
 
     private async Task RecordAttemptAsync(
@@ -1875,6 +1882,9 @@ public sealed class UwpEnforcementRunner
         if (artifactError is null)
             (policy, progress, workflowError) = await WorkflowPersistence.LoadAsync(
                 target, build, replay, attempts, fingerprint, cancellationToken, generatedAt);
+        if (workflowError is null && progress is not null &&
+            !WorkflowOperationAuthentication.VerifyAnchored(target, progress.Operations))
+            workflowError = "Operation history does not match the independently committed local head (rollback, omission, or legacy unordered history).";
         var summary = new PipelineValidationSummary(
             report.Validation.SourceBaseline.Status,
             report.Validation.SourceBaseline.States.Select(state => state.Id).ToArray(),
@@ -2065,6 +2075,9 @@ public sealed class UwpEnforcementRunner
         Workspace workspace, EnforcementSnapshot snapshot, WorkflowOperation operation,
         IReadOnlyList<string> evidence, string? signature, CancellationToken cancellationToken)
     {
+        if (snapshot.Workflow is null || !WorkflowOperationAuthentication.VerifyAnchored(workspace.Target, snapshot.Workflow.Operations))
+            throw new InvalidDataException("Refusing to sign a successor of rolled-back or unauthenticated operation history.");
+        var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
         if (!WorkflowOperations.TryBegin(workspace.Input, snapshot, operation, evidence, signature, out var reason))
         {
             snapshot.Status = snapshot.Budget?.Decision == "continue-with-debt" ? "continue-with-debt" : "blocked";
@@ -2081,6 +2094,7 @@ public sealed class UwpEnforcementRunner
         }
         // Charge before process invocation: cancellation or a new CLI invocation cannot reset a unit.
         await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
+        WorkflowOperationAuthentication.CommitHead(workspace.Target, previousHead, snapshot.Workflow!.Operations);
         return true;
     }
 

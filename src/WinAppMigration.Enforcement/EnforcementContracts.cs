@@ -183,6 +183,12 @@ public sealed class StateAssertion
     public string? BoundsEvidence { get; set; }
     [JsonPropertyName("boundsProbeIndex")]
     public int? BoundsProbeIndex { get; set; }
+    [JsonPropertyName("boundsAfterProbeIndex")]
+    public int? BoundsAfterProbeIndex { get; set; }
+    [JsonPropertyName("sourceCaptureEvidence")]
+    public string? SourceCaptureEvidence { get; set; }
+    [JsonPropertyName("sufficiency")]
+    public VisualSufficiency? Sufficiency { get; set; }
     [JsonPropertyName("comparison")]
     public string Comparison { get; set; } = "pixel-exact";
     [JsonPropertyName("maximumMeanError")]
@@ -195,6 +201,17 @@ public sealed record VisualRegion(
     [property: JsonPropertyName("y")] double Y,
     [property: JsonPropertyName("width")] double Width,
     [property: JsonPropertyName("height")] double Height);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class VisualSufficiency
+{
+    [JsonPropertyName("minimumContentFraction")]
+    public double MinimumContentFraction { get; set; } = 0.02;
+    [JsonPropertyName("minimumDistinctColors")]
+    public int MinimumDistinctColors { get; set; } = 2;
+    [JsonPropertyName("minimumSamplePixels")]
+    public int MinimumSamplePixels { get; set; } = 64;
+}
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class StateVerificationContract

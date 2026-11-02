@@ -45,6 +45,7 @@ internal static class CanonicalAttestationTrust
             var (progress, error) = EnforcementStore.TryLoadAsync<WorkflowProgress>(root, EnforcementStore.ProgressPath)
                 .GetAwaiter().GetResult();
             return error is null && progress?.Operations is not null &&
+                WorkflowOperationAuthentication.VerifyAnchored(root, progress.Operations) &&
                 progress.Operations.Count(operation => operation is not null &&
                     operation.Id == operationId && operation.Kind == kind &&
                     operation.TargetFingerprint == fingerprint && operation.ArtifactId == artifactId &&

@@ -284,7 +284,7 @@ public sealed partial class RunnerAcceptanceTests
             Signature = probe.CommandSignature,
             ProbeSha256 = StateClosureProtocol.FileHash(fixture.Root, probe.ArtifactPath)
         };
-        StateClosureSeal.Sign(progress.Operations[index]);
+        ContractTestAuthority.SealOperations(progress, fixture.Root);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
     }
 

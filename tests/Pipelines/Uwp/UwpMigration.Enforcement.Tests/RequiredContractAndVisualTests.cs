@@ -229,7 +229,9 @@ public sealed partial class RunnerAcceptanceTests
             AutomationId = "semantic-image",
             Region = bounds ? null : new VisualRegion(0.25, 0.375, 0.5, 0.5),
             BoundsEvidence = bounds ? ".migration-evidence/states/state-1/source-ui.json" : null,
-            BoundsProbeIndex = bounds ? 0 : null
+            BoundsProbeIndex = bounds ? 0 : null,
+            BoundsAfterProbeIndex = bounds ? 2 : null,
+            SourceCaptureEvidence = bounds ? ".migration-evidence/states/state-1/source-capture.json" : null
         });
         if (image.StartsWith("mae-", StringComparison.Ordinal))
         {
@@ -241,6 +243,13 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.SealContractAsync(fixture.Root);
         var source = image == "source-unclassified" ? PngTestData.Create(size: 128, bitDepth: 16) : SemanticScene("same");
         await ObserveSourceAsync(fixture, plan, tree, source);
+        var metadata = CoordinateCapture(128, 128, 42, 4242, 100, 200, 128, 128);
+        if (bounds)
+        {
+            await File.WriteAllTextAsync(fixture.Path(".migration-evidence/states/state-1/source-capture.json"), metadata.ToJsonString());
+            state.Source.Evidence.Add(".migration-evidence/states/state-1/source-capture.json");
+            await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+        }
         await AddRequiredTodoAndFindingAsync(fixture, ["main-name", "image-visible"]);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
         var inspect = await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"], tree);
@@ -248,12 +257,14 @@ public sealed partial class RunnerAcceptanceTests
             SemanticScene(image switch { "source-unclassified" => "same", "mae-different" => "different", _ => image });
         Assert.AreEqual(image == "target-unclassified" ? PngInformation.ValidUnclassified : PngInformation.Informative,
             PngEvidence.Classify(await WriteSceneAsync(fixture, target)));
-        var screenshot = await new UwpEnforcementRunner(new ScreenshotCliProcessRunner(png: target),
+        var screenshot = await new UwpEnforcementRunner(new ScreenshotCliProcessRunner(png: target, capture: metadata),
             windowOwnerResolver: TestWindowOwnerResolver.Shared)
             .InvokeUiAsync(fixture.Root, "winapp", ["screenshot", "-w", "42", "--json"], [], "state-1");
 
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared,
-            "state-1", [inspect.ArtifactPath, screenshot.ArtifactPath]);
+        var evidence = new List<string> { inspect.ArtifactPath, screenshot.ArtifactPath };
+        if (bounds)
+            evidence.Add((await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"], tree)).ArtifactPath);
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", evidence);
 
         var updated = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         Assert.AreEqual(expectedLevel, updated.States[0].Target.VerificationLevel);

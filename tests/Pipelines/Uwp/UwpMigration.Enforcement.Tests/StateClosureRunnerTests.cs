@@ -322,7 +322,9 @@ public sealed partial class RunnerAcceptanceTests
         var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
 
-        StringAssert.Contains(error.Message, "integrity seal");
+        Assert.IsFalse(StateClosureSeal.Verify(probe));
+        StringAssert.Contains(error.Message, "infrastructure-failure",
+            "The independently anchored history must reject the forged operation digest before another operation can run.");
     }
 
     [TestMethod]

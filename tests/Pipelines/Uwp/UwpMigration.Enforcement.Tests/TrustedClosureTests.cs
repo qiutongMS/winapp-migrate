@@ -202,7 +202,7 @@ public sealed partial class RunnerAcceptanceTests
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
         var operation = progress.Operations.Single(item => item.Id == operationId);
         operation.ArtifactSha256 = StateClosureProtocol.FileHash(fixture.Root, path);
-        StateClosureSeal.Sign(operation);
+        ContractTestAuthority.SealOperations(progress, fixture.Root);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
     }
 

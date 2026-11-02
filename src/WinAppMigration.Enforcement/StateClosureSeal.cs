@@ -14,6 +14,7 @@ internal static class StateClosureSeal
     private sealed record VerificationContext(byte[]? PublicKey)
     {
         internal Dictionary<string, string?> Anchors { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, bool> Histories { get; } = new(StringComparer.Ordinal);
     }
     private static readonly AsyncLocal<VerificationContext?> Verification = new();
     private sealed class VerificationScope(VerificationContext? previous) : IDisposable
@@ -26,6 +27,16 @@ internal static class StateClosureSeal
         var previous = Verification.Value;
         Verification.Value ??= new VerificationContext(ReadTrustedPublicKey());
         return new VerificationScope(previous);
+    }
+
+    internal static bool VerifyHistory(string digest, Func<bool> verify)
+    {
+        var context = Verification.Value;
+        if (context is null) return verify();
+        if (context.Histories.TryGetValue(digest, out var valid)) return valid;
+        valid = verify();
+        context.Histories.Add(digest, valid);
+        return valid;
     }
 
     private static byte[]? ReadTrustedPublicKey()
@@ -196,10 +207,19 @@ internal static class StateClosureSeal
         if (Verification.Value?.Anchors.TryGetValue(name, out var cached) == true) return cached;
         lock (KeyLock)
         {
-            if (!CngKey.Exists(KeyName)) return null;
-            using var key = CngKey.Open(KeyName);
-            var value = key.HasProperty(name, CngPropertyOptions.CustomProperty)
-                ? Encoding.UTF8.GetString(key.GetProperty(name, CngPropertyOptions.CustomProperty).GetValue()!) : null;
+            string? value = null;
+            var anchorName = "WinAppMigration.Anchor." + name;
+            if (CngKey.Exists(anchorName))
+            {
+                using var anchor = CngKey.Open(anchorName);
+                value = Encoding.UTF8.GetString(anchor.GetProperty("state", CngPropertyOptions.CustomProperty).GetValue()!);
+            }
+            else if (CngKey.Exists(KeyName))
+            {
+                using var legacy = CngKey.Open(KeyName);
+                if (legacy.HasProperty(name, CngPropertyOptions.CustomProperty))
+                    value = Encoding.UTF8.GetString(legacy.GetProperty(name, CngPropertyOptions.CustomProperty).GetValue()!);
+            }
             if (Verification.Value is { } context) context.Anchors[name] = value;
             return value;
         }
@@ -209,8 +229,15 @@ internal static class StateClosureSeal
     {
         lock (KeyLock)
         {
-            using var key = OpenKey();
-            key.SetProperty(new CngProperty(name, Encoding.UTF8.GetBytes(value),
+            var anchorName = "WinAppMigration.Anchor." + name;
+            using var key = CngKey.Exists(anchorName) ? CngKey.Open(anchorName) :
+                CngKey.Create(CngAlgorithm.ECDsaP256, anchorName, new CngKeyCreationParameters
+                {
+                    ExportPolicy = CngExportPolicies.None,
+                    KeyUsage = CngKeyUsages.Signing
+                });
+            // Separate anchor handles prevent one workspace's persisted property bag overwriting another's.
+            key.SetProperty(new CngProperty("state", Encoding.UTF8.GetBytes(value),
                 CngPropertyOptions.CustomProperty | CngPropertyOptions.Persist));
             if (Verification.Value is { } context) context.Anchors[name] = value;
         }

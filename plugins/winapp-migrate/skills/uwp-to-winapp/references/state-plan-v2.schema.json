@@ -40,6 +40,17 @@
         "sourceRegion": { "oneOf": [{ "$ref": "#/$defs/region" }, { "type": "null" }] },
         "boundsEvidence": { "type": ["string", "null"] },
         "boundsProbeIndex": { "type": ["integer", "null"], "minimum": 0 },
+        "boundsAfterProbeIndex": { "type": ["integer", "null"], "minimum": 0 },
+        "sourceCaptureEvidence": { "type": ["string", "null"] },
+        "sufficiency": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "minimumContentFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.5 },
+            "minimumDistinctColors": { "type": "integer", "minimum": 2, "maximum": 4096 },
+            "minimumSamplePixels": { "type": "integer", "minimum": 4, "maximum": 16777216 }
+          }
+        },
         "comparison": { "enum": ["pixel-exact", "sampled-mae"] },
         "maximumMeanError": { "type": "number", "minimum": 0, "maximum": 0.1 }
       }

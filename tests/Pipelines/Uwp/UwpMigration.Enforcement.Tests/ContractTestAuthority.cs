@@ -10,6 +10,14 @@ namespace UwpMigration.Enforcement.Tests;
 
 internal static class ContractTestAuthority
 {
+    internal static void SealOperations(WorkflowProgress progress, DirectoryInfo? root = null)
+    {
+        for (var index = 0; index < progress.Operations.Count; index++)
+            WorkflowOperationAuthentication.Seal(progress.Operations[index], index == 0 ? null : progress.Operations[index - 1], index + 1);
+        if (root is not null)
+            WorkflowOperationAuthentication.CommitHead(root, WorkflowOperationAuthentication.ReadHead(root), progress.Operations);
+    }
+
     // Fixture planning authority, not a product legacy-upgrade path. Contract tests use EstablishAsync.
     internal static string Prepare(DirectoryInfo root, StatePlanDocument plan)
     {

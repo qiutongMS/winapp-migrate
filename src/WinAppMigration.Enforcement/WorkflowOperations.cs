@@ -182,7 +182,8 @@ public static class WorkflowOperations
                 : null,
             EvidenceFingerprint = evidenceFingerprint, Signature = signature
         });
-        StateClosureSeal.Sign(progress.Operations[^1]);
+        WorkflowOperationAuthentication.Seal(progress.Operations[^1],
+            progress.Operations.Count > 1 ? progress.Operations[^2] : null, progress.Operations.Count);
         progress.LastObservedAt = now;
         snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now);
         WorkflowDispositions.Update(snapshot, now);

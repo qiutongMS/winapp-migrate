@@ -73,7 +73,7 @@ Action and assertion IDs are unique within their kind. Every human action must
 have a machine action definition; every action and assertion must appear exactly
 once in the declared ordered steps. `command` is the semantic WinApp UI argv,
 without the executable/`ui` prefix, HWND/app/output plumbing or JSON-format flag.
-For example `["invoke","Night"]` or
+For example `["invoke","Option-B"]` or
 `["get-property","SelectedItem","--property","IsSelected"]`.
 The product normalizes native `-w/--window`, `-o/--output`, `-p/--property`
 spellings; it does not accept an agent's “action passed” boolean or claimed ID.
@@ -93,8 +93,8 @@ For a round trip, explicitly declare both transitions and the final comparison:
 "verification": {
   "kind": "nonvisual",
   "requiredActions": [
-    { "id": "to-alternate", "command": ["invoke","Night"] },
-    { "id": "return-initial", "command": ["invoke","Day"] }
+    { "id": "to-alternate", "command": ["invoke","Option-B"] },
+    { "id": "return-initial", "command": ["invoke","Option-A"] }
   ],
   "steps": [
     { "kind": "assertion", "id": "initial" },
@@ -158,7 +158,7 @@ Regions are normalized image coordinates, must be nonempty and contained, and
 are frozen requirements. `sourceRegion` may explicitly identify a different
 source layout; otherwise it uses the contracted target region.
 There is **no implicit whole-window fallback**. Contract authors must select the
-semantic content (for example an image/card region), not decorative chrome.
+semantic content regions, not decorative chrome or an application-specific heuristic.
 
 Alternatively omit `region` and bind to UIA element bounds:
 
@@ -170,27 +170,61 @@ Alternatively omit `region` and bind to UIA element bounds:
   "sourceEvidence": ".migration-evidence/source/image.png",
   "automationId": "ImageRegion",
   "boundsEvidence": ".migration-evidence/source/tree.json",
+  "sourceCaptureEvidence": ".migration-evidence/source/capture.json",
   "boundsProbeIndex": 0,
+  "boundsAfterProbeIndex": 2,
   "comparison": "pixel-exact"
 }
 ```
 
-The product requires exactly one element inside exactly one UIA `Window`,
-finite `x/y/width/height`, a contained region, and a 1:1 single-window screenshot
-size/origin. Unknown crop/composite/DPI transforms are rejected, not guessed.
-The target bounds probe is authenticated `inspect` evidence preceding the
-screenshot; source bounds must be declared source evidence.
+The product requires exactly one element inside one UIA `Window`, finite
+`x/y/width/height`, and a contained region. The enclosing `windows[].hwnd`
+(and process metadata when present) must match the capture/replay. The
+authenticated screenshot's genuine WinApp `coordinates.sourceBounds` and
+`contentRect` map physical UIA coordinates to image pixels across window sizes,
+DPI and encoder scaling/padding. Root dimensions and owner must match the
+actual PNG and sealed probe. Composite/unknown mappings fail closed.
+Source bounds and capture metadata must both be declared source evidence.
 
-ROI sufficiency is computed **inside that region**: at least 16 pixels on each
-axis, area at least 1024 pixels, multiple quantized colors and at least 2%
-non-dominant content. An informative header cannot rescue a uniform/blank
-semantic image area. UIA products/controls being present does not prove their
-image content is visible.
+The before/after bounds probes must be authenticated `inspect` observations,
+bracket the screenshot, and use the same window and process incarnation.
+The required element's geometry must be unchanged across those observations.
+The complete operation history in that bracket must contain only the
+screenshot between the two witnesses. An agent cannot hide activity by
+omitting receipts from `record-state`: every operation is signed with its
+sequence and predecessor digest, and intervals are checked against that full
+authenticated history. Deleting/reordering intermediate records breaks the
+chain. Legacy unordered histories remain provisional and need a fresh planned
+workflow; they are not silently upgraded to ordered provenance.
+The latest committed sequence/digest is independently anchored in local CNG
+state. Anchor values use independent named CNG state keys so persistence for
+one workspace cannot overwrite another workspace's property bag; pre-existing
+trusted anchor properties remain readable for compatibility.
+The runner checks the head before authorizing/signing a successor and advances
+it only on authenticated operation creation/finalization, never merely by
+assessing a supplied JSON snapshot. Restoring a once-valid prefix between
+ordinary gateway calls cannot hide intervening activity or create a new fork.
+Changed window origin/size between inspect and capture fails the geometry
+comparison. Explicit normalized regions apply directly to the current
+authenticated image and work with legacy captures lacking coordinate metadata;
+they never reuse cached physical bounds.
+
+ROI sufficiency is generic contract data (`sufficiency`): minimum distinct
+quantized colors, non-dominant content fraction and sample count. Defaults are
+2 colors, 0.02 content fraction and 64 sample pixels; validation requires a
+positive fraction no greater than 0.5, 2..4096 colors and 4..16777216 samples.
+There is no application-specific minimum rectangle. Only pixels whose
+centers fall inside the declared ROI count, so adjacent chrome cannot leak
+into a fractional edge. Normalized pixel-center sampling preserves the
+contract's region across resolution/DPI changes. Multiple visual assertions
+cover independent semantic regions; every required region must pass.
 
 Supported comparisons are `pixel-exact` (same ROI dimensions and composited
 RGB pixels) and explicitly contracted `sampled-mae` (64x64 normalized sampling,
 mean absolute RGB error bounded by `maximumMeanError`, capped at `0.10`).
-Exact comparison is the conservative default; neither metric is a general
+Exact comparison requires matching pixel dimensions; sampled comparison
+supports different image sizes with explicitly contracted tolerance.
+Neither metric is a general
 human semantic/photographic oracle. Unmodeled layout/appearance differences
 remain unverified. Visual restoration also compares baseline/restored target
 ROIs.
@@ -218,3 +252,12 @@ If source/workflow activity already occurred without an independently
 established contract, preserve that historical evidence as provisional and
 start a fresh planned/captured workflow. There is no `--trust-legacy`,
 `--accept-hash`, or status-edit shortcut.
+
+## Application/benchmark independence
+
+Required contracts are generic input data, never benchmark adapters or a
+catalog of application selectors. Reproduction fixtures do not drive product
+execution or define thresholds. Synthetic grid, reversible-toggle and
+structured-only fixtures exercise different data shapes and require no
+application-specific IDs. Active-slice attribution is a separate dependent
+feature and is not implemented here.

@@ -126,6 +126,8 @@ public static class StateClosureProtocol
         var progress = Read<WorkflowProgress>(root, EnforcementStore.ProgressPath);
         if (progress.Operations is null || progress.Operations.Any(operation => operation is null))
             throw new InvalidDataException("Probe receipts require workflow operation records.");
+        if (!WorkflowOperationAuthentication.VerifyAnchored(root, progress.Operations))
+            throw new InvalidDataException("Operation history is incomplete, reordered, or not locally authenticated.");
         var probes = new List<UiDevelopmentProbe>();
         var evidence = new List<string>();
         var previous = replay.CompletedAt;
@@ -215,7 +217,7 @@ public static class StateClosureProtocol
             }
             if (assertion.Kind == "visual-region-equals-source")
             {
-                var comparison = VisualStateAssertions.Compare(root, state, assertion, probes);
+                var comparison = VisualStateAssertions.Compare(root, state, assertion, probes, progress.Operations);
                 targetSufficient &= comparison.TargetSufficient;
                 parity &= comparison.ParityVerified;
                 if (!comparison.ParityVerified) issues.Add(comparison.Reason);
@@ -246,7 +248,7 @@ public static class StateClosureProtocol
                 baseline.ProbeIndex < probes.Count && restored.ProbeIndex < probes.Count &&
                 baseline.Kind == restored.Kind && baseline.Property == restored.Property &&
                 (baseline.Kind == "visual-region-equals-source"
-                    ? VisualStateAssertions.Restored(root, baseline, restored, probes)
+                    ? VisualStateAssertions.Restored(root, baseline, restored, probes, progress.Operations)
                     : targetValues[baseline.Id] == targetValues[restored.Id]);
             if (!returned)
             {

@@ -71,7 +71,7 @@ public sealed partial class EnforcementEvaluatorTests
             Signature = probe.CommandSignature, RecordedAt = probe.StartedAt,
             ProbeId = probe.Id, ProbeSha256 = StateClosureProtocol.FileHash(root, probe.ArtifactPath)
         });
-        StateClosureSeal.Sign(progress.Operations[^1]);
+        ContractTestAuthority.SealOperations(progress, root);
         EnforcementStore.WriteAtomicAsync(root, EnforcementStore.ProgressPath, progress).GetAwaiter().GetResult();
         var attestation = StateClosureProtocol.Derive(root, state, replay, [probe.ArtifactPath], input.GeneratedAt, input.WindowOwnerResolver);
         StateClosureSeal.Sign(attestation);
@@ -126,6 +126,7 @@ public sealed partial class EnforcementEvaluatorTests
             StateClosureSeal.Sign(operation);
             progress.Operations.Add(operation);
         }
+        ContractTestAuthority.SealOperations(progress, root);
         EnforcementStore.WriteAtomicAsync(root, EnforcementStore.ProgressPath, progress).GetAwaiter().GetResult();
     }
 }
