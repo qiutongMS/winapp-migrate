@@ -116,6 +116,16 @@ Before semantic edits:
 7. Read startup, the feature registry or navigation shell, `dependencyAnalysis`, `activationAnalysis`, and enough source to classify the migration as fast or expanded.
 8. Identify the source behavior that proves the app's primary purpose and any user-critical flow.
 
+Require `todoGraph.status` to be `valid` before scheduling report work. Read
+[Migration TODO guidance and graph](references/migration-todo-graph.md) and
+[Parallel migration work orchestration](references/parallel-work-orchestration.md).
+The graph determines safe dependency/touch-set waves, not the repair strategy
+or completion verdict. When isolated worktrees and workers are available,
+parallelize only product-declared independent patch preparation. The parent
+alone integrates patches and performs mechanical verification, canonical
+build/replay, state recording, and final closure. Without isolation, execute
+the same graph serially; never let multiple workers edit one target.
+
 Use the **fast path** when the primary behavior is page-local, dependencies and APIs have direct target mappings, and it crosses no uncertain project, lifetime, activation, window, native-host, or shared asynchronous boundary. Read only startup, capability-bearing manifest entries, relevant pages, and their custom controls or resources. Do not create a semantic finding ledger before a real finding exists.
 
 Use the **expanded path** when a critical behavior depends on a `review-required` dependency; spans projects; requires an adapter, source port, or equivalent implementation; crosses activation, background, multi-window, native-host, lifecycle, shared-state, or asynchronous ownership boundaries; or when the first build or runtime probe exposes an unknown shared failure. Once a migration expands, do not downgrade it merely because a local workaround compiles.
@@ -139,6 +149,15 @@ perform target work between changing the source statuses and this assessment.
 ## 3. Build the first viable slice
 
 Treat report categories as evidence within the active behavior scope, not as an exhaustive worklist or a completion definition.
+
+If the active work is represented by product work items, execute only the
+earliest dependency-ready wave. Give each delegated worker the complete
+work-item packet, including facts, selected strategy evidence, risks, forbidden
+shortcuts, completion checks, touch paths, project items, conflict keys,
+affected states, and base fingerprint. A returned patch is not completion
+evidence. Integrate candidates serially in stable work-item order and reload
+the graph after the coherent wave, or immediately when an unexpected overlap
+invalidates a worker's declared contract.
 
 On the fast path, migrate the complete small behavior surface as one coherent patch when practical. On the expanded path, implement the smallest architecture slice that can build and exercise startup plus the active sentinel: its consumed dependency contract, owning projects, shared abstraction, and direct call path.
 

@@ -26,6 +26,10 @@ verification prerequisite: for example, startup/resource preparation,
 dependency preparation, and manifest declaration preparation can proceed
 together even though their integrated result is verified later. The current
 product reports this plan but does not spawn agents or benchmark work.
+The Skill executes those waves according to
+[parallel migration work orchestration](parallel-work-orchestration.md).
+Workers prepare isolated candidate patches; the parent alone integrates and
+runs canonical verification and closure.
 
 An unknown node or dependency, duplicate work-item ID, invalid
 classification/status confidence, self-edge, cycle, or unschedulable stage or
