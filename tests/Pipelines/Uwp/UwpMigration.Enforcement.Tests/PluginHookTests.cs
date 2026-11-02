@@ -139,7 +139,7 @@ public sealed class PluginHookTests
                 Path.Combine(target.FullName, "migration-report.json"),
                 """
                 {
-                  "schemaVersion": "1.5",
+                  "schemaVersion": "1.6",
                   "source": {
                     "root": "C:\\source",
                     "projectFile": "Source.csproj"

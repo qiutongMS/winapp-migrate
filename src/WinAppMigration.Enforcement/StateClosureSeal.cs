@@ -11,6 +11,44 @@ internal static class StateClosureSeal
 {
     private const string KeyName = "WinAppMigration.StateClosure.v1";
     private static readonly Lock KeyLock = new();
+    private sealed record VerificationContext(byte[]? PublicKey)
+    {
+        internal Dictionary<string, string?> Anchors { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, bool> Histories { get; } = new(StringComparer.Ordinal);
+    }
+    private static readonly AsyncLocal<VerificationContext?> Verification = new();
+    private sealed class VerificationScope(VerificationContext? previous) : IDisposable
+    {
+        public void Dispose() => Verification.Value = previous;
+    }
+
+    internal static IDisposable BeginVerification()
+    {
+        var previous = Verification.Value;
+        Verification.Value ??= new VerificationContext(ReadTrustedPublicKey());
+        return new VerificationScope(previous);
+    }
+
+    internal static bool VerifyHistory(string digest, Func<bool> verify)
+    {
+        var context = Verification.Value;
+        if (context is null) return verify();
+        if (context.Histories.TryGetValue(digest, out var valid)) return valid;
+        valid = verify();
+        context.Histories.Add(digest, valid);
+        return valid;
+    }
+
+    private static byte[]? ReadTrustedPublicKey()
+    {
+        try
+        {
+            using var key = CngKey.Open(KeyName);
+            using var local = new ECDsaCng(key);
+            return local.ExportSubjectPublicKeyInfo();
+        }
+        catch (CryptographicException) { return null; }
+    }
 
     internal static void Sign(UiDevelopmentProbe probe)
     {
@@ -143,6 +181,89 @@ internal static class StateClosureSeal
         }
     }
 
+    internal static void Sign(RequiredStateContractDocument document)
+    {
+        WithSigner(signer =>
+        {
+            document.Seal = null;
+            document.SealPublicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
+            document.Seal = CreateSeal(signer, "required-contract\n" + JsonSerializer.Serialize(document, EnforcementStore.JsonOptions));
+        });
+    }
+
+    internal static void Sign(DiagnosticRunAttestation value)
+    {
+        WithSigner(signer =>
+        {
+            value.Seal = null;
+            value.SealPublicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
+            value.Seal = CreateSeal(signer, "diagnostic\n" + JsonSerializer.Serialize(value, EnforcementStore.JsonOptions));
+        });
+    }
+
+    internal static bool Verify(DiagnosticRunAttestation value)
+    {
+        var seal = value.Seal;
+        try
+        {
+            value.Seal = null;
+            return VerifyPayload("diagnostic\n" + JsonSerializer.Serialize(value, EnforcementStore.JsonOptions), seal, value.SealPublicKey);
+        }
+        finally { value.Seal = seal; }
+    }
+
+    internal static bool Verify(RequiredStateContractDocument document)
+    {
+        var seal = document.Seal;
+        try
+        {
+            document.Seal = null;
+            return VerifyPayload("required-contract\n" + JsonSerializer.Serialize(document, EnforcementStore.JsonOptions), seal, document.SealPublicKey);
+        }
+        finally { document.Seal = seal; }
+    }
+
+    internal static string? ReadContractAnchor(string name)
+    {
+        if (Verification.Value?.Anchors.TryGetValue(name, out var cached) == true) return cached;
+        lock (KeyLock)
+        {
+            string? value = null;
+            var anchorName = "WinAppMigration.Anchor." + name;
+            if (CngKey.Exists(anchorName))
+            {
+                using var anchor = CngKey.Open(anchorName);
+                value = Encoding.UTF8.GetString(anchor.GetProperty("state", CngPropertyOptions.CustomProperty).GetValue()!);
+            }
+            else if (CngKey.Exists(KeyName))
+            {
+                using var legacy = CngKey.Open(KeyName);
+                if (legacy.HasProperty(name, CngPropertyOptions.CustomProperty))
+                    value = Encoding.UTF8.GetString(legacy.GetProperty(name, CngPropertyOptions.CustomProperty).GetValue()!);
+            }
+            if (Verification.Value is { } context) context.Anchors[name] = value;
+            return value;
+        }
+    }
+
+    internal static void WriteContractAnchor(string name, string value)
+    {
+        lock (KeyLock)
+        {
+            var anchorName = "WinAppMigration.Anchor." + name;
+            using var key = CngKey.Exists(anchorName) ? CngKey.Open(anchorName) :
+                CngKey.Create(CngAlgorithm.ECDsaP256, anchorName, new CngKeyCreationParameters
+                {
+                    ExportPolicy = CngExportPolicies.None,
+                    KeyUsage = CngKeyUsages.Signing
+                });
+            // Separate anchor handles prevent one workspace's persisted property bag overwriting another's.
+            key.SetProperty(new CngProperty("state", Encoding.UTF8.GetBytes(value),
+                CngPropertyOptions.CustomProperty | CngPropertyOptions.Persist));
+            if (Verification.Value is { } context) context.Anchors[name] = value;
+        }
+    }
+
     private static string CreateSeal(ECDsa signer, string payload) =>
         Convert.ToBase64String(signer.SignData(Encoding.UTF8.GetBytes(payload), HashAlgorithmName.SHA256));
 
@@ -156,10 +277,8 @@ internal static class StateClosureSeal
             if (!portable)
             {
                 // This lookup is independent of every artifact and never creates a key while verifying.
-                using var localKey = CngKey.Open(KeyName);
-                using var local = new ECDsaCng(localKey);
-                var trusted = local.ExportSubjectPublicKeyInfo();
-                if (!CryptographicOperations.FixedTimeEquals(trusted, bytes)) return false;
+                var trusted = Verification.Value is { } context ? context.PublicKey : ReadTrustedPublicKey();
+                if (trusted is null || !CryptographicOperations.FixedTimeEquals(trusted, bytes)) return false;
                 bytes = trusted;
             }
             verifier.ImportSubjectPublicKeyInfo(bytes, out var read);

@@ -2,7 +2,10 @@
 
 Use this protocol to preserve observable behavior across the UWP-to-WinUI migration. It orchestrates installed tools; do not create helper scripts, temporary test projects, or app-specific CLI extensions.
 
-The migration report uses schema `1.6`. The state plan below is a separate artifact and stays at schema `1.0`.
+The migration report uses schema `1.6`. Trustworthy state verification uses
+separate state-plan schema `2.0`; older `1.0` plans are provisional.
+Read [required contracts and ROI verification](state-verification-contracts.md)
+before capturing evidence.
 
 ## 1. Plan evidence by behavior
 
@@ -19,19 +22,32 @@ Capture one state per distinct outcome or migration risk. Persist the plan at th
 
 Mark the primary sentinel in `featurePaths` with `sentinel:<flow-name>`. On the fast path, capture startup and that primary source sentinel before the first target edit. On the expanded path, capture every seam sentinel before implementing its architecture slice.
 
-Use this schema `1.0` shape:
+Use this schema `2.0` shape and seal it **before** source/workflow activity:
 
 ```json
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "2.0",
   "states": [
     {
       "id": "stable-state-id",
       "featurePaths": ["feature-or-flow"],
       "todoIds": ["UWMIG000"],
       "preconditions": ["required initial state"],
-      "actions": ["ordered semantic action"],
-      "expectedOutcome": "observable source behavior",
+      "actions": ["Inspect the startup state."],
+      "expectedOutcome": "Startup retains its source observable name.",
+      "assertions": [
+        {
+          "id": "startup-name", "kind": "ui-property-equals-source", "probeIndex": 0,
+          "sourceEvidence": ".migration-evidence/source/startup-ui.json",
+          "automationId": "Startup", "property": "name"
+        }
+      ],
+      "verification": {
+        "kind": "nonvisual",
+        "requiredActions": [{ "id": "observe-startup", "command": ["inspect"] }],
+        "steps": [{ "kind": "action", "id": "observe-startup" }, { "kind": "assertion", "id": "startup-name" }],
+        "restorations": []
+      },
       "source": {
         "status": "not-run",
         "evidence": [],
@@ -57,7 +73,7 @@ after attempts. Do not write successful target/comparison statuses by hand:
 are paths relative to `<target>`. Record implementation defects and runtime
 signatures in the separate [semantic finding ledger](semantic-migration-protocol.md).
 
-Optional schema `1.0` fields on each state are `slice` (defaults to its state
+Optional state fields are `slice` (defaults to its state
 ID), `dependencies` (slice IDs, defaults to empty), and `criticality`
 (`required`, the default, or `optional`). States in one slice share criticality;
 their dependencies are combined, must exist, and must be acyclic. Follow only
@@ -79,8 +95,10 @@ example, is invalid, not a synonym for `not-run`.
 
 ### Machine-checkable state contracts
 
-Schema `1.0` additionally supports `assertions` on each state. Define the full
-observable acceptance contract **before** its target captures. For example:
+Schema `2.0` requires explicit `assertions` and ordered `verification`
+requirements. Establish the full acceptance contract **before source capture
+and before starting the workflow**, not merely before the final target probe.
+For an invoke/query sequence, an assertion could use probe index 1:
 
 ```json
 "assertions": [
@@ -175,6 +193,11 @@ non-exportable CNG key `WinAppMigration.StateClosure.v1`. Its public key is
 loaded independently of artifacts; carried keys must match it for closure.
 Signed operation IDs and artifact digests bind build/replay attestations,
 raw outputs, probe receipts, and state attestations into the local chain.
+Operations seal their intended state/slice before execution. Failure recovery
+and diagnosis preserve that tuple; they never infer the first planned state
+from an ID-less failure. Caller `--state` must match the operation or the
+currently authorized unresolved slice contract, not stale active progress.
+See [operation intent and failure attribution](state-verification-contracts.md#operation-intent-and-failure-attribution).
 An arbitrary replacement key cannot authorize fabricated evidence.
 Portable embedded-key signature integrity is distinct from locally trusted
 verification and cannot declare closure. These seals are same-user
@@ -193,6 +216,7 @@ After writing the state plan and before launching the source, persist the
 initial closure assessment:
 
 ```powershell
+winapp-migrate uwp closure seal-contract "<target>"
 winapp-migrate uwp closure assess "<target>"
 ```
 
@@ -506,8 +530,8 @@ supplemental evidence, or omit screenshots; structured trees/property
 observations still materialize. Truly corrupt images remain invalid even
 when nonvisual assertions pass. Identical images/observations are
 not blanket-rejected: cancellation/back restoration can intentionally return
-to the same state. None of these classifications automatically prove
-visual-only parity.
+to the same state. Only immutable ROI sufficiency and the contracted paired region comparison
+can establish visual parity; window-wide information alone never does.
 
 ## 5. Apply the completion gate
 

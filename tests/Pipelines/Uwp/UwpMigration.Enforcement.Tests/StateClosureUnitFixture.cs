@@ -25,6 +25,8 @@ public sealed partial class EnforcementEvaluatorTests
                 SourceEvidence = sourceTree, AutomationId = "main", Property = "name"
             }
         ];
+        state.Verification = null;
+        input.RequiredContractHash = ContractTestAuthority.Prepare(root, input.StatePlan!);
         var replay = input.Replay!;
         SealCanonicalFixture(input);
         var id = $"unit-{Guid.NewGuid():N}";
@@ -32,7 +34,9 @@ public sealed partial class EnforcementEvaluatorTests
         var probe = new UiDevelopmentProbe
         {
             Id = id, StateId = state.Id,
+            SliceId = SemanticSlicePlanner.SliceId(state),
             OperationId = "op-" + id,
+            RequiredContractHash = input.RequiredContractHash,
             StateContractFingerprint = StateClosureProtocol.ContractFingerprint(root, state),
             TargetFingerprint = replay.TargetFingerprint, ReplayAttestationId = replay.Id,
             StartedAt = replay.CompletedAt.AddSeconds(1), CompletedAt = replay.CompletedAt.AddSeconds(2),
@@ -62,16 +66,19 @@ public sealed partial class EnforcementEvaluatorTests
         progress.Operations.Add(new WorkflowOperationRecord
         {
             Id = probe.OperationId,
+            StateId = probe.StateId, IntendedSliceId = probe.SliceId,
+            RequiredContractHash = input.RequiredContractHash,
             Kind = WorkflowOperation.UiAction, Stage = WorkflowStage.SemanticConvergence,
             TargetFingerprint = replay.TargetFingerprint, ReplayAttestationId = replay.Id,
             Signature = probe.CommandSignature, RecordedAt = probe.StartedAt,
             ProbeId = probe.Id, ProbeSha256 = StateClosureProtocol.FileHash(root, probe.ArtifactPath)
         });
-        StateClosureSeal.Sign(progress.Operations[^1]);
+        ContractTestAuthority.SealOperations(progress, root);
         EnforcementStore.WriteAtomicAsync(root, EnforcementStore.ProgressPath, progress).GetAwaiter().GetResult();
         var attestation = StateClosureProtocol.Derive(root, state, replay, [probe.ArtifactPath], input.GeneratedAt, input.WindowOwnerResolver);
         StateClosureSeal.Sign(attestation);
         state.Target.Status = "passed";
+        state.Target.VerificationLevel = StateVerificationLevel.ParityVerified;
         state.Target.Evidence = attestation.Evidence;
         state.Target.Attestation = StateClosureProtocol.AttestationPath(state.Id);
         state.Comparison.Status = "verified";
@@ -85,6 +92,8 @@ public sealed partial class EnforcementEvaluatorTests
         var root = input.TargetRoot;
         var build = input.Build!;
         var replay = input.Replay!;
+        build.RequiredContractHash = input.RequiredContractHash;
+        replay.RequiredContractHash = input.RequiredContractHash;
         build.OperationId ??= "unit-build-" + Guid.NewGuid().ToString("N");
         replay.OperationId ??= "unit-replay-" + Guid.NewGuid().ToString("N");
         build.StandardOutputSha256 = StateClosureProtocol.FileHash(root, build.StandardOutputPath);
@@ -110,7 +119,10 @@ public sealed partial class EnforcementEvaluatorTests
             progress.Operations.RemoveAll(operation => operation.Id == item.Item1);
             var operation = new WorkflowOperationRecord
             {
+                StateId = item.Item4 == WorkflowOperation.Build ? build.StateId : replay.StateId,
+                IntendedSliceId = item.Item4 == WorkflowOperation.Build ? build.SliceId : replay.SliceId,
                 Id = item.Item1, Kind = item.Item4, TargetFingerprint = input.TargetFingerprint,
+                RequiredContractHash = input.RequiredContractHash,
                 Stage = item.Item4 == WorkflowOperation.Build ? WorkflowStage.MechanicalStabilization : WorkflowStage.TargetBootstrap,
                 RecordedAt = item.Item3, ArtifactId = item.Id,
                 ArtifactSha256 = StateClosureProtocol.FileHash(root, item.Item5)
@@ -118,6 +130,7 @@ public sealed partial class EnforcementEvaluatorTests
             StateClosureSeal.Sign(operation);
             progress.Operations.Add(operation);
         }
+        ContractTestAuthority.SealOperations(progress, root);
         EnforcementStore.WriteAtomicAsync(root, EnforcementStore.ProgressPath, progress).GetAwaiter().GetResult();
     }
 }

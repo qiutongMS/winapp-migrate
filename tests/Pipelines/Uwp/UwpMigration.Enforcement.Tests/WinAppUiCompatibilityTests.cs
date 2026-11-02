@@ -4,6 +4,8 @@
 using System.CommandLine;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Buffers.Binary;
 using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement.Tests;
@@ -232,7 +234,8 @@ public sealed partial class RunnerAcceptanceTests
 
     private enum ScreenshotWriteBehavior { Valid, NoWrite, InvalidPng }
 
-    private sealed class ScreenshotCliProcessRunner(ScreenshotWriteBehavior behavior = ScreenshotWriteBehavior.Valid, byte[]? png = null) : IEnforcementProcessRunner
+    private sealed class ScreenshotCliProcessRunner(ScreenshotWriteBehavior behavior = ScreenshotWriteBehavior.Valid,
+        byte[]? png = null, JsonObject? capture = null) : IEnforcementProcessRunner
     {
         internal List<string[]> Calls { get; } = [];
         internal List<string> WorkingDirectories { get; } = [];
@@ -260,8 +263,15 @@ public sealed partial class RunnerAcceptanceTests
                 await File.WriteAllBytesAsync(path, behavior == ScreenshotWriteBehavior.Valid
                     ? png ?? PngTestData.Create() : Encoding.UTF8.GetBytes("not a PNG"), cancellationToken);
             }
-            return new EnforcementProcessResult(0,
-                JsonSerializer.Serialize(new { filePath = path, width = 64, height = 64, processId = 4242, hwnd = 42 }), "");
+            var bytes = png ?? PngTestData.Create();
+            var metadata = capture?.DeepClone().AsObject() ?? new JsonObject
+            {
+                ["width"] = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(16, 4)),
+                ["height"] = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(20, 4)),
+                ["processId"] = 4242, ["hwnd"] = 42
+            };
+            metadata["filePath"] = path;
+            return new EnforcementProcessResult(0, metadata.ToJsonString(), "");
         }
     }
 }

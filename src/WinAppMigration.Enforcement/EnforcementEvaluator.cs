@@ -19,12 +19,15 @@ public static class EnforcementEvaluator
         EnforcementEvaluationInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
+        using var verification = StateClosureSeal.BeginVerification();
         input = ReopenInvalidCompletion(input);
         if (WorkflowDispositions.Terminal(input) is { } terminal)
         {
             var frozenStage = input.Progress?.Stage ?? WorkflowStage.SourceOracle;
             return new EnforcementSnapshot
             {
+                StateVerifications = input.StatePlan?.States.Select(state => StateClosureProtocol.AssessLevel(
+                    input.TargetRoot, state, input.Replay, input.GeneratedAt, input.WindowOwnerResolver)).ToList() ?? [],
                 GeneratedAt = input.GeneratedAt,
                 Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(frozenStage.ToString()),
                 Stage = frozenStage, ActiveSlice = input.Progress?.ActiveSliceId,
@@ -40,6 +43,8 @@ public static class EnforcementEvaluator
             };
         }
         var gates = new List<EnforcementGate>();
+        AddGate(gates, "required-contract", input.RequiredContractHash is not null,
+            input.RequiredContractError ?? "Required contract is locally anchored and immutable.");
         AddGate(
             gates,
             "mechanical",
@@ -75,9 +80,19 @@ public static class EnforcementEvaluator
         if (artifactsValid && (input.Replay is { Success: false } || input.Diagnostic is { ExitCode: not 0 }))
         {
             var attempts = new AttemptLedger { Attempts = [.. input.Attempts.Attempts] };
-            RuntimeFailureRecovery.Recover(attempts, input.Replay, input.Diagnostic,
-                input.StatePlan?.States?.FirstOrDefault(state => state is not null && !string.IsNullOrWhiteSpace(state.Id)));
-            input = input with { Attempts = attempts };
+            try
+            {
+                RuntimeFailureRecovery.Recover(attempts, input.Replay, input.Diagnostic, input);
+                input = input with { Attempts = attempts };
+            }
+            catch (InvalidDataException exception)
+            {
+                artifactsValid = false;
+                workflowError = exception.Message;
+                var gate = gates.Single(item => item.Id == "enforcement-artifacts");
+                gate.Status = "blocked"; gate.Reason = exception.Message;
+                input = input with { ArtifactError = exception.Message };
+            }
         }
         var diagnosisFrontier = artifactsValid ? FindPendingDiagnosis(input) : null;
         AddGate(
@@ -121,19 +136,7 @@ public static class EnforcementEvaluator
                 input.TargetFingerprint,
                 input.GeneratedAt));
 
-        var slices = planValid
-            ? SemanticSlicePlanner.Assess(input.TargetRoot, input.StatePlan!, replayFresh ? input.Replay : null, input.Progress, input.GeneratedAt, input.WindowOwnerResolver)
-            : [];
-        slices = ApplyFindingWork(slices, input.FindingLedger, input);
-        if (artifactsValid)
-        {
-            var activeFailures = FailureProtocol.ActiveRuntimeFailures(input).ToArray();
-            slices = slices.Select((slice, index) => activeFailures.Any(attempt =>
-                attempt.SliceId == slice.Id || slice.States.Any(state => state.Id == attempt.StateId) ||
-                attempt.SliceId is null && attempt.StateId is null && index == 0)
-                ? slice with { Complete = false, Resolved = false, Reason = "An active runtime failure requires source-first diagnosis and validated correction." }
-                : slice).ToArray();
-        }
+        var slices = planValid ? AssessSlices(input, replayFresh ? input.Replay : null, artifactsValid) : [];
         var activeSlice = SemanticSlicePlanner.Select(slices, input.Progress?.Debt ?? []);
         var activeFindingsReady = findingsValid;
         if (activeSlice is not null && FindingCollectionsValid(input.FindingLedger))
@@ -151,7 +154,8 @@ public static class EnforcementEvaluator
         var statesReady = planValid && replayFresh && slices.All(slice => slice.Complete);
         var stateReason = statesReady
             ? $"All {input.StatePlan!.States.Count} planned state(s) are verified with fresh target evidence."
-            : activeSlice?.Reason ?? "State closure requires a valid plan and fresh canonical replay.";
+            : activeSlice?.Reason ?? slices.FirstOrDefault(slice => !slice.Complete)?.Reason ??
+                "State closure requires a valid plan and fresh canonical replay.";
         var stateFrontier = activeSlice is null ? null : new EnforcementFrontier
         {
             Kind = "state",
@@ -232,7 +236,8 @@ public static class EnforcementEvaluator
         }
         AddGate(gates, "measured-progress", noProgress is null,
             noProgress?.Reason ?? "No unchanged-target operation is awaiting a semantic correction.");
-        if (frontier is not null && activeSlice is not null)
+        if (frontier is not null && activeSlice is not null &&
+            frontier.Kind is not ("diagnosis-required" or "change-required"))
         {
             frontier.SliceId ??= activeSlice.Id;
             if (frontier.StateIds.Count == 0)
@@ -242,11 +247,14 @@ public static class EnforcementEvaluator
         var stage = workflow?.Progress.Stage ?? input.Progress?.Stage ?? WorkflowStage.SourceOracle;
         var snapshot = new EnforcementSnapshot
         {
+            StateVerifications = planValid ? input.StatePlan!.States.Select(state => StateClosureProtocol.AssessLevel(
+                input.TargetRoot, state, replayFresh ? input.Replay : null, input.GeneratedAt, input.WindowOwnerResolver)).ToList() : [],
             GeneratedAt = input.GeneratedAt,
             Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(stage.ToString()),
             Stage = stage,
             ActiveSlice = activeSlice?.Id,
-            ActiveStateIds = activeSlice?.States.Select(state => state.Id).ToList() ?? [],
+            ActiveStateIds = activeSlice?.States.Where(state => stage == WorkflowStage.Closure ||
+                StateRequiresWork(input, state)).Select(state => state.Id).ToList() ?? [],
             Budget = workflow?.Budget,
             Workflow = workflow?.Progress,
             Status = complete ? "passed" : frontier?.Kind == "continue-with-debt" ? "continue-with-debt" : "blocked",
@@ -267,6 +275,7 @@ public static class EnforcementEvaluator
         if (input.ReportClosureReady &&
             (input.PersistedDisposition is not { Kind: "complete", Terminal: true } &&
              input.Progress?.Disposition is not { Kind: "complete", Terminal: true } ||
+             input.RequiredContractHash is not null &&
              input.MechanicalReady && input.AnalyzerReferencePresent && input.AnalyzerPrivateAssets &&
              ReplayIsFresh(input, BuildIsFresh(input, ArtifactsValid(input, artifactError))) &&
              ValidateStatePlan(input.StatePlan, input.StatePlanError, out _) &&
@@ -305,13 +314,56 @@ public static class EnforcementEvaluator
         WorkflowValidation.EvidenceArtifactError(input.Attempts, input.Build, input.Replay) ??
         WorkflowValidation.DiagnosticError(input.Diagnostic) ??
         WorkflowValidation.PolicyError(input.Policy) ??
-        WorkflowValidation.ProgressError(input.Progress, input.Policy, input.GeneratedAt);
+        WorkflowValidation.ProgressError(input.Progress, input.Policy, input.GeneratedAt) ??
+        AttributionError(input);
+
+    private static string? AttributionError(EnforcementEvaluationInput input)
+    {
+        if (input.StatePlan?.States is not { Count: > 0 } ||
+            input.StatePlan.States.Any(state => state is null) ||
+            input.StatePlan.States.Select(state => state.Id).Distinct(StringComparer.Ordinal).Count() != input.StatePlan.States.Count)
+            return null;
+        try { StateAttribution.ValidateFailures(input); return null; }
+        catch (InvalidDataException exception) { return exception.Message; }
+    }
 
     private static bool ArtifactsValid(EnforcementEvaluationInput input, string? error) =>
         string.IsNullOrWhiteSpace(error) &&
         input.Attempts.SchemaVersion == AttemptLedger.CurrentSchemaVersion &&
         (input.Build is null || input.Build.SchemaVersion == BuildAttestation.CurrentSchemaVersion) &&
         (input.Replay is null || input.Replay.SchemaVersion == ReplayAttestation.CurrentSchemaVersion);
+
+    internal static ReplayAttestation? FreshReplay(EnforcementEvaluationInput input) =>
+        ReplayIsFresh(input, BuildIsFresh(input, true)) ? input.Replay : null;
+
+    internal static IReadOnlyList<SemanticSlice> AssessSlices(
+        EnforcementEvaluationInput input, ReplayAttestation? freshReplay, bool includeFailures = true)
+    {
+        var slices = ApplyFindingWork(SemanticSlicePlanner.Assess(input.TargetRoot, input.StatePlan!,
+            freshReplay, input.Progress, input.GeneratedAt, input.WindowOwnerResolver), input.FindingLedger, input);
+        if (!includeFailures) return slices;
+        var failures = FailureProtocol.ActiveRuntimeFailures(input).ToArray();
+        return slices.Select(slice => failures.Any(attempt => attempt.SliceId == slice.Id ||
+            slice.States.Any(state => state.Id == attempt.StateId))
+            ? slice with { Complete = false, Resolved = false,
+                Reason = "An active runtime failure requires source-first diagnosis and validated correction." }
+            : slice).ToArray();
+    }
+
+    internal static bool StateRequiresWork(EnforcementEvaluationInput input, MigrationState state)
+    {
+        if (!StateClosureProtocol.HasHistoricalParity(input.TargetRoot, state) ||
+            FailureProtocol.ActiveRuntimeFailures(input).Any(attempt => attempt.StateId == state.Id ||
+                attempt.StateId is null && attempt.SliceId == SemanticSlicePlanner.SliceId(state))) return true;
+        if (!FindingCollectionsValid(input.FindingLedger)) return false;
+        var relevant = new SemanticFindingLedger
+        {
+            Findings = input.FindingLedger!.Findings.Where(finding => finding.StateIds.Contains(state.Id, StringComparer.Ordinal) ||
+                finding.StateIds.Count == 0 && SemanticSlicePlanner.SliceId(state) ==
+                    SemanticSlicePlanner.SliceId(input.StatePlan!.States[0])).ToList()
+        };
+        return !ValidateFindings(relevant, null, out _, out _, input);
+    }
 
     private static bool BuildIsFresh(EnforcementEvaluationInput input, bool artifactsValid) =>
         artifactsValid &&
@@ -396,8 +448,8 @@ public static class EnforcementEvaluator
             diagnosis.TargetLocations.Any(string.IsNullOrWhiteSpace) ||
             diagnosis.TargetFingerprint is not null && diagnosis.TargetFingerprint != attempt.TargetFingerprint ||
             diagnosis.Signature is not null && diagnosis.Signature != attempt.Signature ||
-            diagnosis.StateId is not null && diagnosis.StateId != attempt.StateId ||
-            diagnosis.SliceId is not null && diagnosis.SliceId != attempt.SliceId ||
+            diagnosis.StateId != attempt.StateId ||
+            diagnosis.SliceId != attempt.SliceId ||
             string.IsNullOrWhiteSpace(diagnosis.SourceInvariant) ||
             string.IsNullOrWhiteSpace(diagnosis.Hypothesis) ||
             string.IsNullOrWhiteSpace(diagnosis.DiscriminatingTest) ||
@@ -463,7 +515,7 @@ public static class EnforcementEvaluator
         };
     }
 
-    private static bool ValidateStatePlan(
+    internal static bool ValidateStatePlan(
         StatePlanDocument? plan,
         string? loadError,
         out string reason)
@@ -478,7 +530,7 @@ public static class EnforcementEvaluator
             reason = "The state plan does not exist.";
             return false;
         }
-        if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion)
+        if (plan.SchemaVersion is not ("1.0" or StatePlanDocument.CurrentSchemaVersion))
         {
             reason =
                 $"Unsupported state-plan schema {plan.SchemaVersion}; expected {StatePlanDocument.CurrentSchemaVersion}.";
@@ -511,7 +563,7 @@ public static class EnforcementEvaluator
                 return false;
         }
 
-        reason = $"State plan schema 1.0 contains {plan.States.Count} unique state(s).";
+        reason = $"State plan schema {plan.SchemaVersion} contains {plan.States.Count} unique state(s).";
         return true;
     }
 

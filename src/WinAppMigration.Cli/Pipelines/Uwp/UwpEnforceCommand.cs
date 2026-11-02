@@ -19,6 +19,7 @@ internal sealed class UwpEnforceCommand : Command
         windowOwnerResolver ??= processRunner as IWindowOwnerResolver ?? WindowsWindowOwnerResolver.Instance;
         Aliases.Add("enforce");
         Subcommands.Add(new AssessCommand(windowOwnerResolver));
+        Subcommands.Add(new SealContractCommand());
         Subcommands.Add(new WaitCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new RunCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new DiagnoseCommand(processRunner, windowOwnerResolver));
@@ -28,6 +29,24 @@ internal sealed class UwpEnforceCommand : Command
         Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
         Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
         Subcommands.Add(new ConfigureCommand());
+    }
+
+    private sealed class SealContractCommand : Command
+    {
+        internal SealContractCommand() : base("seal-contract", "Independently anchor schema 2.0 required actions/assertions/order before source capture or workflow start.")
+        {
+            var target = TargetArgument();
+            var extend = new Option<bool>("--extend") { Description = "Append requirements without changing/removing established requirements, before source/workflow start only." };
+            var upgrade = new Option<bool>("--upgrade-plan") { Description = "Explicitly upgrade an unstarted schema 1.0 plan that already defines structured requirements. Captured legacy evidence is never blessed." };
+            Arguments.Add(target); Options.Add(extend); Options.Add(upgrade);
+            SetAction((result, token) => InvokeGuardedAsync(async () =>
+            {
+                var contract = await UwpEnforcementRunner.SealContractAsync(result.GetValue(target)!,
+                    result.GetValue(extend), result.GetValue(upgrade), token);
+                Console.Out.WriteLine(JsonSerializer.Serialize(contract, EnforcementStore.JsonOptions));
+                return 0;
+            }));
+        }
     }
 
     private sealed class WaitCommand : Command
@@ -639,6 +658,7 @@ internal sealed class UwpEnforceCommand : Command
                 snapshot.ActiveSlice,
                 snapshot.ActiveStateIds,
                 snapshot.Status,
+                snapshot.StateVerifications,
                 snapshot.TargetFingerprint,
                 snapshot.Gates,
                 snapshot.Frontier,

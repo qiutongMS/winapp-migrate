@@ -73,12 +73,12 @@ function Find-MigrationRoot {
             catch {
                 Stop-Hook "migration-report.json is malformed: $($_.Exception.Message)"
             }
-            if ($report.schemaVersion -ne '1.5' -or
+            if ($report.schemaVersion -ne '1.6' -or
                 $null -eq $report.source -or
                 [string]::IsNullOrWhiteSpace([string] $report.source.root) -or
                 [string]::IsNullOrWhiteSpace([string] $report.source.projectFile) -or
                 $null -eq $report.target) {
-                Stop-Hook 'migration-report.json does not satisfy the UWP schema 1.5 workspace identity contract.'
+                Stop-Hook 'migration-report.json does not satisfy the UWP schema 1.6 workspace identity contract.'
             }
             return $current.FullName
         }

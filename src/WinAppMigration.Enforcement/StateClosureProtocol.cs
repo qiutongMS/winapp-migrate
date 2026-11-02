@@ -15,6 +15,16 @@ public sealed record StateEvidenceHash(
 
 public sealed class StateClosureAttestation
 {
+    [JsonPropertyName("requiredContractHash")]
+    public string RequiredContractHash { get; set; } = string.Empty;
+    [JsonPropertyName("verificationLevel")]
+    public string VerificationLevel { get; set; } = StateVerificationLevel.EvidenceValid;
+    [JsonPropertyName("requiredActionIds")]
+    public List<string> RequiredActionIds { get; set; } = [];
+    [JsonPropertyName("verifiedSteps")]
+    public List<StateStepReceipt> VerifiedSteps { get; set; } = [];
+    [JsonPropertyName("issues")]
+    public List<string> Issues { get; set; } = [];
     [JsonPropertyName("seal")]
     public string? Seal { get; set; }
     [JsonPropertyName("sealPublicKey")]
@@ -49,6 +59,34 @@ public sealed class StateClosureAttestation
 
 public static class StateClosureProtocol
 {
+    // Historical semantic resolution only. This never grants fresh/live final closure.
+    public static bool HasHistoricalParity(DirectoryInfo root, MigrationState state)
+    {
+        try
+        {
+            if (state.Source is not { Status: "captured", Evidence: not null } ||
+                state.Target is not { Status: "passed", Evidence: not null } ||
+                state.Comparison is not { Status: "verified" } ||
+                state.Assertions is null || state.Verification is null ||
+                state.Target.VerificationLevel != StateVerificationLevel.ParityVerified ||
+                state.Target.Attestation != AttestationPath(state.Id)) return false;
+            var proof = Read<StateClosureAttestation>(root, state.Target.Attestation);
+            return StateClosureSeal.Verify(proof) && proof.VerificationLevel == StateVerificationLevel.ParityVerified &&
+                proof.StateId == state.Id && proof.RequiredContractHash == RequiredStateContracts.Require(root, state, proof.RecordedAt) &&
+                proof.StateContractFingerprint == ContractFingerprint(root, state) &&
+                proof.RequiredActionIds.SequenceEqual(state.Verification!.RequiredActions.Select(action => action.Id)) &&
+                proof.AssertionIds.SequenceEqual(state.Assertions.Select(assertion => assertion.Id)) &&
+                proof.Evidence.SequenceEqual(state.Target.Evidence, StringComparer.Ordinal) &&
+                proof.SourceEvidenceHashes.SequenceEqual(state.Source.Evidence.Select(path => new StateEvidenceHash(path, FileHash(root, path)))) &&
+                proof.TargetEvidenceHashes.SequenceEqual(state.Target.Evidence.Select(path => new StateEvidenceHash(path, FileHash(root, path))));
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or
+            JsonException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
     public static string AttestationPath(string stateId) =>
         $"{EnforcementStore.EnforcementDirectory}/states/{HashText(stateId)}/attestation.json";
 
@@ -66,6 +104,7 @@ public static class StateClosureProtocol
             Criticality = state.Criticality, FeaturePaths = state.FeaturePaths, TodoIds = state.TodoIds,
             Preconditions = state.Preconditions, Actions = state.Actions, ExpectedOutcome = state.ExpectedOutcome,
             Assertions = state.Assertions, Source = state.Source,
+            Verification = state.Verification,
             Target = new StateObservation { Status = "not-run" },
             Comparison = new StateComparison { Status = "not-run" }
         };
@@ -77,6 +116,7 @@ public static class StateClosureProtocol
         DirectoryInfo root, MigrationState state, ReplayAttestation replay,
         IReadOnlyList<string> probePaths, DateTimeOffset now, IWindowOwnerResolver? windowOwnerResolver = null)
     {
+        using var verification = StateClosureSeal.BeginVerification();
         try
         {
             return DeriveCore(root, state, replay, probePaths, now, windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance);
@@ -98,6 +138,10 @@ public static class StateClosureProtocol
             throw new InvalidDataException("A successful product-generated canonical replay is required.");
         if (!CanonicalAttestationTrust.Verify(root, replay))
             throw new InvalidDataException("The canonical replay is not authenticated by the local operation/attestation chain.");
+        var requiredHash = RequiredStateContracts.Require(root, state, replay.StartedAt);
+        RequiredStateContracts.ValidateRequirements(new StatePlanDocument { States = [state] });
+        if (replay.RequiredContractHash != requiredHash)
+            throw new InvalidDataException("Canonical replay is not bound to the immutable required contract.");
         if (state.Source.Status != "captured")
             throw new InvalidDataException($"State {state.Id} requires captured source evidence.");
         if (state.Assertions is not { Count: > 0 } ||
@@ -110,6 +154,8 @@ public static class StateClosureProtocol
         var progress = Read<WorkflowProgress>(root, EnforcementStore.ProgressPath);
         if (progress.Operations is null || progress.Operations.Any(operation => operation is null))
             throw new InvalidDataException("Probe receipts require workflow operation records.");
+        if (!WorkflowOperationAuthentication.VerifyAnchored(root, progress.Operations))
+            throw new InvalidDataException("Operation history is incomplete, reordered, or not locally authenticated.");
         var probes = new List<UiDevelopmentProbe>();
         var evidence = new List<string>();
         var previous = replay.CompletedAt;
@@ -131,8 +177,10 @@ public static class StateClosureProtocol
                 throw new InvalidDataException("Probe producer, target fingerprint, or canonical replay does not match.");
             if (!StateClosureSeal.Verify(probe))
                 throw new InvalidDataException("Probe receipt integrity seal is missing or invalid.");
-            if (probe.StateId != state.Id || probe.StateContractFingerprint != fingerprint)
+            if (probe.StateId != state.Id || probe.StateContractFingerprint != fingerprint || probe.RequiredContractHash != requiredHash)
                 throw new InvalidDataException($"Probe does not match the current planned state identity/contract: {state.Id}.");
+            StateAttribution.Validate(new StatePlanDocument { States = [state] },
+                new StateSliceBinding(probe.StateId, probe.SliceId));
             if (probe.ExitCode != 0 || probe.InfrastructureFailure)
                 throw new InvalidDataException($"Probe {probe.Id} did not succeed.");
             if (probe.StartedAt < previous || probe.CompletedAt < probe.StartedAt || probe.CompletedAt > now)
@@ -155,6 +203,8 @@ public static class StateClosureProtocol
                 operation.ProbeId == probe.Id && operation.ProbeSha256 == FileHash(root, path) &&
                 operation.TargetFingerprint == replay.TargetFingerprint && operation.ReplayAttestationId == replay.Id &&
                 operation.Signature == probe.CommandSignature && operation.RecordedAt <= probe.StartedAt &&
+                operation.RequiredContractHash == requiredHash &&
+                operation.StateId == probe.StateId && operation.IntendedSliceId == probe.SliceId &&
                 operation.RecordedAt >= replay.CompletedAt).ToArray();
             if (operations.Length != 1)
                 throw new InvalidDataException("Probe is fabricated, modified, or untracked by workflow operations.");
@@ -182,8 +232,28 @@ public static class StateClosureProtocol
             probes.Add(probe);
             previous = probe.CompletedAt;
         }
+        var issues = new List<string>();
+        var steps = RequiredActionProtocol.Derive(state, probes, issues);
+        var coverage = issues.Count == 0;
+        var targetSufficient = true;
+        var parity = true;
+        var targetValues = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var assertion in state.Assertions)
         {
+            if (assertion.ProbeIndex >= probes.Count)
+            {
+                targetSufficient = false; parity = false;
+                issues.Add($"Required assertion {assertion.Id} has no captured observation.");
+                continue;
+            }
+            if (assertion.Kind == "visual-region-equals-source")
+            {
+                var comparison = VisualStateAssertions.Compare(root, state, assertion, probes, progress.Operations);
+                targetSufficient &= comparison.TargetSufficient;
+                parity &= comparison.ParityVerified;
+                if (!comparison.ParityVerified) issues.Add(comparison.Reason);
+                continue;
+            }
             if (assertion.Kind != "ui-property-equals-source" ||
                 !UiAssertionProtocol.Supports(assertion.Property) ||
                 string.IsNullOrWhiteSpace(assertion.AutomationId) ||
@@ -193,12 +263,38 @@ public static class StateClosureProtocol
             var probe = probes[assertion.ProbeIndex];
             var sourceValue = ReadUiProperty(root, assertion.SourceEvidence, assertion);
             var targetValue = ReadUiProperty(root, probe.StandardOutputPath, assertion, probe.Command.Skip(2).ToArray());
+            targetValues.Add(assertion.Id, targetValue);
             if (!string.Equals(sourceValue, targetValue, StringComparison.Ordinal))
-                throw new InvalidDataException($"Assertion {assertion.Id} differs from its source observation.");
+            {
+                parity = false;
+                issues.Add($"Assertion {assertion.Id} differs from its source observation; evidence/coverage is not parity.");
+            }
+        }
+        foreach (var restore in state.Verification!.Restorations)
+        {
+            var baseline = state.Assertions.Single(item => item.Id == restore.BaselineAssertionId);
+            var restored = state.Assertions.Single(item => item.Id == restore.RestoredAssertionId);
+            var action = steps.SingleOrDefault(item => item.Kind == "action" && item.Id == restore.ReturnActionId);
+            var returned = action is not null && baseline.ProbeIndex < action.ProbeIndex && action.ProbeIndex < restored.ProbeIndex &&
+                baseline.ProbeIndex < probes.Count && restored.ProbeIndex < probes.Count &&
+                baseline.Kind == restored.Kind && baseline.Property == restored.Property &&
+                (baseline.Kind == "visual-region-equals-source"
+                    ? VisualStateAssertions.Restored(root, baseline, restored, probes, progress.Operations)
+                    : targetValues[baseline.Id] == targetValues[restored.Id]);
+            if (!returned)
+            {
+                parity = false;
+                issues.Add($"Restoration {restore.Id} requires its return action and a matching post-return comparison, not only the intermediate transition.");
+            }
         }
         return new StateClosureAttestation
         {
             StateId = state.Id, StateContractFingerprint = fingerprint,
+            RequiredContractHash = requiredHash,
+            VerificationLevel = !coverage || !targetSufficient ? StateVerificationLevel.EvidenceValid :
+                parity ? StateVerificationLevel.ParityVerified : StateVerificationLevel.ContractSatisfied,
+            RequiredActionIds = state.Verification.RequiredActions.Select(action => action.Id).ToList(),
+            VerifiedSteps = steps, Issues = issues,
             TargetFingerprint = replay.TargetFingerprint, ReplayAttestationId = replay.Id,
             RecordedAt = now, Probes = [.. probePaths], Evidence = evidence,
             SourceEvidenceHashes = state.Source.Evidence.Select(path => new StateEvidenceHash(path, FileHash(root, path))).ToList(),
@@ -215,13 +311,29 @@ public static class StateClosureProtocol
     internal static bool VerifyEvidence(
         DirectoryInfo root, MigrationState state, ReplayAttestation? replay,
         DateTimeOffset now, [NotNullWhen(true)] out StateClosureAttestation? evidence, out string reason,
-        IWindowOwnerResolver? windowOwnerResolver = null)
+        IWindowOwnerResolver? windowOwnerResolver = null) =>
+        VerifyAttestation(root, state, replay, now, out evidence, out reason, windowOwnerResolver, requireParity: true);
+
+    public static StateVerificationSummary AssessLevel(DirectoryInfo root, MigrationState state, ReplayAttestation? replay,
+        DateTimeOffset now, IWindowOwnerResolver? windowOwnerResolver = null)
+    {
+        return VerifyAttestation(root, state, replay, now, out var evidence, out var reason, windowOwnerResolver, requireParity: false)
+            ? new StateVerificationSummary(state.Id, evidence.VerificationLevel, string.Join(" ", evidence.Issues))
+            : new StateVerificationSummary(state.Id, "unverified", reason);
+    }
+
+    private static bool VerifyAttestation(DirectoryInfo root, MigrationState state, ReplayAttestation? replay,
+        DateTimeOffset now, [NotNullWhen(true)] out StateClosureAttestation? evidence, out string reason,
+        IWindowOwnerResolver? windowOwnerResolver, bool requireParity)
     {
         evidence = null;
+        using var verification = StateClosureSeal.BeginVerification();
         try
         {
-            if (replay is null || !replay.Success || state.Target.Status != "passed" ||
-                state.Comparison.Status != "verified" || state.Target.Attestation != AttestationPath(state.Id))
+            if (state.Source is null || state.Target is null || state.Comparison is null ||
+                state.Source.Evidence is null || state.Target.Evidence is null)
+                throw new InvalidDataException($"State {state.Id} has invalid observation metadata.");
+            if (replay is null || !replay.Success || state.Target.Attestation != AttestationPath(state.Id))
                 throw new InvalidDataException($"State {state.Id} requires a product-generated state closure attestation; use closure record-state.");
             var attestation = Read<StateClosureAttestation>(root, state.Target.Attestation);
             if (attestation.Probes is not { Count: > 0 } || attestation.AssertionIds is null || attestation.Evidence is null ||
@@ -234,6 +346,11 @@ public static class StateClosureProtocol
                 attestation.ArtifactClass != MigrationArtifactClass.CanonicalAttestation ||
                 attestation.StateId != state.Id || attestation.StateContractFingerprint != derived.StateContractFingerprint ||
                 attestation.TargetFingerprint != replay.TargetFingerprint || attestation.ReplayAttestationId != replay.Id ||
+                attestation.RequiredContractHash != derived.RequiredContractHash ||
+                attestation.VerificationLevel != derived.VerificationLevel ||
+                !attestation.RequiredActionIds.SequenceEqual(derived.RequiredActionIds) ||
+                !attestation.VerifiedSteps.SequenceEqual(derived.VerifiedSteps) ||
+                !attestation.Issues.SequenceEqual(derived.Issues) ||
                 attestation.RecordedAt > now ||
                 attestation.RecordedAt < Read<UiDevelopmentProbe>(root, attestation.Probes[^1]).CompletedAt ||
                 !attestation.AssertionIds.SequenceEqual(derived.AssertionIds, StringComparer.Ordinal) ||
@@ -242,6 +359,13 @@ public static class StateClosureProtocol
                 !attestation.TargetEvidenceHashes.SequenceEqual(derived.TargetEvidenceHashes) ||
                 !state.Target.Evidence.SequenceEqual(derived.Evidence, StringComparer.Ordinal))
                 throw new InvalidDataException($"State {state.Id} closure attestation is stale or modified.");
+            var passed = derived.VerificationLevel == StateVerificationLevel.ParityVerified;
+            if (state.Target.VerificationLevel != derived.VerificationLevel ||
+                state.Target.Status != (passed ? "passed" : "unverified") ||
+                state.Comparison.Status != (passed ? "verified" : "unverified"))
+                throw new InvalidDataException("State observation status/verification level does not match product derivation.");
+            if (requireParity && !passed)
+                throw new InvalidDataException($"State {state.Id} is only {derived.VerificationLevel}; parity is not verified.");
             reason = $"State {state.Id} has a re-derived machine-verifiable closure attestation.";
             evidence = derived;
             return true;

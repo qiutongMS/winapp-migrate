@@ -5,8 +5,15 @@ namespace UwpMigration.Enforcement.Tests;
 
 internal static class TestDirectories
 {
-    internal static DirectoryInfo Create(string name) =>
-        Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "test-workspaces", $"{name}-{Guid.NewGuid():N}"));
+    internal static DirectoryInfo Create(string name)
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (!File.Exists(Path.Combine(root.FullName, "WinAppMigration.slnx")))
+            root = root.Parent ?? throw new InvalidOperationException("The test worktree root was not found.");
+        // CreateProcess still limits working directories even when managed file IO supports long paths.
+        return Directory.CreateDirectory(Path.Combine(root.FullName, "artifacts", "t",
+            $"{name[..Math.Min(name.Length, 18)]}-{Guid.NewGuid():N}"));
+    }
 
     internal static void Delete(DirectoryInfo directory)
     {

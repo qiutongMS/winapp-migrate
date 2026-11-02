@@ -229,7 +229,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Closure_SameUserRelocationRetainsTrustWhileOriginalWindowIsLive()
+    public async Task Closure_RelocationDoesNotImplicitlyAdoptAnImmutableRequiredContract()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var report = await fixture.LoadReportAsync();
@@ -252,8 +252,8 @@ public sealed partial class RunnerAcceptanceTests
             var validated = await UwpEnforcementRunner.AssessAsync(relocated, TestWindowOwnerResolver.Shared);
 
             Assert.AreEqual(complete.TargetFingerprint, validated.TargetFingerprint);
-            Assert.AreEqual("passed", validated.Status);
-            Assert.AreEqual("complete", validated.Disposition?.Kind);
+            Assert.AreNotEqual("passed", validated.Status);
+            Assert.AreNotEqual("complete", validated.Disposition?.Kind);
         }
         finally { TestDirectories.Delete(relocated); }
     }
@@ -284,7 +284,7 @@ public sealed partial class RunnerAcceptanceTests
             Signature = probe.CommandSignature,
             ProbeSha256 = StateClosureProtocol.FileHash(fixture.Root, probe.ArtifactPath)
         };
-        StateClosureSeal.Sign(progress.Operations[index]);
+        ContractTestAuthority.SealOperations(progress, fixture.Root);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
     }
 

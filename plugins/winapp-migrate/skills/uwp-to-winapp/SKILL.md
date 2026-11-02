@@ -36,7 +36,7 @@ Verify from the actual output that:
 
 1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, `source`, and `closure`;
 2. `winapp-migrate uwp source --help` exposes `run`, `capture`, and `diagnose`;
-3. `winapp-migrate uwp closure --help` exposes `assess`, `attest`, `capture`, `record-state`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
+3. `winapp-migrate uwp closure --help` exposes `seal-contract`, `assess`, `attest`, `capture`, `record-state`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
 4. the configured WinApp CLI satisfies the gateway contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
 
 Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.6`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
@@ -53,23 +53,34 @@ If the report already exists, parse it, require `schemaVersion` exactly `1.6`, a
 winapp-migrate uwp verify "<target>"
 ```
 
-The behavioral state plan remains a separate artifact with schema `1.0`; never upgrade or reject it merely because the migration report uses `1.6`.
+The behavioral state plan is a separate artifact with schema `2.0` and
+immutable ordered verification requirements. Read
+[required contracts and ROI verification](references/state-verification-contracts.md).
+Legacy `1.0` plans still load provisionally, but are never silently trusted for
+parity. Upgrade explicitly only before source/workflow activity and after
+authoring complete structured requirements; captured mutable legacy plans need
+a fresh planned/captured workflow.
 
 ### Start or resume closure
 
-For a target with an existing report, inspect the state plan immediately. If a
-valid state plan already exists, the next stateful command must be:
+For a target with an existing report, inspect the state plan immediately.
+Before a new workflow, establish the complete source/user-required action,
+assertion, restoration and visual ROI contract:
 
 ```powershell
+winapp-migrate uwp closure seal-contract "<target>"
 winapp-migrate uwp closure assess "<target>"
 ```
 
-Run this initial assessment before source UI capture, broad source or target
-investigation, semantic target edits, or delegating implementation work. It
+For an already sealed workflow, resume with `assess`, never re-seal changed
+requirements. `--extend` is append-only before source/workflow start; it cannot
+remove actions/assertions or rewrite order. Run the initial assessment after
+contract establishment and before source UI capture, semantic target edits,
+or delegating implementation work. It
 resumes the deterministic migration checklist and returns the authoritative
 stage, frontier, disposition, and allowed operations. Elapsed time and operation
 totals are telemetry only. If the state plan is missing, create only that plan
-first, then assess before doing any capture or implementation.
+first, seal its requirements, then assess before doing any capture or implementation.
 
 Stop when the disposition is terminal. Otherwise, perform only work consistent
 with the reported frontier and allowed operations. Reassess only at a workflow
@@ -113,7 +124,7 @@ On the expanded path, follow [Semantic migration protocol](references/semantic-m
 
 ## 2. Capture the source behavior baseline
 
-Follow [Behavioral validation](references/behavioral-validation.md) to create and persist the complete state plan declared by the report. The state plan uses schema `1.0`.
+Follow [Behavioral validation](references/behavioral-validation.md) to create and persist the complete schema `2.0` state plan declared by the report. Establish its required contract before source capture.
 
 Before editing, capture startup and the fast-path primary sentinel, or every expanded-path seam sentinel. Capture remaining source states before implementing or validating their corresponding target feature. Complete the bounded source-recovery and evidence-fallback process before declaring a state unavailable. The initial assessment required by the closure entry protocol must already be persisted before this capture starts.
 
@@ -258,7 +269,7 @@ An unavailable pointer-input comparison is missing comparison evidence, not
 an external blocker for an app-owned crash.
 
 After every sentinel passes, expand progressively to remaining feature paths
-and source states. Use optional schema `1.0` `slice`, `dependencies` (slice IDs),
+and source states. Retain `slice`, `dependencies` (slice IDs),
 and `criticality` fields to group states by dependency or architecture boundary.
 During semantic convergence, let the gateway record automatic provenance for
 each target UI probe. Do not create hand-written justification JSON for every
@@ -353,6 +364,11 @@ evidence for those nonvisual assertions; they cannot prove visual information.
 Findings resolve only through satisfied mapped `completionAssertions`;
 free-text-only completion conditions stay open.
 
+`evidence-valid`, `contract-satisfied`, and `parity-verified` are different
+product-rederived outcomes. Only parity-verified can clear mapped TODOs or
+findings or complete final closure. Visual claims require semantic ROI
+sufficiency and paired comparison, not page/tree presence or informative
+chrome. Restoration requires the return action and post-return comparison.
 This final pass attempts to disprove completion. Do not reuse a development process or old evidence. Reopen a finding when the clean sequence changes the signature or fails.
 
 Before claiming completion:

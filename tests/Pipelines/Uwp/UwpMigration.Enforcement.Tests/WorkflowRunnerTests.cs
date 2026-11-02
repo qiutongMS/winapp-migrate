@@ -358,7 +358,7 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        AgeWorkflow(progress, 26);
+        AgeWorkflow(progress, 26, fixture.Root);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
         var uiProcess = new FakeProcessRunner(new EnforcementProcessResult(0, "ui", ""));
         await new UwpEnforcementRunner(uiProcess).InvokeUiAsync(fixture.Root, "winapp", ["list"]);
@@ -452,7 +452,7 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        AgeWorkflow(progress, 16);
+        AgeWorkflow(progress, 16, fixture.Root);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
         var expired = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
         Assert.AreEqual("evidence-required", expired.Frontier?.Kind);
@@ -486,7 +486,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Store_LegacyAttestationsResumeWithoutResettingFailureGuards()
+    public async Task Store_DeletingAnchoredHistoryCannotResetFailureGuards()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var process = new FakeProcessRunner(new EnforcementProcessResult(1, """{"Error":"compile failed"}""", ""));
@@ -494,10 +494,10 @@ public sealed partial class RunnerAcceptanceTests
         File.Delete(fixture.Path(EnforcementStore.ProgressPath));
         File.Delete(fixture.Path(EnforcementStore.PolicyPath));
         var resumed = await new UwpEnforcementRunner(process).RunAsync(fixture.Root, new UwpEnforcementOptions());
-        Assert.AreEqual("change-required", resumed.Frontier?.Kind);
+        Assert.AreEqual("infrastructure-failure", resumed.Disposition?.Kind);
+        Assert.AreEqual("blocked", resumed.Gates.Single(gate => gate.Id == "enforcement-artifacts").Status);
         Assert.AreEqual(1, process.CallCount);
-        Assert.AreEqual(1, resumed.Budget!.TotalOperations.Builds);
-        Assert.IsNotNull(resumed.Workflow!.OperationsStartedAt);
+        Assert.HasCount(1, (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts);
     }
 
     [TestMethod]
@@ -737,7 +737,7 @@ public sealed partial class RunnerAcceptanceTests
         await RecordDiagnosisAsync(fixture);
     }
 
-    private static void AgeWorkflow(WorkflowProgress progress, int minutes)
+    private static void AgeWorkflow(WorkflowProgress progress, int minutes, DirectoryInfo root)
     {
         progress.StartedAt = progress.StartedAt?.AddMinutes(-minutes);
         progress.OperationsStartedAt = progress.OperationsStartedAt?.AddMinutes(-minutes);
@@ -755,8 +755,7 @@ public sealed partial class RunnerAcceptanceTests
         }
         progress.Events = progress.Events.Select(item => item with { RecordedAt = item.RecordedAt.AddMinutes(-minutes) }).ToList();
         progress.Operations = progress.Operations.Select(item => item with { RecordedAt = item.RecordedAt.AddMinutes(-minutes) }).ToList();
-        foreach (var operation in progress.Operations)
-            StateClosureSeal.Sign(operation);
+        ContractTestAuthority.SealOperations(progress, root);
     }
 
     private static Task<EnforcementSnapshot> RecordDiagnosisAsync(RunnerFixture fixture) =>

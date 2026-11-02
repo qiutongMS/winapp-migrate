@@ -138,6 +138,7 @@ public sealed partial class EnforcementEvaluatorTests
                 Signature = "runtime:0x800f1000",
                 RecordedAt = LifecycleNow,
                 StateId = "state-1",
+                SliceId = "state-1",
                 Evidence = ["evidence.txt"]
             }
         ];
@@ -249,8 +250,8 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("state", snapshot.Frontier?.Kind);
-        StringAssert.Contains(snapshot.Frontier!.Reason, "predates");
+        Assert.AreEqual("revalidate", snapshot.Frontier?.Kind);
+        StringAssert.Contains(snapshot.Gates.Single(gate => gate.Id == "state-closure").Reason, "predates");
     }
 
     [TestMethod]
