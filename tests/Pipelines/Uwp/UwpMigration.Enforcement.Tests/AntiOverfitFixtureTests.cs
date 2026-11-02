@@ -29,6 +29,53 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    public async Task NeutralContracts_InterleavedWorkspaceOperationsKeepFreshAnchors()
+    {
+        using var first = await RunnerFixture.CreateAsync(unstarted: true);
+        using var second = await RunnerFixture.CreateAsync(unstarted: true);
+        var firstPlan = await NewRequiredPlanAsync(first);
+        var secondPlan = await NewRequiredPlanAsync(second);
+        secondPlan.States[0].ExpectedOutcome = "A separate generic observation remains stable.";
+        await EnforcementStore.WriteAtomicAsync(second.Root, ClosurePlan, secondPlan);
+        var firstContract = await UwpEnforcementRunner.SealContractAsync(first.Root);
+        var secondContract = await UwpEnforcementRunner.SealContractAsync(second.Root);
+        await ObserveSourceAsync(first, firstPlan);
+        await ObserveSourceAsync(second, secondPlan);
+        await RunNeutralTargetAsync(first);
+        await RunNeutralTargetAsync(second);
+
+        var latestProbes = new Dictionary<RunnerFixture, UiDevelopmentProbe>();
+        for (var round = 1; round <= 4; round++)
+        {
+            foreach (var (current, other) in new[] { (first, second), (second, first) })
+            {
+                var previousHead = WorkflowOperationAuthentication.ReadHead(current.Root);
+                var otherHead = WorkflowOperationAuthentication.ReadHead(other.Root);
+                latestProbes[current] = await ContractProbeAsync(current, ["inspect", "-w", "42", "--json"], ClosureTree);
+
+                Assert.AreNotEqual(previousHead, WorkflowOperationAuthentication.ReadHead(current.Root),
+                    $"Round {round}: the completed operation must advance its persisted head.");
+                Assert.AreEqual(otherHead, WorkflowOperationAuthentication.ReadHead(other.Root),
+                    $"Round {round}: advancing one workspace must not overwrite the other's head.");
+                var progress = await AssertNeutralAnchorsAsync(current);
+                Assert.HasCount(2 + round, progress.Operations);
+                await AssertNeutralAnchorsAsync(other);
+                Assert.AreEqual(firstContract.RequiredContractHash, RequiredStateContracts.Freeze(first.Root, firstPlan));
+                Assert.AreEqual(secondContract.RequiredContractHash, RequiredStateContracts.Freeze(second.Root, secondPlan));
+            }
+        }
+
+        foreach (var fixture in new[] { first, second })
+        {
+            await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1",
+                [latestProbes[fixture].ArtifactPath]);
+            var complete = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+            Assert.AreEqual("passed", complete.Status);
+            await AssertNeutralAnchorsAsync(fixture);
+        }
+    }
+
+    [TestMethod]
     [DataRow(120, 80, 240, 160, true, false)]
     [DataRow(120, 80, 240, 160, true, true)]
     [DataRow(96, 144, 144, 216, true, false)]
@@ -45,12 +92,7 @@ public sealed partial class RunnerAcceptanceTests
         var targetTree = GridTree(width, height, 320, 180, 42, 4242);
         await ObserveSourceAsync(fixture, plan, sourceTree.ToJsonString(), GridImage(width, height, false));
         if (bounds) await AddSourceCaptureAsync(fixture, plan, CoordinateCapture(width, height, 7, 1100, 40, 70, width, height));
-        var run = await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
-        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        Assert.IsTrue(WorkflowOperationAuthentication.Verify(progress.Operations), "The operation signatures or hash chain are invalid.");
-        Assert.IsTrue(WorkflowOperationAuthentication.VerifyAnchored(fixture.Root, progress.Operations),
-            $"The {progress.Operations.Count}-operation head does not match its independent anchor: {WorkflowOperationAuthentication.ReadHead(fixture.Root)}");
-        Assert.IsFalse(run.Disposition?.Terminal ?? false, run.Disposition?.ReasonCode);
+        await RunNeutralTargetAsync(fixture);
         var inspect = await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"], targetTree.ToJsonString());
         var image = GridImage(imageWidth, imageHeight, blankSecond);
         Assert.AreEqual(PngInformation.Informative, PngEvidence.Classify(await WriteSceneAsync(fixture, image)));
@@ -93,7 +135,7 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.SealContractAsync(fixture.Root);
         await ObserveSourceAsync(fixture, plan, GridTree(120, 80, 40, 70, 7, 1100).ToJsonString(), GridImage(120, 80, false));
         await AddSourceCaptureAsync(fixture, plan, CoordinateCapture(120, 80, 7, 1100, 40, 70, 120, 80));
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await RunNeutralTargetAsync(fixture);
         var tree = GridTree(120, 80, 320, 180, 42, 4242);
         var owner = tree["windows"]![0]!;
         var zones = owner["elements"]![0]!["children"]![0]!["children"]!.AsArray();
@@ -146,7 +188,7 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.SealContractAsync(fixture.Root);
         await ObserveSourceAsync(fixture, plan, GridTree(120, 80, 40, 70, 7, 1100).ToJsonString(), GridImage(120, 80, false));
         await AddSourceCaptureAsync(fixture, plan, CoordinateCapture(120, 80, 7, 1100, 40, 70, 120, 80));
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await RunNeutralTargetAsync(fixture);
         var tree = GridTree(120, 80, 320, 180, 42, 4242).ToJsonString();
         var before = await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"], tree);
         var move = await ContractProbeAsync(fixture, ["invoke", "Move", "-w", "42", "--json"], """{"pattern":"Invoke","hwnd":42}""");
@@ -180,7 +222,7 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.SealContractAsync(fixture.Root);
         await ObserveSourceAsync(fixture, plan, GridTree(120, 80, 40, 70, 7, 1100).ToJsonString(), GridImage(120, 80, false));
         await AddSourceCaptureAsync(fixture, plan, CoordinateCapture(120, 80, 7, 1100, 40, 70, 120, 80));
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await RunNeutralTargetAsync(fixture);
         var tree = GridTree(120, 80, 320, 180, 42, 4242).ToJsonString();
         await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"], tree);
         if (afterImage)
@@ -235,7 +277,7 @@ public sealed partial class RunnerAcceptanceTests
         await File.WriteAllTextAsync(fixture.Path(".migration-evidence/states/state-1/option-b.json"), b);
         state.Source.Evidence.Add(".migration-evidence/states/state-1/option-b.json");
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await RunNeutralTargetAsync(fixture);
         var firstAction = trace == "out-of-order" ? "Option-A" : "Option-B";
         var secondAction = trace == "out-of-order" ? "Option-B" : "Option-A";
         var probes = new List<string>
@@ -271,7 +313,7 @@ public sealed partial class RunnerAcceptanceTests
         state.Source.Status = "captured";
         state.Source.Evidence = [".migration-evidence/states/state-1/source-ui.json"];
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await RunNeutralTargetAsync(fixture);
         var probe = await ContractProbeAsync(fixture, ["get-property", "main", "-p", "Value", "-w", "42", "--json"],
             PropertyObservation("Value", "stable-value", "edit-target-c3d4"));
 
@@ -282,6 +324,29 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsFalse(File.Exists(fixture.Path(".migration-evidence/source/state-1.png")));
         Assert.IsFalse(File.Exists(fixture.Path(".migration-evidence/target/state-1.png")));
         Assert.IsNull(state.Assertions[0].Region);
+    }
+
+    private static async Task RunNeutralTargetAsync(RunnerFixture fixture)
+    {
+        var run = await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await AssertNeutralAnchorsAsync(fixture);
+        Assert.IsNotNull(run.Disposition, "The target run must expose its workflow disposition.");
+        Assert.IsFalse(run.Disposition.Terminal, run.Disposition.ReasonCode);
+    }
+
+    private static async Task<WorkflowProgress> AssertNeutralAnchorsAsync(RunnerFixture fixture)
+    {
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var contract = await fixture.LoadAsync<RequiredStateContractDocument>(RequiredStateContracts.Path);
+        foreach (var state in plan.States)
+            Assert.AreEqual(contract.RequiredContractHash, RequiredStateContracts.Require(fixture.Root, state),
+                $"Workspace {fixture.Root.Name} lost its independently established contract association.");
+        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
+        Assert.IsTrue(WorkflowOperationAuthentication.Verify(progress.Operations),
+            $"Workspace {fixture.Root.Name} has invalid operation signatures or hash chain.");
+        Assert.IsTrue(WorkflowOperationAuthentication.VerifyAnchored(fixture.Root, progress.Operations),
+            $"Workspace {fixture.Root.Name}: the {progress.Operations.Count}-operation head does not match its independent anchor: {WorkflowOperationAuthentication.ReadHead(fixture.Root)}");
+        return progress;
     }
 
     private static async Task<StatePlanDocument> PlanNeutralGridAsync(RunnerFixture fixture, bool bounds, int screenshotIndex)
