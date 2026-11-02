@@ -26,6 +26,29 @@ public class MigrationGuidanceContractTests
                     Summary = "Repair a deterministic condition.",
                     Reason = "A deterministic fact requires semantic repair.",
                     Locations = [new() { Path = "View.xaml", Line = 12 }],
+                    WorkSlices =
+                    [
+                        new()
+                        {
+                            Id = "UWMIG999:prepare",
+                            Summary = "Prepare the repair.",
+                            Stage = "preparation"
+                        },
+                        new()
+                        {
+                            Id = "UWMIG999:integrate",
+                            Summary = "Integrate the repair.",
+                            Stage = "integration",
+                            Dependencies =
+                            [
+                                new()
+                                {
+                                    WorkItemId = "UWMIG999:prepare",
+                                    Kind = "integration"
+                                }
+                            ]
+                        }
+                    ],
                     Guidance = new MigrationRepairGuidance
                     {
                         ReasonCode = "test-reason",
@@ -88,7 +111,39 @@ public class MigrationGuidanceContractTests
                         ]
                     }
                 }
-            ]
+            ],
+            TodoGraph = new MigrationTodoGraph
+            {
+                Status = "valid",
+                WorkItems =
+                [
+                    new()
+                    {
+                        Id = "UWMIG999:prepare",
+                        TodoId = "UWMIG999",
+                        Stage = "preparation",
+                        Summary = "Prepare the repair."
+                    }
+                ],
+                Edges =
+                [
+                    new()
+                    {
+                        PrerequisiteId = "UWMIG999:prepare",
+                        DependentId = "UWMIG999:integrate",
+                        Kind = "integration"
+                    }
+                ],
+                ExecutionWaves =
+                [
+                    new()
+                    {
+                        Index = 0,
+                        Stage = "preparation",
+                        WorkItemIds = ["UWMIG999:prepare"]
+                    }
+                ]
+            }
         };
 
         var json = JsonSerializer.Serialize(
@@ -126,6 +181,17 @@ public class MigrationGuidanceContractTests
         Assert.AreEqual(
             "state-assertion",
             guidance.CompletionChecks.Single().VerificationKind);
+        var todo = roundTripped.Todos.Single();
+        Assert.AreEqual(
+            "integration",
+            todo.WorkSlices[1].Dependencies.Single().Kind);
+        Assert.AreEqual(
+            "preparation",
+            roundTripped.TodoGraph.ExecutionWaves.Single().Stage);
+        Assert.AreEqual(
+            "UWMIG999:prepare",
+            roundTripped.TodoGraph.ExecutionWaves.Single()
+                .WorkItemIds.Single());
     }
 
     [TestMethod]

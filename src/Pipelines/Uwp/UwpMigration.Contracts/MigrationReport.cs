@@ -147,7 +147,7 @@ public sealed class MigrationActivationFileType
 public sealed class MigrationActivationIssue
 {
     [JsonPropertyName("kind")]
-    public required string Kind { get; set; }
+    public string Kind { get; set; } = "preparation";
 
     [JsonPropertyName("reason")]
     public required string Reason { get; set; }
@@ -896,6 +896,12 @@ public sealed class MigrationTodoWorkSlice
     [JsonPropertyName("summary")]
     public required string Summary { get; set; }
 
+    [JsonPropertyName("stage")]
+    public string Stage { get; set; } = "preparation";
+
+    [JsonPropertyName("dependencies")]
+    public List<MigrationTodoWorkItemDependency> Dependencies { get; set; } = [];
+
     [JsonPropertyName("locations")]
     public List<MigrationLocation> Locations { get; set; } = [];
 
@@ -903,10 +909,22 @@ public sealed class MigrationTodoWorkSlice
     public MigrationTodoTouchSet TouchSet { get; set; } = new();
 }
 
+public sealed class MigrationTodoWorkItemDependency
+{
+    [JsonPropertyName("workItemId")]
+    public required string WorkItemId { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "preparation";
+}
+
 public sealed class MigrationTodoGraph
 {
     [JsonPropertyName("status")]
     public string Status { get; set; } = "not-generated";
+
+    [JsonPropertyName("workItems")]
+    public List<MigrationTodoWorkItem> WorkItems { get; set; } = [];
 
     [JsonPropertyName("edges")]
     public List<MigrationTodoDependencyEdge> Edges { get; set; } = [];
@@ -925,6 +943,27 @@ public sealed class MigrationTodoDependencyEdge
 
     [JsonPropertyName("dependentId")]
     public required string DependentId { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "preparation";
+}
+
+public sealed class MigrationTodoWorkItem
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; set; }
+
+    [JsonPropertyName("todoId")]
+    public required string TodoId { get; set; }
+
+    [JsonPropertyName("stage")]
+    public string Stage { get; set; } = "preparation";
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; set; }
+
+    [JsonPropertyName("touchSet")]
+    public MigrationTodoTouchSet TouchSet { get; set; } = new();
 }
 
 public sealed class MigrationTodoExecutionWave
@@ -932,8 +971,11 @@ public sealed class MigrationTodoExecutionWave
     [JsonPropertyName("index")]
     public int Index { get; set; }
 
-    [JsonPropertyName("todoIds")]
-    public List<string> TodoIds { get; set; } = [];
+    [JsonPropertyName("stage")]
+    public string Stage { get; set; } = "preparation";
+
+    [JsonPropertyName("workItemIds")]
+    public List<string> WorkItemIds { get; set; } = [];
 }
 
 public sealed class MigrationTodoGraphIssue
@@ -948,6 +990,10 @@ public sealed class MigrationTodoGraphIssue
     [JsonPropertyName("dependencyId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DependencyId { get; set; }
+
+    [JsonPropertyName("workItemId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorkItemId { get; set; }
 
     [JsonPropertyName("message")]
     public required string Message { get; set; }

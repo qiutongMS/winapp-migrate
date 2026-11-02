@@ -576,8 +576,7 @@ public static partial class MechanicalMigration
                     targetRoot,
                     manifests,
                     activationCategories,
-                    report.ActivationAnalysis,
-                    report.Todos.Any(todo => todo.Id == "UWMIG001")));
+                    report.ActivationAnalysis));
             }
         }
 
@@ -590,7 +589,8 @@ public static partial class MechanicalMigration
             foreach (var wave in report.TodoGraph.ExecutionWaves)
             {
                 Console.Out.WriteLine(
-                    $"  Wave {wave.Index}: {string.Join(", ", wave.TodoIds)}");
+                    $"  {FormatWorkStage(wave.Stage)} wave {wave.Index}: " +
+                    $"{string.Join(", ", wave.WorkItemIds)}");
             }
             foreach (var issue in report.TodoGraph.Issues)
             {
@@ -598,6 +598,15 @@ public static partial class MechanicalMigration
                     $"  [TODO graph:{issue.Code}] {issue.Message}");
             }
         }
+
+        private static string FormatWorkStage(string stage) =>
+            stage switch
+            {
+                "preparation" => "Preparation",
+                "integration" => "Integration",
+                "verification" => "Verification",
+                _ => stage
+            };
 
         // ───────────────────────────── 2b ──────────────────────────────────────
         private static int PatchProjectSettings(string targetRoot)

@@ -232,7 +232,8 @@ internal sealed class MigrateVerifyCommand : Command
             foreach (var wave in report.TodoGraph.ExecutionWaves)
             {
                 Console.Out.WriteLine(
-                    $"  Wave {wave.Index}: {string.Join(", ", wave.TodoIds)}");
+                    $"  {FormatWorkStage(wave.Stage)} wave {wave.Index}: " +
+                    $"{string.Join(", ", wave.WorkItemIds)}");
             }
             foreach (var issue in report.TodoGraph.Issues)
             {
@@ -241,5 +242,14 @@ internal sealed class MigrateVerifyCommand : Command
             }
             return verification.Status == "passed" ? 0 : 1;
         }
+
+        private static string FormatWorkStage(string stage) =>
+            stage switch
+            {
+                "preparation" => "Preparation",
+                "integration" => "Integration",
+                "verification" => "Verification",
+                _ => stage
+            };
     }
 }

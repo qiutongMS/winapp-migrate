@@ -36,8 +36,9 @@ evaluation, and the six explicit project-item decision strategies.
 Schema 1.6 also emits structured TODO guidance and `todoGraph`: authoritative
 detection facts remain separate from provisional classification, strategies
 are non-exhaustive, completion checks and touch/conflict sets are typed, and
-dependency edges produce deterministic execution waves. Invalid unknown edges
-or cycles are surfaced with no flattened wave plan. See
+typed preparation/integration/verification work items produce deterministic,
+conflict-free execution waves. Invalid nodes, edges, classifications, or cycles
+are surfaced with no flattened wave plan. See
 [Migration TODO guidance and graph](plugins/winapp-migrate/skills/uwp-to-winapp/references/migration-todo-graph.md).
 
 ```text

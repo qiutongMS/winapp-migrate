@@ -282,6 +282,7 @@ internal static class MigrationReportStore
             todo.WorkSlices ??= [];
             foreach (var workSlice in todo.WorkSlices)
             {
+                workSlice.Dependencies ??= [];
                 workSlice.Locations ??= [];
                 workSlice.TouchSet ??= new MigrationTodoTouchSet();
                 workSlice.TouchSet.Paths ??= [];

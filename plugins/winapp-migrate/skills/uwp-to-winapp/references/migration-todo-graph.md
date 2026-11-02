@@ -9,15 +9,24 @@ Schema `1.6` keeps deterministic migration planning in Tier 1. Every TODO has:
   `completionChecks`;
 - affected states/features, expected touch paths/project items, and conflict
   keys;
-- stable `dependsOn` edges and optional path-based `workSlices`.
+- stable canonical IDs plus schedulable `workSlices`.
 
-`todoGraph.edges` records prerequisite-to-dependent edges.
-`todoGraph.executionWaves` is the deterministic topological view: TODOs in one
-wave have no dependency edge between them and may be considered for later
-parallel scheduling after their touch-set conflict keys are checked. The
-current product does not launch parallel benchmark or migration work.
+Every work slice has a `preparation`, `integration`, or `verification` stage.
+Its typed dependencies refer to stable work-item IDs. `todoGraph.edges` records
+those prerequisite-to-dependent relationships, while `todoGraph.workItems`
+retains the canonical parent TODO ID and effective touch set.
 
-An unknown dependency, duplicate ID, self-edge, or cycle makes
+The planner packs ready work items into deterministic waves only when their
+touch paths, project items, and conflict keys do not overlap. Conflicting items
+are serialized. Preparation is not blocked by a later integration or
+verification prerequisite: for example, startup/resource preparation,
+dependency preparation, and manifest declaration preparation can proceed
+together even though their integrated result is verified later. The current
+product reports this plan but does not spawn agents or benchmark work.
+
+An unknown node or dependency, duplicate work-item ID, invalid
+classification/status confidence, self-edge, cycle, or unschedulable stage or
+touch conflict makes
 `todoGraph.status` `invalid`, records a typed issue, and emits no execution
 waves. Do not flatten or ignore the invalid graph. Correct the mechanically
 owned producer or restore the missing canonical TODO, then rerun
@@ -30,61 +39,64 @@ that strategy appear applicable.
 
 ## Generated example
 
-For a source with a project file plus preserved `App.xaml` and `App.xaml.cs`,
-this generated report excerpt orders dependency compatibility before startup
-integration, then manifest activation:
+For a source with dependencies, preserved `App` files, and manifest activation,
+the generated plan begins with parallel preparation, serializes the two
+`App.xaml.cs` integrations, then emits one integrated verification item:
 
 ```json
 {
-  "todos": [
-    {
-      "id": "UWMIG003",
-      "dependsOn": [],
-      "guidance": {
-        "reasonCode": "source-dependency-contract-requires-decision",
-        "facts": [
-          {
-            "id": "source-package-reference-count",
-            "authority": "authoritative-detection"
-          }
-        ],
-        "classification": {
-          "status": "provisional"
-        },
-        "candidateStrategiesExhaustive": false
-      },
-      "touchSet": {
-        "conflictKeys": [
-          "dependency-contract",
-          "target-project-graph"
-        ]
-      }
-    },
-    {
-      "id": "UWMIG001",
-      "dependsOn": [ "UWMIG003" ]
-    },
-    {
-      "id": "UWMIG002",
-      "dependsOn": [ "UWMIG001" ]
-    }
-  ],
   "todoGraph": {
     "status": "valid",
-    "edges": [
+    "workItems": [
       {
-        "prerequisiteId": "UWMIG003",
-        "dependentId": "UWMIG001"
+        "id": "UWMIG001:prepare-startup-resources",
+        "todoId": "UWMIG001",
+        "stage": "preparation"
       },
       {
-        "prerequisiteId": "UWMIG001",
-        "dependentId": "UWMIG002"
+        "id": "UWMIG002:prepare-manifest-declarations",
+        "todoId": "UWMIG002",
+        "stage": "preparation"
+      },
+      {
+        "id": "UWMIG003:prepare-dependencies",
+        "todoId": "UWMIG003",
+        "stage": "preparation"
       }
     ],
     "executionWaves": [
-      { "index": 0, "todoIds": [ "UWMIG003" ] },
-      { "index": 1, "todoIds": [ "UWMIG001" ] },
-      { "index": 2, "todoIds": [ "UWMIG002" ] }
+      {
+        "index": 0,
+        "stage": "preparation",
+        "workItemIds": [
+          "UWMIG001:prepare-startup-resources",
+          "UWMIG002:prepare-manifest-declarations",
+          "UWMIG003:prepare-dependencies"
+        ]
+      },
+      {
+        "index": 1,
+        "stage": "integration",
+        "workItemIds": [
+          "UWMIG001:integrate-startup-resources",
+          "UWMIG002:integrate-manifest-declarations",
+          "UWMIG003:integrate-dependencies"
+        ]
+      },
+      {
+        "index": 2,
+        "stage": "integration",
+        "workItemIds": [
+          "UWMIG002:integrate-activation-routing"
+        ]
+      },
+      {
+        "index": 3,
+        "stage": "verification",
+        "workItemIds": [
+          "UWMIG003:verify-integrated-target"
+        ]
+      }
     ],
     "issues": []
   }

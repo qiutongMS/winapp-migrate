@@ -35,7 +35,6 @@ public static partial class MechanicalMigration
                     "application-startup",
                     "application-resources"
                 ],
-                DependsOn = hasSourceProject ? ["UWMIG003"] : [],
                 TouchSet = new MigrationTodoTouchSet
                 {
                     Paths =
@@ -51,16 +50,31 @@ public static partial class MechanicalMigration
                         "startup-bootstrap"
                     ]
                 },
+                WorkSlices =
+                    MigrationTodoWorkPlanFactory.AppResources(locations),
                 Guidance = new MigrationRepairGuidance
                 {
                     ReasonCode = "preserved-uwp-app-contract-requires-merge",
-                    Facts = locations.Select(location => new MigrationGuidanceFact
+                    Facts = locations.Select(location =>
                     {
-                        Id =
-                            $"preserved-startup-reference:{location.Path}",
-                        Summary =
-                            $"The source startup/resource file was preserved as {location.Path} instead of overwriting the WinUI bootstrap.",
-                        Locations = [location]
+                        var resourceFile = location.Path.EndsWith(
+                            "App.xaml.reference",
+                            StringComparison.OrdinalIgnoreCase);
+                        return new MigrationGuidanceFact
+                        {
+                            Id =
+                                $"preserved-startup-reference:{location.Path}",
+                            Summary = resourceFile
+                                ? $"The source application resource file is preserved at {location.Path}; its keys and merged dictionaries must be mapped into target App.xaml."
+                                : $"The source startup implementation is preserved at {location.Path}; its launch, activation, and window side effects must be mapped into target App.xaml.cs/MainWindow.",
+                            Locations = [location]
+                        };
+                    }).Append(new MigrationGuidanceFact
+                    {
+                        Id = "target-startup-ownership",
+                        Summary = hasSourceProject
+                            ? "The target template owns App.xaml, App.xaml.cs, MainWindow.xaml, and MainWindow.xaml.cs; dependency preparation may proceed independently, while integrated build verification waits for dependency integration."
+                            : "The target template owns App.xaml, App.xaml.cs, MainWindow.xaml, and MainWindow.xaml.cs."
                     }).ToList(),
                     Classification = new MigrationGuidanceClassification
                     {
@@ -179,6 +193,77 @@ public static partial class MechanicalMigration
                     ".uwp-source",
                     Path.GetFileName(path) + ".reference"))
             }).ToList();
+            var facts = new List<MigrationGuidanceFact>();
+            foreach (var (package, index) in dependencyAnalysis.PackageReferences
+                .OrderBy(package => package.SourceProject, StringComparer.Ordinal)
+                .ThenBy(package => package.Id, StringComparer.Ordinal)
+                .ThenBy(package => package.Version, StringComparer.Ordinal)
+                .Select((package, index) => (package, index)))
+            {
+                facts.Add(new MigrationGuidanceFact
+                {
+                    Id = $"package-reference:{index}",
+                    Summary =
+                        $"Package '{package.Id}' version '{package.Version ?? "<unspecified>"}' is declared by '{package.SourceProject}' with resolution '{package.ResolutionStatus}' and compatibility '{package.CompatibilityStatus}'"
+                        + (string.IsNullOrWhiteSpace(package.Condition)
+                            ? "."
+                            : $" under condition '{package.Condition}'."),
+                    Locations =
+                    [
+                        new()
+                        {
+                            Path = package.SourceProject,
+                            Line = package.Line
+                        }
+                    ]
+                });
+            }
+            foreach (var (projectReference, index) in dependencyAnalysis.ProjectReferences
+                .OrderBy(reference => reference.SourceProject, StringComparer.Ordinal)
+                .ThenBy(reference => reference.Include, StringComparer.Ordinal)
+                .Select((reference, index) => (reference, index)))
+            {
+                facts.Add(new MigrationGuidanceFact
+                {
+                    Id = $"project-reference:{index}",
+                    Summary =
+                        $"Project reference '{projectReference.Include}' from '{projectReference.SourceProject}' resolves as '{projectReference.ResolvedPath ?? "<unresolved>"}' with resolution '{projectReference.ResolutionStatus}', compatibility '{projectReference.CompatibilityStatus}', and outsideSourceRoot={projectReference.OutsideSourceRoot.ToString().ToLowerInvariant()}.",
+                    Locations =
+                    [
+                        new()
+                        {
+                            Path = projectReference.SourceProject,
+                            Line = projectReference.Line
+                        }
+                    ]
+                });
+            }
+            foreach (var (issue, index) in dependencyAnalysis.Issues
+                .OrderBy(issue => issue.SourceProject, StringComparer.Ordinal)
+                .ThenBy(issue => issue.Kind, StringComparer.Ordinal)
+                .Select((issue, index) => (issue, index)))
+            {
+                facts.Add(new MigrationGuidanceFact
+                {
+                    Id = $"dependency-inspection-issue:{index}",
+                    Summary =
+                        $"Dependency inspection issue '{issue.Kind}' affects '{issue.SourceProject}': {issue.Reason}",
+                    Locations =
+                    [
+                        new() { Path = issue.SourceProject }
+                    ]
+                });
+            }
+            if (facts.Count == 0)
+            {
+                facts.Add(new MigrationGuidanceFact
+                {
+                    Id = "source-project-inventory",
+                    Summary =
+                        $"Dependency analysis inspected {dependencyAnalysis.Projects.Count} source project(s) and found no package/project references or inspection issues.",
+                    Locations = locations
+                });
+            }
             return new MigrationTodo
             {
                 Id = "UWMIG003",
@@ -216,26 +301,12 @@ public static partial class MechanicalMigration
                         "target-project-graph"
                     ]
                 },
+                WorkSlices =
+                    MigrationTodoWorkPlanFactory.Dependencies(locations),
                 Guidance = new MigrationRepairGuidance
                 {
                     ReasonCode = "source-dependency-contract-requires-decision",
-                    Facts =
-                    [
-                        new()
-                        {
-                            Id = "source-package-reference-count",
-                            Summary =
-                                $"The source dependency graph contains {dependencyAnalysis.PackageReferences.Count} package reference(s).",
-                            Locations = locations
-                        },
-                        new()
-                        {
-                            Id = "source-project-reference-count",
-                            Summary =
-                                $"The source dependency graph contains {dependencyAnalysis.ProjectReferences.Count} project reference(s) across {dependencyAnalysis.Projects.Count} project(s), with {dependencyAnalysis.Issues.Count} inspection issue(s).",
-                            Locations = locations
-                        }
-                    ],
+                    Facts = facts,
                     Classification = new MigrationGuidanceClassification
                     {
                         Status = dependencyAnalysis.Issues.Count == 0
@@ -359,8 +430,7 @@ public static partial class MechanicalMigration
             string targetRoot,
             IReadOnlyList<string> manifests,
             List<string> activationCategories,
-            MigrationActivationAnalysis activationAnalysis,
-            bool dependsOnAppResources)
+            MigrationActivationAnalysis activationAnalysis)
         {
             var locations = manifests.Select(path => new MigrationLocation
             {
@@ -388,7 +458,6 @@ public static partial class MechanicalMigration
                         .Select(category => $"activation:{category}")
                         .ToList(),
                 AffectedFeatures = features,
-                DependsOn = dependsOnAppResources ? ["UWMIG001"] : [],
                 TouchSet = new MigrationTodoTouchSet
                 {
                     Paths =
@@ -402,11 +471,13 @@ public static partial class MechanicalMigration
                         "startup-bootstrap"
                     ]
                 },
+                WorkSlices =
+                    MigrationTodoWorkPlanFactory.Manifest(locations),
                 Guidance = new MigrationRepairGuidance
                 {
                     ReasonCode = "manifest-contract-requires-desktop-review",
-                    Facts =
-                    [
+                    Facts = new List<MigrationGuidanceFact>
+                    {
                         new()
                         {
                             Id = "preserved-source-manifest",
@@ -421,7 +492,27 @@ public static partial class MechanicalMigration
                                 $"Activation analysis found {activationAnalysis.Contracts.Count} contract(s), {activationAnalysis.Issues.Count} issue(s), and status '{activationAnalysis.Status}'.",
                             Locations = locations
                         }
-                    ],
+                    }.Concat(activationAnalysis.Contracts
+                        .OrderBy(contract => contract.Id, StringComparer.Ordinal)
+                        .Select(contract => new MigrationGuidanceFact
+                        {
+                            Id = $"activation-contract:{contract.Id}",
+                            Summary =
+                                $"Activation contract '{contract.Id}' category '{contract.Category}' uses source schema '{contract.SourceSchema}', migration status '{contract.MigrationStatus}', target schema '{contract.TargetSchema ?? "<none>"}', and verification status '{contract.VerificationStatus}'.",
+                            Locations = [contract.SourceLocation]
+                        }))
+                        .Concat(activationAnalysis.Issues
+                            .OrderBy(issue => issue.Kind, StringComparer.Ordinal)
+                            .Select((issue, index) => new MigrationGuidanceFact
+                            {
+                                Id = $"activation-inspection-issue:{index}",
+                                Summary =
+                                    $"Activation inspection issue '{issue.Kind}' with severity '{issue.Severity}': {issue.Reason}",
+                                Locations = issue.Location is null
+                                    ? [.. locations]
+                                    : [issue.Location]
+                            }))
+                        .ToList(),
                     Classification = new MigrationGuidanceClassification
                     {
                         Status = activationAnalysis.Issues.Count == 0
