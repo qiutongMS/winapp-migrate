@@ -1525,25 +1525,42 @@ internal static class MigrationTodoGraphBuilder
             if (todo.Locations.Count >= WorkSliceLocationThreshold)
             {
                 foreach (var group in todo.Locations
-                    .GroupBy(location => location.Path, StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+                    .Select(location => new
+                    {
+                        Location = location,
+                        DisplayPath = NormalizePlannerPath(location.Path),
+                        Identity = WindowsPathIdentity(location.Path)
+                    })
+                    .GroupBy(entry => entry.Identity, StringComparer.Ordinal)
+                    .OrderBy(group => group.Key, StringComparer.Ordinal))
                 {
-                    var normalizedPath = group.Key.Replace('\\', '/');
+                    var displayPath = group
+                        .Select(entry => entry.DisplayPath)
+                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(path => path, StringComparer.Ordinal)
+                        .First();
                     todo.WorkSlices.Add(new MigrationTodoWorkSlice
                     {
-                        Id = $"{todo.Id}:path:{StableToken(normalizedPath)}",
+                        Id = $"{todo.Id}:path:{StableToken(group.Key)}",
                         Summary =
-                            $"Resolve {todo.Category} work in {normalizedPath}",
+                            $"Resolve {todo.Category} work in {displayPath}",
                         Stage = "preparation",
                         Locations = group
+                            .Select(entry => entry.Location)
                             .OrderBy(location => location.Line)
+                            .ThenBy(
+                                location => NormalizePlannerPath(location.Path),
+                                StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(
+                                location => location.Path,
+                                StringComparer.Ordinal)
                             .ToList(),
                         TouchSet = new MigrationTodoTouchSet
                         {
-                            Paths = [normalizedPath],
+                            Paths = [displayPath],
                             ConflictKeys =
                             [
-                                $"path:{normalizedPath.ToLowerInvariant()}"
+                                $"path:{group.Key.ToLowerInvariant()}"
                             ]
                         }
                     });
@@ -1694,4 +1711,7 @@ internal static class MigrationTodoGraphBuilder
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(digest.AsSpan(0, 6)).ToLowerInvariant();
     }
+
+    private static string WindowsPathIdentity(string path) =>
+        NormalizePlannerPath(path).ToUpperInvariant();
 }

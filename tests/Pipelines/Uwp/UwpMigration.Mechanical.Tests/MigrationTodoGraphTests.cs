@@ -107,6 +107,54 @@ public sealed class MigrationTodoGraphTests
     }
 
     [TestMethod]
+    public void Build_BroadTodoCanonicalizesWindowsPathAliasesBeforeSlicing()
+    {
+        string[] aliases =
+        [
+            @"Views\A.xaml.cs",
+            "views/a.xaml.cs",
+            "VIEWS/./A.xaml.cs",
+            "Views/Sub/../A.xaml.cs"
+        ];
+        var locations = Enumerable.Range(1, 12)
+            .Select(index => new MigrationLocation
+            {
+                Path = aliases[(index - 1) % aliases.Length],
+                Line = index
+            })
+            .ToList();
+        var forward = Todo("UWMIG007");
+        forward.Category = "windowing";
+        forward.Locations = locations;
+        var reverse = Todo("UWMIG007");
+        reverse.Category = "windowing";
+        reverse.Locations = locations.AsEnumerable().Reverse().ToList();
+
+        var forwardGraph = MigrationTodoGraphBuilder.Build([forward]);
+        var reverseGraph = MigrationTodoGraphBuilder.Build([reverse]);
+
+        Assert.AreEqual("valid", forwardGraph.Status);
+        Assert.AreEqual("valid", reverseGraph.Status);
+        Assert.HasCount(1, forward.WorkSlices);
+        Assert.HasCount(1, forwardGraph.WorkItems);
+        Assert.HasCount(1, forwardGraph.ExecutionWaves);
+        Assert.HasCount(1, forwardGraph.ExecutionWaves[0].WorkItemIds);
+        Assert.IsFalse(forwardGraph.Issues.Any(issue =>
+            issue.Code == "duplicate-work-item-id"));
+        CollectionAssert.AreEqual(
+            Enumerable.Range(1, 12).Select(line => (int?)line).ToArray(),
+            forward.WorkSlices[0].Locations
+                .Select(location => location.Line)
+                .ToArray());
+        Assert.AreEqual(
+            forward.WorkSlices[0].Id,
+            reverse.WorkSlices[0].Id);
+        Assert.AreEqual(
+            forward.WorkSlices[0].TouchSet.Paths.Single(),
+            reverse.WorkSlices[0].TouchSet.Paths.Single());
+    }
+
+    [TestMethod]
     public void Build_BroadTodoPathSlicesAreParallelWorkItems()
     {
         var locations = Enumerable.Range(1, 12)
@@ -127,13 +175,16 @@ public sealed class MigrationTodoGraphTests
         Assert.AreEqual("valid", first.Status);
         Assert.AreEqual("valid", second.Status);
         Assert.HasCount(2, todo.WorkSlices);
+        Assert.AreNotEqual(sliceIds[0], sliceIds[1]);
+        Assert.IsFalse(first.Issues.Any(issue =>
+            issue.Code == "duplicate-work-item-id"));
         CollectionAssert.AreEqual(
             sliceIds,
             todo.WorkSlices.Select(slice => slice.Id).ToArray());
         AssertWave(
             first.ExecutionWaves.Single(),
             "preparation",
-            sliceIds);
+            sliceIds.Order(StringComparer.Ordinal).ToArray());
         Assert.IsTrue(todo.WorkSlices
             .SelectMany(slice => slice.TouchSet.ConflictKeys)
             .All(key => key.StartsWith("path:", StringComparison.Ordinal)));
