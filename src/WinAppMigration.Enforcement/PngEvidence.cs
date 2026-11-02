@@ -16,11 +16,25 @@ public enum PngInformation
 
 public static class PngEvidence
 {
+    internal sealed record Raster(int Width, int Height, uint[] Pixels);
     private static readonly (int X, int Y, int Dx, int Dy)[] Adam7 =
         [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
     private static readonly (int X, int Y, int Dx, int Dy)[] Noninterlaced = [(0, 0, 1, 1)];
 
-    public static PngInformation Classify(string path, CancellationToken cancellationToken = default)
+    public static PngInformation Classify(string path, CancellationToken cancellationToken = default) =>
+        ClassifyCore(path, null, null, cancellationToken);
+
+    internal static Raster? ReadRaster(string path)
+    {
+        Raster? raster = null;
+        var information = ClassifyCore(path,
+            (width, height) => raster = new Raster(width, height, new uint[width * height]),
+            (x, y, color) => raster!.Pixels[y * raster.Width + x] = color, default);
+        return information is PngInformation.Invalid or PngInformation.ValidUnclassified ? null : raster;
+    }
+
+    private static PngInformation ClassifyCore(string path,
+        Action<int, int>? dimensions, Action<int, int, uint>? pixel, CancellationToken cancellationToken)
     {
         try
         {
@@ -118,6 +132,7 @@ public static class PngEvidence
                 return PngInformation.Invalid;
             if (bitDepth != 8 || interlace != 0)
                 return PngInformation.ValidUnclassified;
+            dimensions?.Invoke(width, height);
             compressed.Position = 0;
             using var decoder = new ZLibStream(compressed, CompressionMode.Decompress);
             var rowSize = checked(width * channels);
@@ -170,6 +185,7 @@ public static class PngEvidence
                     g = (g * alpha + 255 * (255 - alpha)) / 255;
                     b = (b * alpha + 255 * (255 - alpha)) / 255;
                     var key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+                    pixel?.Invoke(x / channels, y, (uint)((r << 16) | (g << 8) | b));
                     colors[key] = colors.GetValueOrDefault(key) + 1;
                 }
                 (previous, current) = (current, previous);

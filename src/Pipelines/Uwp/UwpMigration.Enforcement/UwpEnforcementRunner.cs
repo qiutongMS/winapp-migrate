@@ -38,6 +38,21 @@ public sealed class UwpEnforcementRunner
         CancellationToken cancellationToken = default) =>
         AssessAsync(target, WindowsWindowOwnerResolver.Instance, maximumSignatureAttempts, cancellationToken);
 
+    public static async Task<RequiredStateContractDocument> SealContractAsync(DirectoryInfo target,
+        bool extend = false, bool upgradePlan = false, CancellationToken cancellationToken = default)
+    {
+        await using var enforcementLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken);
+        var report = await MigrationReportStore.LoadAsync(Path.Combine(target.FullName, "migration-report.json"), cancellationToken);
+        var (plan, error) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(target, report.Validation.StatePlan, cancellationToken);
+        if (plan is null) throw new InvalidDataException(error ?? "A state plan is required.");
+        if (plan.SchemaVersion == "1.0" && upgradePlan)
+            plan.SchemaVersion = StatePlanDocument.CurrentSchemaVersion;
+        var document = await RequiredStateContracts.EstablishAsync(target, plan, extend, cancellationToken);
+        if (upgradePlan)
+            await EnforcementStore.WriteAtomicAsync(target, report.Validation.StatePlan, plan, cancellationToken);
+        return document;
+    }
+
     public static async Task<EnforcementSnapshot> AssessAsync(
         DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver,
         int maximumSignatureAttempts = 2, CancellationToken cancellationToken = default)
@@ -645,6 +660,7 @@ public sealed class UwpEnforcementRunner
         }
         var stateContractFingerprint = plannedState is null
             ? null : StateClosureProtocol.ContractFingerprint(workspace.Target, plannedState);
+        var requiredHash = plannedState is null ? null : RequiredStateContracts.Require(workspace.Target, plannedState, _timeProvider.GetUtcNow());
         long? windowHandle = null;
         int? windowProcessId = null;
         DateTimeOffset? windowProcessStartedAt = null;
@@ -718,6 +734,7 @@ public sealed class UwpEnforcementRunner
                 completedAt.UtcDateTime);
         var probe = new UiDevelopmentProbe
         {
+            RequiredContractHash = requiredHash,
             OperationId = snapshot.Workflow!.Operations[^1].Id,
             Id = id,
             TargetFingerprint = workspace.Fingerprint,
@@ -810,12 +827,14 @@ public sealed class UwpEnforcementRunner
         StateClosureSeal.Sign(attestation);
         var path = StateClosureProtocol.AttestationPath(state.Id);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, path, attestation, cancellationToken);
-        state.Target.Status = "passed";
-        state.Target.Reason = null;
+        var parityVerified = attestation.VerificationLevel == StateVerificationLevel.ParityVerified;
+        state.Target.Status = parityVerified ? "passed" : "unverified";
+        state.Target.VerificationLevel = attestation.VerificationLevel;
+        state.Target.Reason = parityVerified ? null : string.Join(" ", attestation.Issues);
         state.Target.Attestation = path;
         state.Target.Evidence = attestation.Evidence;
-        state.Comparison.Status = "verified";
-        state.Comparison.Reason = null;
+        state.Comparison.Status = parityVerified ? "verified" : "unverified";
+        state.Comparison.Reason = state.Target.Reason;
         var report = await MigrationReportStore.LoadAsync(workspace.ReportPath, cancellationToken);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, report.Validation.StatePlan, plan, cancellationToken);
         if (workspace.Input.FindingLedger is
@@ -1510,6 +1529,7 @@ public sealed class UwpEnforcementRunner
                 FirstNonEmpty(parsed.Error, result.Error, result.Output));
         var attestation = new BuildAttestation
         {
+            RequiredContractHash = workspace.Input.RequiredContractHash,
             StandardOutputSha256 = StateClosureProtocol.FileHash(workspace.Target, stdout),
             StandardErrorSha256 = StateClosureProtocol.FileHash(workspace.Target, stderr),
             OperationId = snapshot.Workflow!.Operations[^1].Id,
@@ -1598,6 +1618,7 @@ public sealed class UwpEnforcementRunner
                 FirstNonEmpty(error, result.Error, result.Output));
         var attestation = new ReplayAttestation
         {
+            RequiredContractHash = workspace.Input.RequiredContractHash,
             StandardOutputSha256 = StateClosureProtocol.FileHash(workspace.Target, stdout),
             StandardErrorSha256 = StateClosureProtocol.FileHash(workspace.Target, stderr),
             OperationId = snapshot.Workflow!.Operations[^1].Id,
@@ -1747,6 +1768,7 @@ public sealed class UwpEnforcementRunner
         CancellationToken cancellationToken,
         TimeProvider? timeProvider = null, IWindowOwnerResolver? windowOwnerResolver = null)
     {
+        using var verification = StateClosureSeal.BeginVerification();
         if (maximumSignatureAttempts is < 1 or > 10)
         {
             throw new ArgumentOutOfRangeException(
@@ -1807,6 +1829,14 @@ public sealed class UwpEnforcementRunner
                 target,
                 EnforcementStore.FindingLedgerPath,
                 cancellationToken);
+        string? requiredHash = null;
+        string? requiredError = null;
+        if (statePlan is not null)
+        {
+            try { requiredHash = RequiredStateContracts.Freeze(target, statePlan); }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+            { requiredError = exception.Message; }
+        }
         var (build, buildError) =
             await EnforcementStore.TryLoadAsync<BuildAttestation>(
                 target,
@@ -1873,6 +1903,8 @@ public sealed class UwpEnforcementRunner
                 cancellationToken);
         var input = new EnforcementEvaluationInput
         {
+            RequiredContractHash = requiredHash,
+            RequiredContractError = requiredError,
             WindowOwnerResolver = windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
             TargetRoot = target,
             TargetFingerprint = fingerprint,

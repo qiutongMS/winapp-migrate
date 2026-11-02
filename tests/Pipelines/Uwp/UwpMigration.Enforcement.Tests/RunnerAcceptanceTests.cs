@@ -1125,7 +1125,7 @@ public sealed partial class RunnerAcceptanceTests
         internal string ProjectPath { get; }
 
         internal static async Task<RunnerFixture> CreateAsync(
-            bool analyzer = true)
+            bool analyzer = true, bool unstarted = false)
         {
             var root = TestDirectories.Create("enforcement-runner-");
             var projectPath = System.IO.Path.Combine(
@@ -1162,21 +1162,24 @@ public sealed partial class RunnerAcceptanceTests
                 }
             };
             report.MechanicalVerification.Status = "passed";
-            await WritePngAsync(
-                System.IO.Path.Combine(
-                    root.FullName,
-                    ".migration-evidence",
-                    "states",
-                    "state-1",
-                    "source.png"));
-            await EnforcementStore.WriteTextAtomicAsync(
-                root,
-                ".migration-evidence/states/state-1/source-ui.json",
-                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
-            await EnforcementStore.WriteTextAtomicAsync(
-                root,
-                ".migration-evidence/states/state-1/source-action.json",
-                """{"success":true,"message":"The action completed."}""");
+            if (!unstarted)
+            {
+                await WritePngAsync(
+                    System.IO.Path.Combine(
+                        root.FullName,
+                        ".migration-evidence",
+                        "states",
+                        "state-1",
+                        "source.png"));
+                await EnforcementStore.WriteTextAtomicAsync(
+                    root,
+                    ".migration-evidence/states/state-1/source-ui.json",
+                    """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
+                await EnforcementStore.WriteTextAtomicAsync(
+                    root,
+                    ".migration-evidence/states/state-1/source-action.json",
+                    """{"success":true,"message":"The action completed."}""");
+            }
             await File.WriteAllTextAsync(
                 System.IO.Path.Combine(root.FullName, "migration-report.json"),
                 JsonSerializer.Serialize(
@@ -1208,8 +1211,8 @@ public sealed partial class RunnerAcceptanceTests
                             ],
                             Source = new StateObservation
                             {
-                                Status = "captured",
-                                Evidence =
+                                Status = unstarted ? "not-run" : "captured",
+                                Evidence = unstarted ? [] :
                                 [
                                     ".migration-evidence/states/state-1/source.png",
                                     ".migration-evidence/states/state-1/source-action.json",
@@ -1229,6 +1232,9 @@ public sealed partial class RunnerAcceptanceTests
                         }
                     ]
                 });
+            var (initialPlan, _) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(root, report.Validation.StatePlan);
+            if (!unstarted) ContractTestAuthority.Prepare(root, initialPlan!);
+            await EnforcementStore.WriteAtomicAsync(root, report.Validation.StatePlan, initialPlan);
             return new RunnerFixture(root, projectPath);
         }
 

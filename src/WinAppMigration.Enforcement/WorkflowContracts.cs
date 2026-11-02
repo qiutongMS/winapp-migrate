@@ -229,6 +229,8 @@ public sealed record WorkflowProgressEvent
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowOperationRecord
 {
+    [JsonPropertyName("requiredContractHash")]
+    public string? RequiredContractHash { get; init; }
     [JsonPropertyName("id")]
     public string? Id { get; set; }
     [JsonPropertyName("seal")]

@@ -19,12 +19,15 @@ public static class EnforcementEvaluator
         EnforcementEvaluationInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
+        using var verification = StateClosureSeal.BeginVerification();
         input = ReopenInvalidCompletion(input);
         if (WorkflowDispositions.Terminal(input) is { } terminal)
         {
             var frozenStage = input.Progress?.Stage ?? WorkflowStage.SourceOracle;
             return new EnforcementSnapshot
             {
+                StateVerifications = input.StatePlan?.States.Select(state => StateClosureProtocol.AssessLevel(
+                    input.TargetRoot, state, input.Replay, input.GeneratedAt, input.WindowOwnerResolver)).ToList() ?? [],
                 GeneratedAt = input.GeneratedAt,
                 Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(frozenStage.ToString()),
                 Stage = frozenStage, ActiveSlice = input.Progress?.ActiveSliceId,
@@ -40,6 +43,8 @@ public static class EnforcementEvaluator
             };
         }
         var gates = new List<EnforcementGate>();
+        AddGate(gates, "required-contract", input.RequiredContractHash is not null,
+            input.RequiredContractError ?? "Required contract is locally anchored and immutable.");
         AddGate(
             gates,
             "mechanical",
@@ -242,6 +247,8 @@ public static class EnforcementEvaluator
         var stage = workflow?.Progress.Stage ?? input.Progress?.Stage ?? WorkflowStage.SourceOracle;
         var snapshot = new EnforcementSnapshot
         {
+            StateVerifications = input.StatePlan?.States.Select(state => StateClosureProtocol.AssessLevel(
+                input.TargetRoot, state, replayFresh ? input.Replay : null, input.GeneratedAt, input.WindowOwnerResolver)).ToList() ?? [],
             GeneratedAt = input.GeneratedAt,
             Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(stage.ToString()),
             Stage = stage,
@@ -267,6 +274,7 @@ public static class EnforcementEvaluator
         if (input.ReportClosureReady &&
             (input.PersistedDisposition is not { Kind: "complete", Terminal: true } &&
              input.Progress?.Disposition is not { Kind: "complete", Terminal: true } ||
+             input.RequiredContractHash is not null &&
              input.MechanicalReady && input.AnalyzerReferencePresent && input.AnalyzerPrivateAssets &&
              ReplayIsFresh(input, BuildIsFresh(input, ArtifactsValid(input, artifactError))) &&
              ValidateStatePlan(input.StatePlan, input.StatePlanError, out _) &&
@@ -478,7 +486,7 @@ public static class EnforcementEvaluator
             reason = "The state plan does not exist.";
             return false;
         }
-        if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion)
+        if (plan.SchemaVersion is not ("1.0" or StatePlanDocument.CurrentSchemaVersion))
         {
             reason =
                 $"Unsupported state-plan schema {plan.SchemaVersion}; expected {StatePlanDocument.CurrentSchemaVersion}.";
@@ -511,7 +519,7 @@ public static class EnforcementEvaluator
                 return false;
         }
 
-        reason = $"State plan schema 1.0 contains {plan.States.Count} unique state(s).";
+        reason = $"State plan schema {plan.SchemaVersion} contains {plan.States.Count} unique state(s).";
         return true;
     }
 

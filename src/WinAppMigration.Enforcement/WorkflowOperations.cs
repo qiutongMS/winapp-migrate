@@ -173,6 +173,7 @@ public static class WorkflowOperations
         unit.Operations.Increment(operation);
         progress.Operations.Add(new WorkflowOperationRecord
         {
+            RequiredContractHash = input.RequiredContractHash,
             Id = Guid.NewGuid().ToString("N"),
             Kind = operation, Stage = unit.Stage, SliceId = unit.SliceId,
             TargetFingerprint = input.TargetFingerprint, RecordedAt = now,

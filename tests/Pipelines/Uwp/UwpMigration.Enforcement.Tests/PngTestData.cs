@@ -9,6 +9,31 @@ namespace UwpMigration.Enforcement.Tests;
 
 internal static class PngTestData
 {
+    internal static byte[] Image(int width, int height, Func<int, int, (byte R, byte G, byte B)> pixel)
+    {
+        using var output = new MemoryStream();
+        output.Write(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
+        var header = new byte[13];
+        BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0, 4), width);
+        BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(4, 4), height);
+        header[8] = 8; header[9] = 2;
+        WriteChunk(output, "IHDR"u8, header);
+        using var compressed = new MemoryStream();
+        using (var encoder = new ZLibStream(compressed, CompressionLevel.SmallestSize, leaveOpen: true))
+            for (var y = 0; y < height; y++)
+            {
+                encoder.WriteByte(0);
+                for (var x = 0; x < width; x++)
+                {
+                    var value = pixel(x, y);
+                    encoder.Write([value.R, value.G, value.B]);
+                }
+            }
+        WriteChunk(output, "IDAT"u8, compressed.ToArray());
+        WriteChunk(output, "IEND"u8, []);
+        return output.ToArray();
+    }
+
     internal static byte[] Create(bool uniform = false, int size = 64, int bitDepth = 8, bool interlaced = false)
     {
         using var output = new MemoryStream();

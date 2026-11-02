@@ -42,6 +42,7 @@ winapp-migrate uwp source run <target>
 winapp-migrate uwp source diagnose <target>
 winapp-migrate uwp source capture <target> -- <winapp-ui-arguments>
 winapp-migrate uwp closure assess <target>
+winapp-migrate uwp closure seal-contract <target> [--extend] [--upgrade-plan]
 winapp-migrate uwp closure attest <target>
 winapp-migrate uwp closure diagnose <target>
 winapp-migrate uwp closure capture <target> -- <winapp-ui-arguments>
@@ -94,7 +95,14 @@ per-probe manifest while returning a bounded receipt; `--raw-output` restores
 inline forwarding. During closure, one fresh state-intent evidence file may
 authorize a sequence of distinct UI commands for the same fingerprint and
 canonical replay, while an immediate exact repeat is rejected.
-To close a state, declare its machine-checkable `assertions` before capture,
+Before source capture or the first assessment, establish a schema `2.0`
+required contract with `closure seal-contract`. The independently anchored
+required hash freezes action/assertion IDs, definitions and order; only
+append-only pre-start extensions are allowed. Mutable captured legacy plans
+are provisional, not verified. See [required contracts and ROI verification](plugins/winapp-migrate/skills/uwp-to-winapp/references/state-verification-contracts.md).
+
+To close a state, declare its machine-checkable `assertions` and ordered
+required action witnesses before capture,
 use `capture --state <id>` for every probe in its ordered sequence, then pass
 the canonical target-relative receipt paths to `record-state`. State-bound
 inspect, screenshot, and action commands require exactly one explicit
@@ -119,9 +127,10 @@ not an OS security boundary against arbitrary malicious code running as that
 user (which can use the user's signing key).
 
 Portable checks against an embedded key establish signature integrity only,
-not locally trusted provenance or closure success. Moving a bundle under the
-same user can retain trust, but another user/machine does not automatically
-inherit the local trust anchor. Closure verification also re-resolves every
+not locally trusted provenance or closure success. A required contract must
+also have been established for the current workspace before source/workflow
+activity; copying a signed contract or bundle does not create that association.
+Another user/machine does not inherit the local trust anchor. Closure verification also re-resolves every
 bound HWND and process start time: `record-state`, `finalize`, and assessments
 fail closed when the original window/process is gone or reused. Historical
 signature integrity is not a substitute for that live verification. Legacy
@@ -150,7 +159,10 @@ The known `element` member is accepted and validated as WinApp's typed
 `UiElement` detail, without permitting verdict fields or malformed collections.
 Native `"True"`/`"False"` strings and expansion enums normalize to their
 typed inspect equivalents; invented verdict fields are never assertions.
-It does not infer visual parity, timing, lifecycle, or other prose claims.
+Visual parity requires an immutable semantic ROI contract and a supported
+paired source/target comparison. Informative chrome cannot rescue a blank
+image/card region, and restoration requires an explicit return action plus its
+post-return comparison. Timing, lifecycle and unmodeled prose claims are not inferred.
 Unsupported assertions remain unverified. Low-information PNGs are classified
 rather than treated as visual proof. Legal 16-bit/interlaced images whose
 information content is not analyzed are `ValidUnclassified`, not corrupt:
@@ -170,6 +182,9 @@ authorize them.
 Report synchronization also compares every source/target state's ID, status,
 and reason with the derived plan. Matching aggregate statuses or IDs alone
 cannot hide failed/blocked or contradictory per-state observations.
+`evidence-valid`, `contract-satisfied`, and `parity-verified` are distinct
+product-rederived levels. Only parity-verified states can complete mapped
+TODOs/findings or final closure.
 See [the assertion contract and recording protocol](plugins/winapp-migrate/skills/uwp-to-winapp/references/behavioral-validation.md).
 The gateway resolves WinApp CLI from `--winapp`,
 `WINAPP_MIGRATE_WINAPP_PATH`, or PATH, in that order, so raw `winapp.exe` need
@@ -237,7 +252,7 @@ satisfy build, replay, parity, or finalization gates. Raw WinApp CLI output cann
 artifact. Source baseline capture uses `uwp source`; target closure uses
 `uwp closure`.
 
-State-plan schema `1.0` additively accepts `slice`, `dependencies` (slice IDs),
+State-plan schema `2.0` retains `slice`, `dependencies` (slice IDs),
 and `criticality` (`required` or `optional`) on each state. Defaults are the
 state ID and required work, respectively. States sharing a slice must share
 criticality; their dependencies are combined and must reference existing

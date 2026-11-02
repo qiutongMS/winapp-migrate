@@ -9,16 +9,17 @@ internal static class CanonicalAttestationTrust
         StateClosureSeal.Verify(value) &&
         OutputsMatch(root, value.StandardOutputPath, value.StandardOutputSha256, value.StandardErrorPath, value.StandardErrorSha256) &&
         Matches(root, value.OperationId, value.Id,
-            value.TargetFingerprint, WorkflowOperation.Build, EnforcementStore.BuildAttestationPath);
+            value.TargetFingerprint, value.RequiredContractHash, WorkflowOperation.Build, EnforcementStore.BuildAttestationPath);
 
     internal static bool Verify(DirectoryInfo root, ReplayAttestation value)
     {
         if (!StateClosureSeal.Verify(value) ||
             !OutputsMatch(root, value.StandardOutputPath, value.StandardOutputSha256, value.StandardErrorPath, value.StandardErrorSha256) ||
-            !Matches(root, value.OperationId, value.Id, value.TargetFingerprint, WorkflowOperation.Replay, EnforcementStore.ReplayAttestationPath))
+            !Matches(root, value.OperationId, value.Id, value.TargetFingerprint, value.RequiredContractHash, WorkflowOperation.Replay, EnforcementStore.ReplayAttestationPath))
             return false;
         var (build, error) = EnforcementStore.TryLoadAsync<BuildAttestation>(root, EnforcementStore.BuildAttestationPath).GetAwaiter().GetResult();
         return error is null && build is not null && build.Id == value.BuildAttestationId &&
+            build.RequiredContractHash == value.RequiredContractHash &&
             build.TargetFingerprint == value.TargetFingerprint && Verify(root, build);
     }
 
@@ -36,7 +37,7 @@ internal static class CanonicalAttestationTrust
     }
 
     private static bool Matches(DirectoryInfo root, string? operationId, string artifactId,
-        string fingerprint, WorkflowOperation kind, string artifactPath)
+        string fingerprint, string? requiredHash, WorkflowOperation kind, string artifactPath)
     {
         if (string.IsNullOrWhiteSpace(operationId)) return false;
         try
@@ -47,6 +48,7 @@ internal static class CanonicalAttestationTrust
                 progress.Operations.Count(operation => operation is not null &&
                     operation.Id == operationId && operation.Kind == kind &&
                     operation.TargetFingerprint == fingerprint && operation.ArtifactId == artifactId &&
+                    operation.RequiredContractHash == requiredHash &&
                     operation.ArtifactSha256 == StateClosureProtocol.FileHash(root, artifactPath) &&
                     StateClosureSeal.Verify(operation)) == 1;
         }

@@ -192,6 +192,13 @@ public sealed partial class RunnerAcceptanceTests
         }
         var probe = await CaptureClosureProbeAsync(fixture, result);
 
+        if (invalid == "mismatch")
+        {
+            var partial = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+            Assert.AreEqual(StateVerificationLevel.ContractSatisfied, partial.StateVerifications.Single().Level);
+            Assert.AreNotEqual("passed", partial.Status);
+            return;
+        }
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
     }
@@ -220,6 +227,13 @@ public sealed partial class RunnerAcceptanceTests
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
         var probe = await CaptureClosureProbeAsync(fixture);
 
+        if (invalid == "missing-index")
+        {
+            var partial = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+            Assert.AreEqual(StateVerificationLevel.EvidenceValid, partial.StateVerifications.Single().Level);
+            Assert.AreNotEqual("passed", partial.Status);
+            return;
+        }
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
 
@@ -350,6 +364,12 @@ public sealed partial class RunnerAcceptanceTests
             var snapshot = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
             Assert.AreEqual("passed", snapshot.Gates.Single(gate => gate.Id == "state-closure").Status);
             Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared)).Status);
+        }
+        else if (targetValue == "\"False\"")
+        {
+            var snapshot = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+            Assert.AreEqual(StateVerificationLevel.ContractSatisfied, snapshot.StateVerifications.Single().Level);
+            Assert.AreNotEqual("passed", snapshot.Status);
         }
         else
         {
@@ -543,6 +563,15 @@ public sealed partial class RunnerAcceptanceTests
         RunnerFixture fixture, EnforcementProcessResult? result = null, string? stateId = "state-1",
         IReadOnlyList<string>? arguments = null)
     {
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        if (arguments is not null && plan.States[0].Verification?.RequiredActions.Count == 1)
+            plan.States[0].Verification!.RequiredActions[0] = new RequiredStateAction(
+                plan.States[0].Verification!.RequiredActions[0].Id, RequiredActionProtocol.Normalize(arguments));
+        if (plan.States[0].Verification is { } spec)
+            spec.Steps = spec.RequiredActions.Select(action => new RequiredStateStep("action", action.Id))
+                .Concat(plan.States[0].Assertions.Select(assertion => new RequiredStateStep("assertion", assertion.Id))).ToList();
+        ContractTestAuthority.Prepare(fixture.Root, plan);
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
         return await new UwpEnforcementRunner(new FakeProcessRunner(
             result ?? new EnforcementProcessResult(0, ClosureTree, "")),

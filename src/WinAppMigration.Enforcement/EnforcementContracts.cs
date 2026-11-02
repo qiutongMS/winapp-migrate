@@ -14,7 +14,7 @@ public static class MigrationArtifactClass
 
 public sealed class StatePlanDocument
 {
-    public const string CurrentSchemaVersion = "1.0";
+    public const string CurrentSchemaVersion = "2.0";
 
     [JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -56,6 +56,9 @@ public sealed class MigrationState
     [JsonPropertyName("assertions")]
     public List<StateAssertion> Assertions { get; set; } = [];
 
+    [JsonPropertyName("verification")]
+    public StateVerificationContract? Verification { get; set; }
+
     [JsonPropertyName("source")]
     public required StateObservation Source { get; set; }
 
@@ -68,6 +71,8 @@ public sealed class MigrationState
 
 public sealed class StateObservation
 {
+    [JsonPropertyName("verificationLevel")]
+    public string? VerificationLevel { get; set; }
     [JsonPropertyName("status")]
     public required string Status { get; set; }
 
@@ -162,13 +167,70 @@ public sealed class StateAssertion
     public required string SourceEvidence { get; set; }
 
     [JsonPropertyName("automationId")]
-    public required string AutomationId { get; set; }
+    public string AutomationId { get; set; } = string.Empty;
 
     [JsonPropertyName("property")]
-    public required string Property { get; set; }
+    public string Property { get; set; } = string.Empty;
 
     [JsonPropertyName("selector")]
     public string? Selector { get; set; }
+
+    [JsonPropertyName("region")]
+    public VisualRegion? Region { get; set; }
+    [JsonPropertyName("sourceRegion")]
+    public VisualRegion? SourceRegion { get; set; }
+    [JsonPropertyName("boundsEvidence")]
+    public string? BoundsEvidence { get; set; }
+    [JsonPropertyName("boundsProbeIndex")]
+    public int? BoundsProbeIndex { get; set; }
+    [JsonPropertyName("comparison")]
+    public string Comparison { get; set; } = "pixel-exact";
+    [JsonPropertyName("maximumMeanError")]
+    public double MaximumMeanError { get; set; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record VisualRegion(
+    [property: JsonPropertyName("x")] double X,
+    [property: JsonPropertyName("y")] double Y,
+    [property: JsonPropertyName("width")] double Width,
+    [property: JsonPropertyName("height")] double Height);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class StateVerificationContract
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "nonvisual";
+    [JsonPropertyName("requiredActions")]
+    public List<RequiredStateAction> RequiredActions { get; set; } = [];
+    [JsonPropertyName("steps")]
+    public List<RequiredStateStep> Steps { get; set; } = [];
+    [JsonPropertyName("restorations")]
+    public List<RequiredRestoration> Restorations { get; set; } = [];
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record RequiredStateAction(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("command")] List<string> Command);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record RequiredStateStep(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("id")] string Id);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record RequiredRestoration(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("baselineAssertionId")] string BaselineAssertionId,
+    [property: JsonPropertyName("returnActionId")] string ReturnActionId,
+    [property: JsonPropertyName("restoredAssertionId")] string RestoredAssertionId);
+
+public static class StateVerificationLevel
+{
+    public const string EvidenceValid = "evidence-valid";
+    public const string ContractSatisfied = "contract-satisfied";
+    public const string ParityVerified = "parity-verified";
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -183,6 +245,8 @@ public sealed class FindingCompletionAssertion
 
 public sealed class BuildAttestation
 {
+    [JsonPropertyName("requiredContractHash")]
+    public string? RequiredContractHash { get; set; }
     [JsonPropertyName("stdoutSha256")]
     public string? StandardOutputSha256 { get; set; }
     [JsonPropertyName("stderrSha256")]
@@ -249,6 +313,8 @@ public sealed class BuildAttestation
 
 public sealed class ReplayAttestation
 {
+    [JsonPropertyName("requiredContractHash")]
+    public string? RequiredContractHash { get; set; }
     [JsonPropertyName("stdoutSha256")]
     public string? StandardOutputSha256 { get; set; }
     [JsonPropertyName("stderrSha256")]
@@ -466,6 +532,8 @@ public sealed class DiagnosticRunAttestation
 
 public sealed class UiDevelopmentProbe
 {
+    [JsonPropertyName("requiredContractHash")]
+    public string? RequiredContractHash { get; set; }
     [JsonPropertyName("operationId")]
     public string? OperationId { get; set; }
     [JsonPropertyName("seal")]
@@ -554,6 +622,8 @@ public sealed class UiDevelopmentProbe
 
 public sealed class EnforcementSnapshot
 {
+    [JsonPropertyName("stateVerifications")]
+    public List<StateVerificationSummary> StateVerifications { get; set; } = [];
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -639,6 +709,7 @@ public sealed class EnforcementFrontier
 }
 
 public sealed record PipelineValidationState(string Id, string? Status, string? Reason);
+public sealed record StateVerificationSummary(string Id, string Level, string Reason);
 
 public sealed record PipelineValidationSummary(
     string SourceStatus,
@@ -654,6 +725,8 @@ public sealed record PipelineValidationSummary(
 
 public sealed record EnforcementEvaluationInput
 {
+    public string? RequiredContractHash { get; set; }
+    public string? RequiredContractError { get; init; }
     public IWindowOwnerResolver? WindowOwnerResolver { get; init; }
     public required DirectoryInfo TargetRoot { get; init; }
     public required string TargetFingerprint { get; init; }
