@@ -18,7 +18,10 @@ retains the canonical parent TODO ID and effective touch set.
 
 The planner packs ready work items into deterministic waves only when their
 touch paths, project items, and conflict keys do not overlap. Conflicting items
-are serialized. Preparation is not blocked by a later integration or
+are serialized. Windows paths are normalized case-insensitively with lexical
+`.` and `..` segments collapsed; glob pairs are expanded against known exact
+touch paths and otherwise remain conflicting unless their fixed prefixes or
+suffixes prove them disjoint. Preparation is not blocked by a later integration or
 verification prerequisite: for example, startup/resource preparation,
 dependency preparation, and manifest declaration preparation can proceed
 together even though their integrated result is verified later. The current

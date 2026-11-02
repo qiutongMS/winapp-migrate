@@ -87,6 +87,22 @@ internal sealed class MigrateVerifyCommand : Command
                 Console.Out.WriteLine($"[ERROR] {exception.Message}");
                 return 1;
             }
+            if (report.TodoGraph.Status == "invalid")
+            {
+                await MigrationReportStore.WriteAtomicAsync(
+                    reportPath,
+                    report,
+                    cancellationToken);
+                Console.Out.WriteLine(
+                    $"TODO graph: invalid; 0 execution wave(s); " +
+                    $"{report.TodoGraph.Issues.Count} issue(s).");
+                foreach (var issue in report.TodoGraph.Issues)
+                {
+                    Console.Out.WriteLine(
+                        $"  [TODO graph:{issue.Code}] {issue.Message}");
+                }
+                return 1;
+            }
 
             if (!MigrationPathResolver.TryCanonicalizeRoot(
                     report.Source.Root,

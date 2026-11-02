@@ -197,6 +197,112 @@ public sealed class MigrationTodoGraphTests
     }
 
     [TestMethod]
+    public void Build_IntersectingWildcardPathsAreSerialized()
+    {
+        var todo = Todo("UWMIG090");
+        todo.WorkSlices =
+        [
+            Slice(
+                "UWMIG090:left",
+                "preparation",
+                [@"SRC\A*.CSPROJ"],
+                []),
+            Slice(
+                "UWMIG090:right",
+                "preparation",
+                ["src/*b.csproj"],
+                [])
+        ];
+
+        var graph = MigrationTodoGraphBuilder.Build([todo]);
+
+        Assert.AreEqual("valid", graph.Status);
+        Assert.HasCount(2, graph.ExecutionWaves);
+        Assert.IsTrue(graph.ExecutionWaves.All(wave =>
+            wave.WorkItemIds.Count == 1));
+    }
+
+    [TestMethod]
+    public void Build_DisjointExactWindowsPathsRemainParallel()
+    {
+        var todo = Todo("UWMIG090");
+        todo.WorkSlices =
+        [
+            Slice(
+                "UWMIG090:left",
+                "preparation",
+                [@"src\A.csproj"],
+                []),
+            Slice(
+                "UWMIG090:right",
+                "preparation",
+                ["SRC/B.csproj"],
+                [])
+        ];
+
+        var graph = MigrationTodoGraphBuilder.Build([todo]);
+
+        Assert.AreEqual("valid", graph.Status);
+        AssertWave(
+            graph.ExecutionWaves.Single(),
+            "preparation",
+            "UWMIG090:left",
+            "UWMIG090:right");
+    }
+
+    [TestMethod]
+    public void Build_WindowsPathAliasesAndGlobAliasesAreSerialized()
+    {
+        var todo = Todo("UWMIG090");
+        todo.WorkSlices =
+        [
+            Slice(
+                "UWMIG090:exact-alias",
+                "preparation",
+                [@"src\feature\..\shared.cs"],
+                []),
+            Slice(
+                "UWMIG090:exact-canonical",
+                "preparation",
+                ["SRC/shared.cs"],
+                []),
+            Slice(
+                "UWMIG090:glob-alias",
+                "preparation",
+                [@"src\feature\..\A*.csproj"],
+                []),
+            Slice(
+                "UWMIG090:glob-canonical",
+                "preparation",
+                ["SRC/A*.CSPROJ"],
+                []),
+            Slice(
+                "UWMIG090:wildcard-navigation",
+                "preparation",
+                ["foo*/../bar.txt"],
+                []),
+            Slice(
+                "UWMIG090:wildcard-canonical",
+                "preparation",
+                ["foox/bar.txt"],
+                [])
+        ];
+
+        var graph = MigrationTodoGraphBuilder.Build([todo]);
+
+        Assert.AreEqual("valid", graph.Status);
+        Assert.AreNotEqual(
+            WaveIndex(graph, "UWMIG090:exact-alias"),
+            WaveIndex(graph, "UWMIG090:exact-canonical"));
+        Assert.AreNotEqual(
+            WaveIndex(graph, "UWMIG090:glob-alias"),
+            WaveIndex(graph, "UWMIG090:glob-canonical"));
+        Assert.AreNotEqual(
+            WaveIndex(graph, "UWMIG090:wildcard-navigation"),
+            WaveIndex(graph, "UWMIG090:wildcard-canonical"));
+    }
+
+    [TestMethod]
     public void Build_UnknownWorkItemDependencyIsSurfacedWithoutWaves()
     {
         var todo = Todo("UWMIG099");
@@ -217,6 +323,276 @@ public sealed class MigrationTodoGraphTests
         Assert.AreEqual(
             "unknown-work-item-dependency",
             graph.Issues.Single().Code);
+    }
+
+    [TestMethod]
+    public void Build_InvalidRawNodesAndReferencesAreRejectedBeforeAugmentation()
+    {
+        var nullId = Todo("temporary-null");
+        nullId.Id = null!;
+        var whitespaceId = Todo("temporary-whitespace");
+        whitespaceId.Id = " ";
+        var invalidTodoReference = Todo("UWMIG090");
+        invalidTodoReference.DependsOn = [" "];
+        var invalidSlices = Todo("UWMIG091");
+        var invalidDependency = Slice(
+            "UWMIG091:dependency",
+            "integration",
+            [],
+            [],
+            "UWMIG091:prepare");
+        invalidDependency.Dependencies.Single().WorkItemId = " ";
+        invalidSlices.WorkSlices =
+        [
+            Slice(" ", "preparation", [], []),
+            Slice("UWMIG091:stage", null!, [], []),
+            invalidDependency,
+            null!
+        ];
+        var invalidNestedShape = Todo("UWMIG092");
+        invalidNestedShape.Locations = [null!];
+        invalidNestedShape.TouchSet = null!;
+
+        var graph = MigrationTodoGraphBuilder.Build(
+            [
+                null!,
+                nullId,
+                whitespaceId,
+                invalidTodoReference,
+                invalidSlices,
+                invalidNestedShape
+            ]);
+
+        Assert.AreEqual("invalid", graph.Status);
+        Assert.IsEmpty(graph.ExecutionWaves);
+        CollectionAssert.IsSubsetOf(
+            new[]
+            {
+                "invalid-todo-node",
+                "invalid-todo-id",
+                "invalid-todo-dependency-reference",
+                "invalid-work-item-id",
+                "invalid-work-item-stage",
+                "invalid-work-item-dependency-reference",
+                "invalid-work-item-node",
+                "invalid-location-node",
+                "invalid-touch-set"
+            },
+            graph.Issues.Select(issue => issue.Code).ToArray());
+    }
+
+    [TestMethod]
+    public void NormalizeForWrite_PreservesTypedIssuesForNullRawNodes()
+    {
+        var invalidReferences = Todo("UWMIG090");
+        invalidReferences.DependsOn = null!;
+        var invalidNestedShape = Todo("UWMIG091");
+        invalidNestedShape.Locations = [null!];
+        var report = new MigrationReport
+        {
+            Source = new MigrationProject { Root = "source" },
+            Target = new MigrationProject { Root = "target" },
+            Todos = [null!, invalidReferences, invalidNestedShape]
+        };
+
+        MigrationReportStore.NormalizeForWrite(report);
+
+        Assert.AreEqual("invalid", report.TodoGraph.Status);
+        Assert.IsEmpty(report.TodoGraph.ExecutionWaves);
+        Assert.IsTrue(report.TodoGraph.Issues.Any(issue =>
+            issue.Code == "invalid-todo-node"));
+        Assert.IsTrue(report.TodoGraph.Issues.Any(issue =>
+            issue.Code == "invalid-todo-dependency-reference"));
+        Assert.IsTrue(report.TodoGraph.Issues.Any(issue =>
+            issue.Code == "invalid-location-node"));
+    }
+
+    [TestMethod]
+    public void Build_InvalidLegacyPriorityDependenciesAreNotDiscarded()
+    {
+        var unknown = Todo("UWMIG001");
+        unknown.WorkSlices =
+        [
+            Slice("UWMIG001:work", "preparation", [], [])
+        ];
+        unknown.DependsOn = ["UWMIG999"];
+        var unknownGraph = MigrationTodoGraphBuilder.Build([unknown]);
+        Assert.AreEqual("invalid", unknownGraph.Status);
+        Assert.IsEmpty(unknownGraph.ExecutionWaves);
+        Assert.AreEqual("UWMIG999", unknown.DependsOn.Single());
+        Assert.IsTrue(unknownGraph.Issues.Any(issue =>
+            issue.Code == "unknown-dependency"));
+
+        var self = Todo("UWMIG002");
+        self.WorkSlices =
+        [
+            Slice("UWMIG002:work", "preparation", [], [])
+        ];
+        self.DependsOn = ["UWMIG002"];
+        var selfGraph = MigrationTodoGraphBuilder.Build([self]);
+        Assert.AreEqual("invalid", selfGraph.Status);
+        Assert.IsEmpty(selfGraph.ExecutionWaves);
+        Assert.IsTrue(selfGraph.Issues.Any(issue =>
+            issue.Code == "self-dependency"));
+
+        var first = Todo("UWMIG001");
+        first.WorkSlices =
+        [
+            Slice("UWMIG001:work", "preparation", [], [])
+        ];
+        first.DependsOn = ["UWMIG003"];
+        var second = Todo("UWMIG003");
+        second.WorkSlices =
+        [
+            Slice("UWMIG003:work", "preparation", [], [])
+        ];
+        second.DependsOn = ["UWMIG001"];
+        var cycleGraph = MigrationTodoGraphBuilder.Build([first, second]);
+        Assert.AreEqual("invalid", cycleGraph.Status);
+        Assert.IsEmpty(cycleGraph.ExecutionWaves);
+        Assert.IsTrue(cycleGraph.Issues.Any(issue =>
+            issue.Code == "legacy-dependency-cycle"));
+    }
+
+    [TestMethod]
+    public void Build_ValidLegacyPriorityDependencyKeepsPreparationParallel()
+    {
+        var startup = Todo("UWMIG001");
+        startup.WorkSlices =
+        [
+            Slice("UWMIG001:work", "preparation", [], [])
+        ];
+        startup.DependsOn = ["UWMIG003"];
+        var dependencies = Todo("UWMIG003");
+        dependencies.WorkSlices =
+        [
+            Slice("UWMIG003:work", "preparation", [], [])
+        ];
+
+        var graph = MigrationTodoGraphBuilder.Build(
+            [startup, dependencies]);
+
+        Assert.AreEqual("valid", graph.Status);
+        CollectionAssert.IsSubsetOf(
+            new[]
+            {
+                "UWMIG001:prepare-startup-resources",
+                "UWMIG003:prepare-dependencies"
+            },
+            graph.ExecutionWaves[0].WorkItemIds);
+        Assert.IsTrue(graph.Edges.Any(edge =>
+            edge.PrerequisiteId == "UWMIG003:integrate-dependencies"
+            && edge.DependentId
+                == "UWMIG001:integrate-startup-resources"
+            && edge.Kind == "integration"));
+    }
+
+    [TestMethod]
+    public void Build_LegacyDependencyTargetsRealIntegrationBeforeVerification()
+    {
+        var prerequisite = Todo("UWMIG090");
+        prerequisite.WorkSlices =
+        [
+            Slice("UWMIG090:prepare", "preparation", [], [])
+        ];
+        var dependent = Todo("UWMIG091");
+        dependent.DependsOn = ["UWMIG090"];
+        dependent.WorkSlices =
+        [
+            Slice("UWMIG091:integrate", "integration", [], [])
+        ];
+
+        var graph = MigrationTodoGraphBuilder.Build(
+            [prerequisite, dependent]);
+
+        Assert.AreEqual("valid", graph.Status);
+        Assert.IsTrue(graph.Edges.Any(edge =>
+            edge.PrerequisiteId == "UWMIG090:prepare"
+            && edge.DependentId == "UWMIG091:integrate"
+            && edge.Kind == "integration"));
+        Assert.IsFalse(graph.Edges.Any(edge =>
+            edge.PrerequisiteId == "UWMIG090:prepare"
+            && edge.DependentId.EndsWith(
+                ":verify-integrated-target",
+                StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void Build_LegacyGeneratedWorkItemDependenciesArePreserved()
+    {
+        var prerequisite = Todo("UWMIG090");
+        prerequisite.WorkSlices =
+        [
+            Slice("UWMIG090:work", "preparation", [], [])
+        ];
+        var startup = Todo("UWMIG001");
+        startup.WorkSlices =
+        [
+            Slice(
+                "UWMIG001:work",
+                "preparation",
+                [],
+                [],
+                "UWMIG090:work")
+        ];
+
+        var graph = MigrationTodoGraphBuilder.Build(
+            [prerequisite, startup]);
+
+        Assert.AreEqual("valid", graph.Status);
+        CollectionAssert.AreEqual(
+            new[] { "UWMIG001:work" },
+            startup.WorkSlices.Select(slice => slice.Id).ToArray());
+        Assert.IsTrue(graph.Edges.Any(edge =>
+            edge.PrerequisiteId == "UWMIG090:work"
+            && edge.DependentId == "UWMIG001:work"
+            && edge.Kind == "preparation"));
+    }
+
+    [TestMethod]
+    public void Build_LegacyTodoDependencyPrefersIntegrationOverVerification()
+    {
+        var prerequisite = Todo("UWMIG090");
+        prerequisite.WorkSlices =
+        [
+            Slice("UWMIG090:prepare", "preparation", [], []),
+            Slice(
+                "UWMIG090:integrate",
+                "integration",
+                [],
+                [],
+                "UWMIG090:prepare")
+        ];
+        var dependent = Todo("UWMIG091");
+        dependent.DependsOn = ["UWMIG090"];
+        dependent.WorkSlices =
+        [
+            Slice("UWMIG091:prepare", "preparation", [], []),
+            Slice(
+                "UWMIG091:integrate",
+                "integration",
+                [],
+                [],
+                "UWMIG091:prepare"),
+            Slice(
+                "UWMIG091:verify",
+                "verification",
+                [],
+                [],
+                "UWMIG091:integrate")
+        ];
+
+        var graph = MigrationTodoGraphBuilder.Build(
+            [prerequisite, dependent]);
+
+        Assert.AreEqual("valid", graph.Status);
+        Assert.IsTrue(graph.Edges.Any(edge =>
+            edge.PrerequisiteId == "UWMIG090:integrate"
+            && edge.DependentId == "UWMIG091:integrate"
+            && edge.Kind == "integration"));
+        Assert.IsFalse(graph.Edges.Any(edge =>
+            edge.PrerequisiteId == "UWMIG090:integrate"
+            && edge.DependentId == "UWMIG091:verify"));
     }
 
     [TestMethod]
@@ -350,6 +726,14 @@ public sealed class MigrationTodoGraphTests
         Assert.AreEqual(stage, wave.Stage);
         CollectionAssert.AreEqual(workItemIds, wave.WorkItemIds);
     }
+
+    private static int WaveIndex(
+        MigrationTodoGraph graph,
+        string workItemId) =>
+        graph.ExecutionWaves.Single(wave =>
+            wave.WorkItemIds.Contains(
+                workItemId,
+                StringComparer.Ordinal)).Index;
 
     private static MigrationTodo Todo(string id) =>
         new()

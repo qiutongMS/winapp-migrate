@@ -318,6 +318,86 @@ public partial class MigrateCommandTests
             "UWMIG002:verify-integrated-target");
     }
 
+    [TestMethod]
+    public async Task Verify_InvalidLegacySchema16DependencyEmitsNoUnsafeWaves()
+    {
+        var source = await CreateUwpSourceAsync(
+            "InvalidLegacyTodoDagApp");
+        await WriteAsync(source, "App.xaml", "<Application />");
+        await WriteAsync(
+            source,
+            "App.xaml.cs",
+            "public sealed partial class App { }");
+        var target = new DirectoryInfo(Path.Combine(
+            _tempDirectory.FullName,
+            "invalid-legacy-todo-dag-output"));
+        ArrangeTemplateCreation(target, "InvalidLegacyTodoDagApp");
+        var (migrateExit, migrateOutput) = await InvokeAsync(source, target);
+        Assert.AreEqual(0, migrateExit, migrateOutput);
+
+        var reportPath = Path.Combine(target.FullName, "migration-report.json");
+        var report = JsonNode.Parse(await File.ReadAllTextAsync(
+            reportPath,
+            TestContext.CancellationToken))!;
+        var startupTodo = report["todos"]!.AsArray()
+            .Single(todo =>
+                todo!["id"]!.GetValue<string>() == "UWMIG001")!;
+        startupTodo["workSlices"] = new JsonArray();
+        startupTodo["dependsOn"] = new JsonArray("UWMIG999");
+        report["todoGraph"] = new JsonObject
+        {
+            ["status"] = "valid",
+            ["edges"] = new JsonArray(),
+            ["executionWaves"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["index"] = 0,
+                    ["todoIds"] = new JsonArray("UWMIG001")
+                }
+            },
+            ["issues"] = new JsonArray()
+        };
+        await File.WriteAllTextAsync(
+            reportPath,
+            report.ToJsonString(new JsonSerializerOptions
+            {
+                WriteIndented = true
+            }),
+            TestContext.CancellationToken);
+
+        var (verifyExit, verifyOutput) = await InvokeVerifyAsync(target);
+
+        Assert.AreEqual(1, verifyExit, verifyOutput);
+        StringAssert.Contains(verifyOutput, "TODO graph: invalid");
+        Assert.DoesNotContain("Preparation wave", verifyOutput);
+        using var verified = JsonDocument.Parse(await File.ReadAllTextAsync(
+            reportPath,
+            TestContext.CancellationToken));
+        var graph = verified.RootElement.GetProperty("todoGraph");
+        Assert.AreEqual("invalid", graph.GetProperty("status").GetString());
+        Assert.AreEqual(
+            0,
+            graph.GetProperty("executionWaves").GetArrayLength());
+        Assert.IsTrue(graph.GetProperty("issues")
+            .EnumerateArray()
+            .Any(issue =>
+                issue.GetProperty("code").GetString()
+                    == "unknown-dependency"
+                && issue.GetProperty("dependencyId").GetString()
+                    == "UWMIG999"));
+        CollectionAssert.AreEqual(
+            new[] { "UWMIG999" },
+            verified.RootElement.GetProperty("todos")
+                .EnumerateArray()
+                .Single(todo =>
+                    todo.GetProperty("id").GetString() == "UWMIG001")
+                .GetProperty("dependsOn")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+    }
+
     private static void AssertWave(
         JsonElement wave,
         string stage,
