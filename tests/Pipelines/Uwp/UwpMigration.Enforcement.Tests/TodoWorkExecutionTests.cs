@@ -288,6 +288,42 @@ public sealed class TodoWorkExecutionTests
     }
 
     [TestMethod]
+    public async Task WorkExecution_ProjectItemDecisionPreservesIssuedGraphContract()
+    {
+        using var fixture = await WorkFixture.CreateAsync(secondWave: false);
+        await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+        var issuedReport = await fixture.LoadReportAsync();
+        var decidedReport = await fixture.LoadReportAsync();
+        decidedReport.ProjectItemDecisions.Add(new MigrationProjectItemDecision
+        {
+            ItemId = "project-item-test",
+            Strategy = "target-owned-replacement",
+            Rationale = "Retain the decision without rewriting the issued graph."
+        });
+        decidedReport.Todos.Clear();
+        decidedReport.TodoGraph = new MigrationTodoGraph();
+
+        await UwpTodoWorkExecution.PreserveIssuedGraphContractAsync(
+            fixture.Root,
+            issuedReport,
+            decidedReport);
+        await fixture.SaveReportAsync(decidedReport);
+
+        var next = await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+        var persisted = await fixture.LoadReportAsync();
+        Assert.AreEqual(0, next.Wave!.Index);
+        CollectionAssert.AreEqual(
+            issuedReport.Todos.Select(todo => todo.Id).ToArray(),
+            persisted.Todos.Select(todo => todo.Id).ToArray());
+        Assert.AreEqual(
+            issuedReport.TodoGraph.WorkItems.Count,
+            persisted.TodoGraph.WorkItems.Count);
+        Assert.AreEqual(
+            "project-item-test",
+            persisted.ProjectItemDecisions.Single().ItemId);
+    }
+
+    [TestMethod]
     public async Task WorkExecution_RejectsForgedTerminalLedgerState()
     {
         using var fixture = await WorkFixture.CreateAsync(secondWave: false);
