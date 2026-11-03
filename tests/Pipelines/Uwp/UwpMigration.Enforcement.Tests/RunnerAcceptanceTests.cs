@@ -758,6 +758,7 @@ public sealed partial class RunnerAcceptanceTests
             Reason = "The app resource migration requires semantic verification."
         });
         await fixture.SaveReportAsync(report);
+        await ContractTestAuthority.CompletePendingTodoWorkAsync(fixture.Root);
         var plan = await fixture.LoadAsync<StatePlanDocument>(
             ".migration-evidence/state-plan.json");
         plan.States[0].TodoIds = ["UWMIG001"];
@@ -765,6 +766,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, ".migration-evidence/state-plan.json", plan);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
             fixture.Root, new UwpEnforcementOptions());
+        await ContractTestAuthority.CompletePendingTodoVerificationAsync(fixture.Root);
         await fixture.WriteTargetEvidenceAsync();
         plan = await fixture.LoadAsync<StatePlanDocument>(
             ".migration-evidence/state-plan.json");
@@ -813,6 +815,8 @@ public sealed partial class RunnerAcceptanceTests
             Reason = "The required activation work is not mapped to a state."
         });
         await fixture.SaveReportAsync(report);
+        await ContractTestAuthority.CompletePendingTodoWorkAsync(fixture.Root);
+        await ContractTestAuthority.CompletePendingTodoVerificationAsync(fixture.Root);
 
         var reassessed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("blocked", reassessed.Status);

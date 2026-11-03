@@ -6,7 +6,9 @@ using System.CommandLine.Invocation;
 using System.Xml;
 using System.Xml.Linq;
 using UwpMigration.Contracts;
+using UwpMigration.Enforcement;
 using UwpMigration.Mechanical;
+using WinAppMigration.Enforcement;
 
 namespace WinAppMigration.Cli.Pipelines.Uwp;
 
@@ -59,6 +61,20 @@ internal sealed class MigrateVerifyCommand : Command
                 Console.Out.WriteLine("[ERROR] migration-report.json was not found in the target directory.");
                 return 1;
             }
+            IAsyncDisposable enforcementLock;
+            try
+            {
+                enforcementLock = await EnforcementStore.AcquireLockAsync(
+                    new DirectoryInfo(targetRoot),
+                    cancellationToken);
+            }
+            catch (EnforcementLockTimeoutException exception)
+            {
+                Console.Out.WriteLine(
+                    $"[ERROR] Could not lock migration enforcement state: {exception.Message}");
+                return 1;
+            }
+            await using var enforcementScope = enforcementLock;
 
             MigrationReportTransactionLock reportLock;
             try
@@ -220,6 +236,10 @@ internal sealed class MigrateVerifyCommand : Command
             report.Summary.TodoCategories = report.Todos.Count;
             await MigrationReportStore.WriteAtomicAsync(
                 reportPath,
+                report,
+                cancellationToken);
+            await UwpTodoWorkExecution.RecordMechanicalVerificationAsync(
+                new DirectoryInfo(targetRoot),
                 report,
                 cancellationToken);
 

@@ -52,6 +52,11 @@ public static class EnforcementEvaluator
             input.MechanicalReady
                 ? "Mechanical verification passed."
                 : input.MechanicalReason);
+        AddGate(
+            gates,
+            "work-execution",
+            input.WorkExecutionReady,
+            input.WorkExecutionReason);
 
         var planValid = ValidateStatePlan(
             input.StatePlan,
@@ -218,9 +223,11 @@ public static class EnforcementEvaluator
             input.ReportClosureReady,
             retryFrontier);
         var noProgress = artifactsValid ? FailureProtocol.FindChangeRequired(input) : null;
-        if (artifactsValid && planValid && diagnosisFrontier is null && noProgress is not null)
+        if (artifactsValid && planValid && diagnosisFrontier is null &&
+            frontier?.Kind != "work-item" && noProgress is not null)
             frontier = noProgress;
-        if (artifactsValid && planValid && diagnosisFrontier is null && noProgress is null && !sourceReady)
+        if (artifactsValid && planValid && diagnosisFrontier is null &&
+            noProgress is null && !sourceReady)
             frontier = new EnforcementFrontier { Kind = "source-oracle", Reason = sourceReason };
         WorkflowAssessment? workflow = null;
         if (artifactsValid)
@@ -228,7 +235,7 @@ public static class EnforcementEvaluator
             workflow = WorkflowController.Observe(input, sourceReady, buildFresh, replayFresh, slices, frontier);
             // Diagnosis and change-required cannot be hidden by a slice correction frontier.
             if (workflow.Frontier is not null &&
-                frontier?.Kind is not ("diagnosis-required" or "change-required"))
+                frontier?.Kind is not ("diagnosis-required" or "change-required" or "work-item"))
                 frontier = workflow.Frontier;
             activeSlice = workflow.ActiveSlice;
             AddGate(gates, "stage-budget",
@@ -848,6 +855,14 @@ public static class EnforcementEvaluator
             {
                 Kind = "mechanical",
                 Reason = input.MechanicalReason
+            };
+        }
+        if (!input.WorkExecutionReady)
+        {
+            return new EnforcementFrontier
+            {
+                Kind = "work-item",
+                Reason = input.WorkExecutionReason
             };
         }
         if (!input.AnalyzerReferencePresent || !input.AnalyzerPrivateAssets)

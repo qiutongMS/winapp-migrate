@@ -120,11 +120,15 @@ Require `todoGraph.status` to be `valid` before scheduling report work. Read
 [Migration TODO guidance and graph](references/migration-todo-graph.md) and
 [Parallel migration work orchestration](references/parallel-work-orchestration.md).
 The graph determines safe dependency/touch-set waves, not the repair strategy
-or completion verdict. When isolated worktrees and workers are available,
-parallelize only product-declared independent patch preparation. The parent
-alone integrates patches and performs mechanical verification, canonical
-build/replay, state recording, and final closure. Without isolation, execute
-the same graph serially; never let multiple workers edit one target.
+or completion verdict. The product-owned execution ledger determines whether a
+wave was actually issued, prepared, integrated, and verified. Do not construct
+work packets or worktrees by hand. When target implementation is ready to
+begin, call `winapp-migrate uwp closure work next "<target>"`; use only packets
+and isolated workspace paths returned by the `work` commands. The parent alone
+submits and integrates candidates and performs mechanical verification,
+canonical build/replay, state recording, and final closure. Without workers,
+execute the same product-issued packets serially; never edit the canonical
+target directly or let multiple workers share it.
 
 Use the **fast path** when the primary behavior is page-local, dependencies and APIs have direct target mappings, and it crosses no uncertain project, lifetime, activation, window, native-host, or shared asynchronous boundary. Read only startup, capability-bearing manifest entries, relevant pages, and their custom controls or resources. Do not create a semantic finding ledger before a real finding exists.
 
@@ -151,13 +155,24 @@ perform target work between changing the source statuses and this assessment.
 Treat report categories as evidence within the active behavior scope, not as an exhaustive worklist or a completion definition.
 
 If the active work is represented by product work items, execute only the
-earliest dependency-ready wave. Give each delegated worker the complete
-work-item packet, including facts, selected strategy evidence, risks, forbidden
-shortcuts, completion checks, touch paths, project items, conflict keys,
-affected states, and base fingerprint. A returned patch is not completion
-evidence. Integrate candidates serially in stable work-item order and reload
-the graph after the coherent wave, or immediately when an unexpected overlap
-invalidates a worker's declared contract.
+earliest dependency-ready wave returned by
+`winapp-migrate uwp closure work next "<target>"`. For each non-verification
+item, select a strategy whose preconditions are proven, then call
+`closure work issue --work-item <id> --strategy <strategy> "<target>"`.
+Delegate exactly the returned packet and workspace to one worker; the worker
+must edit only that workspace. A worker response is not a patch or completion
+authority. The parent calls `closure work submit` for that item, including any
+claimed `--check` or truthful `--unresolved` finding, then calls
+`closure work integrate` in the listed stable order. Never copy worker files
+into the canonical target yourself.
+
+After every non-verification wave is integrated, run
+`winapp-migrate uwp verify "<target>"`, then
+`closure work complete-wave --wave <index> "<target>"`. Do not issue the next
+wave until completion succeeds. For a verification wave, do not issue a worker:
+run the canonical closure attestation to produce a fresh build, rerun mechanical
+`verify`, then complete the wave. Only the signed execution ledger can make
+canonical build/replay and final closure reachable.
 
 On the fast path, migrate the complete small behavior surface as one coherent patch when practical. On the expanded path, implement the smallest architecture slice that can build and exercise startup plus the active sentinel: its consumed dependency contract, owning projects, shared abstraction, and direct call path.
 

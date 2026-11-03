@@ -2,44 +2,56 @@
 
 Use this protocol only for schema `1.6` `todoGraph` work. The product defines
 work items, dependencies, touch sets, conflict keys, and execution waves. The
-Skill may execute independent patch preparation concurrently; benchmark code
-never selects, starts, merges, or retries migration work.
+product also owns the signed execution ledger, immutable packet issuance,
+isolated workspace creation, handoff validation, serial integration, and wave
+completion gates. The Skill may schedule workers against product-issued
+workspaces; benchmark code never selects, starts, merges, or retries migration
+work.
 
 ## Preconditions
 
-Before delegation:
+Before delegation, run:
 
-1. require `todoGraph.status` to be `valid` with no issues;
-2. establish the required state contract and complete the initial workflow
-   assessment;
-3. select only unresolved work items in the earliest dependency-ready wave;
-4. freeze one wave base revision (a commit when available) and product target
-   fingerprint used by every worker in that wave.
+```powershell
+winapp-migrate uwp closure work next "<target>"
+```
+
+This command creates or validates
+`.migration-evidence/enforcement/work-execution.json` and returns only the
+earliest incomplete wave. Then:
+
+1. require the returned graph and signed ledger to be valid;
+2. establish the required state contract, capture every required source-oracle
+   state, and complete the post-capture workflow assessment;
+3. select only unresolved work items in the returned wave;
+4. let `closure work issue` freeze the product target fingerprint and create
+   one immutable-base workspace per item.
 
 Do not flatten an invalid graph or infer missing dependencies. Rerun
 `winapp-migrate uwp verify` after correcting the product-owned input.
 
-## Build a complete work packet
+## Issue a complete work packet
 
-Give each worker exactly one stable work-item ID and include:
+For each non-verification item, choose a product-listed strategy with proven
+preconditions, or `custom:<description>` only when strategies are explicitly
+non-exhaustive:
 
-- parent TODO ID, stage, dependencies, affected states/features;
-- authoritative facts and mechanically applied transforms;
-- current classification and its confidence;
-- the selected strategy with proven preconditions, risks, forbidden shortcuts,
-  and completion checks;
-- effective touch paths, project items, and conflict keys;
-- wave base revision/fingerprint and the expected handoff format.
+```powershell
+winapp-migrate uwp closure work issue "<target>" `
+  --work-item "<stable-id>" `
+  --strategy "<strategy-id>"
+```
 
-Candidate strategies remain non-exhaustive. A worker may choose another
-strategy only when its handoff explains how it preserves the source invariant,
-respects every forbidden shortcut, and satisfies the completion checks.
+The signed packet contains the parent TODO, stage, dependencies, authoritative
+guidance, selected strategy, touch set, completion checks, graph hash, base
+fingerprint, and isolated workspace path. Give one worker exactly this packet
+and workspace. Do not reconstruct, broaden, or combine packets.
 
 ## Isolate concurrent work
 
-Create one isolated worktree or equivalent immutable-base workspace per
-concurrent work item. Workers may read source evidence and prepare target
-patches, but they must not:
+`closure work issue` creates one product-owned immutable-base workspace per
+work item. Workers may read source evidence and edit that workspace, but they
+must not:
 
 - edit the canonical target worktree;
 - edit `migration-report.json`, mechanically owned evidence, required
@@ -48,14 +60,19 @@ patches, but they must not:
 - expand into another work item without returning the newly discovered
   dependency or finding to the parent.
 
-Each worker returns its work-item ID, base commit/fingerprint, commit or patch,
-changed paths, chosen strategy, local static checks, unresolved findings, and
-the completion checks it believes the patch enables. A worker result is a
-candidate patch, never completion evidence.
+The worker reports only claimed completion-check IDs and unresolved findings.
+The parent converts the workspace into a signed, touch-set-validated handoff:
 
-If isolated workers are unavailable, execute the same work items serially in
-graph order. Never simulate parallelism by allowing multiple workers to edit
-one target directory.
+```powershell
+winapp-migrate uwp closure work submit "<target>" `
+  --work-item "<stable-id>" `
+  --check "<completion-check-id>"
+```
+
+Use repeated `--unresolved "<finding>"` arguments instead of pretending a
+blocked candidate is ready. If workers are unavailable, the parent edits each
+issued workspace serially and still uses `submit`, `integrate`, and
+`complete-wave`; it never edits the canonical target directly.
 
 ## Execute waves
 
@@ -67,30 +84,39 @@ one target directory.
 - **Verification:** never delegate or parallelize this stage. The parent owns
   the integrated target and all gateway operations.
 
-Do not start a later wave until every required dependency in the current wave
-has either integrated successfully or produced a truthful blocking finding.
+Do not start a later wave until `complete-wave` accepts the current wave. A
+truthful blocking finding remains nonterminal and prevents later issuance.
 
 ## Integrate serially
 
-For each candidate patch, the parent must:
+For each prepared handoff, the parent runs:
 
-1. confirm its base matches the frozen wave base, the current integration head
-   descends from that base, and its work-item ID still matches the graph;
-2. reject undeclared path/project-item/conflict-key expansion until the graph
-   is replanned;
-3. integrate one patch, resolve no semantic conflict by guesswork, and inspect
-   the resulting diff;
-4. retain the parent TODO/finding linkage and completion checks;
-5. invalidate remaining candidates only when an earlier integration overlaps
-   their declared paths/project items/conflict keys or changes their graph
-   contract; a normal disjoint sibling merge does not invalidate the wave base.
+```powershell
+winapp-migrate uwp closure work integrate "<target>" `
+  --work-item "<stable-id>"
+```
 
-After a coherent integration wave, run mechanical `verify` when mechanically
-governed files changed, then reload the report. If work-item IDs, dependencies,
-touch sets, conflict keys, or waves changed, discard stale packets and schedule
-from the refreshed graph.
+The command verifies the signed packet and handoff, frozen base, graph hash,
+candidate hashes, declared touch paths, current canonical fingerprint, overlap,
+and stable item order before applying the candidate transactionally. A normal
+disjoint sibling remains valid after an earlier integration; overlap, direct
+canonical edits, or graph changes fail closed.
+
+After every coherent non-verification wave:
+
+```powershell
+winapp-migrate uwp verify "<target>"
+winapp-migrate uwp closure work complete-wave "<target>" --wave <index>
+```
+
+Integration resets mechanical verification. `complete-wave` requires a fresh
+signed verification record for the current graph and target fingerprint, then
+marks the wave's entries verified. A verification wave additionally requires a
+fresh signed canonical build and is never issued to a worker.
 
 Only after integration is stable may the parent perform the serialized
 canonical sequence: build/replay attestation, state capture, record-state,
-report synchronization, and finalization. No parallel patch result can close a
-TODO, finding, state, or parity claim.
+report synchronization, and finalization. The closure frontier remains
+`work-item` until all non-verification work is verified, and final closure
+remains blocked until every execution entry is verified. No worker result can
+close a TODO, finding, state, or parity claim.

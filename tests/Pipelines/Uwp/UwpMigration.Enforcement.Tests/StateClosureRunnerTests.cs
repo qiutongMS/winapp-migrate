@@ -16,6 +16,42 @@ public sealed partial class RunnerAcceptanceTests
     private const string ClosurePlan = ".migration-evidence/state-plan.json";
 
     [TestMethod]
+    public async Task TodoWork_IncompleteLedgerBlocksTargetCaptureEvenWithFreshReplay()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        var report = await fixture.LoadReportAsync();
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "UWMIG-WORK-GATE",
+            Category = "behavior",
+            Priority = "required",
+            Summary = "Complete product-owned work before target capture.",
+            Reason = "A fresh replay must not bypass an active TODO work wave."
+        });
+        await fixture.SaveReportAsync(report);
+        await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+        var runner = new UwpEnforcementRunner(
+            new FakeProcessRunner(new EnforcementProcessResult(
+                0,
+                ClosureTree,
+                "")),
+            windowOwnerResolver: TestWindowOwnerResolver.Shared);
+
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            runner.InvokeUiAsync(
+                fixture.Root,
+                "winapp",
+                ["inspect", "-w", "42", "--json"],
+                [],
+                "state-1"));
+
+        StringAssert.Contains(error.Message, "TODO work wave");
+    }
+
+    [TestMethod]
     public async Task RecordState_CliDerivesClosureAndFinalizeSynchronizesTodoAndCanonicalEvidence()
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -26,6 +62,7 @@ public sealed partial class RunnerAcceptanceTests
             Summary = "Verify the main state.", Reason = "Requires observable equivalence."
         });
         await fixture.SaveReportAsync(report);
+        await ContractTestAuthority.CompletePendingTodoWorkAsync(fixture.Root);
         var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         plan.States[0].TodoIds = ["UWMIG-STATE"];
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
@@ -406,6 +443,7 @@ public sealed partial class RunnerAcceptanceTests
             Summary = "Must not trust text.", Reason = "Requires derived closure."
         });
         await fixture.SaveReportAsync(report);
+        await ContractTestAuthority.CompletePendingTodoWorkAsync(fixture.Root);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
         await fixture.WriteTargetEvidenceAsync();
         var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);

@@ -29,6 +29,7 @@ internal sealed class UwpEnforceCommand : Command
         Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
         Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
         Subcommands.Add(new ConfigureCommand());
+        Subcommands.Add(new UwpTodoWorkCommand());
     }
 
     private sealed class SealContractCommand : Command

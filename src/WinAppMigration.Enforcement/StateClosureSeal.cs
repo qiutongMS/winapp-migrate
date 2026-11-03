@@ -39,6 +39,30 @@ internal static class StateClosureSeal
         return valid;
     }
 
+    internal static (string Seal, string PublicKey) SignDocument(
+        string domain,
+        string payload)
+    {
+        string? seal = null;
+        string? publicKey = null;
+        WithSigner(signer =>
+        {
+            publicKey = Convert.ToBase64String(
+                signer.ExportSubjectPublicKeyInfo());
+            seal = CreateSeal(signer, domain + "\n" + payload);
+        });
+        return (
+            seal ?? throw new CryptographicException("Document signing did not produce a seal."),
+            publicKey ?? throw new CryptographicException("Document signing did not produce a public key."));
+    }
+
+    internal static bool VerifyDocument(
+        string domain,
+        string payload,
+        string? seal,
+        string? publicKey) =>
+        VerifyPayload(domain + "\n" + payload, seal, publicKey);
+
     private static byte[]? ReadTrustedPublicKey()
     {
         try
