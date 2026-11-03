@@ -131,6 +131,26 @@ public sealed class TodoWorkExecutionTests
     }
 
     [TestMethod]
+    public async Task WorkExecution_AgentMetadataMutationPreservesActiveLedger()
+    {
+        using var fixture = await WorkFixture.CreateAsync(secondWave: false);
+        var before = await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+        Directory.CreateDirectory(fixture.Path(".github/hooks"));
+        await File.WriteAllTextAsync(
+            fixture.Path(".github/hooks/plugin-1.json"),
+            """{"pluginRoot":"updated"}""");
+        Directory.CreateDirectory(fixture.Path(".copilot"));
+        await File.WriteAllTextAsync(
+            fixture.Path(".copilot/mcp-config.json"),
+            """{"mcpServers":{}}""");
+
+        var after = await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+
+        Assert.AreEqual(before.TargetFingerprint, after.TargetFingerprint);
+        Assert.AreEqual(0, after.Wave!.Index);
+    }
+
+    [TestMethod]
     public async Task WorkExecution_DisjointHandoffsIntegrateInStableOrder()
     {
         using var fixture = await WorkFixture.CreateAsync(secondWave: false);

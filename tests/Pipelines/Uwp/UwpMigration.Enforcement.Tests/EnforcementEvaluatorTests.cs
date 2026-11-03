@@ -498,7 +498,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void TargetFingerprint_IgnoresReportAndEvidenceChanges()
+    public void TargetFingerprint_IgnoresReportEvidenceAndAgentMetadataChanges()
     {
         using var fixture = new EvaluatorFixture();
         var before = fixture.Fingerprint();
@@ -507,6 +507,14 @@ public sealed partial class EnforcementEvaluatorTests
         Directory.CreateDirectory(fixture.Path(".migration-evidence"));
         File.WriteAllText(
             fixture.Path(".migration-evidence/state-plan.json"),
+            "changed");
+        Directory.CreateDirectory(fixture.Path(".github/hooks"));
+        File.WriteAllText(
+            fixture.Path(".github/hooks/plugin-1.json"),
+            "changed");
+        Directory.CreateDirectory(fixture.Path(".copilot"));
+        File.WriteAllText(
+            fixture.Path(".copilot/mcp-config.json"),
             "changed");
 
         Assert.AreEqual(before, fixture.Fingerprint());

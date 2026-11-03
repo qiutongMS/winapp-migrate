@@ -11,7 +11,9 @@ public static class TargetFingerprint
     private static readonly HashSet<string> ExcludedDirectories =
         new(StringComparer.OrdinalIgnoreCase)
         {
+            ".copilot",
             ".git",
+            ".github",
             ".migration-evidence",
             ".vs",
             "bin",
