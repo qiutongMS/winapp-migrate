@@ -1528,6 +1528,20 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             reportNode.ToJsonString(
                 new JsonSerializerOptions { WriteIndented = true }),
             TestContext.CancellationToken);
+        var rollbackRoot = Path.Combine(
+            target.FullName,
+            ".migration-evidence",
+            "enforcement",
+            "work-items",
+            "packet",
+            "rollback");
+        Directory.CreateDirectory(rollbackRoot);
+        File.Copy(
+            Path.Combine(target.FullName, "MainPage.xaml"),
+            Path.Combine(rollbackRoot, "MainPage.xaml"));
+        File.Copy(
+            Path.Combine(target.FullName, "CatalogTemplateSelector.cs"),
+            Path.Combine(rollbackRoot, "CatalogTemplateSelector.cs"));
 
         var (secondExit, secondOutput) = await InvokeVerifyAsync(target);
         Assert.AreEqual(0, secondExit, secondOutput);

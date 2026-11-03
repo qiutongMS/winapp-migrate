@@ -228,6 +228,46 @@ public sealed class TodoWorkExecutionTests
     }
 
     [TestMethod]
+    public async Task WorkExecution_MechanicalRefreshPreservesIssuedGraphContract()
+    {
+        using var fixture = await WorkFixture.CreateAsync(secondWave: false);
+        await PrepareAndIntegrateWaveAsync(fixture);
+        var issuedReport = await fixture.LoadReportAsync();
+        var verifiedReport = await fixture.LoadReportAsync();
+        verifiedReport.Todos[0].Summary = "Refreshed detector output";
+        verifiedReport.Todos[0].Locations =
+        [
+            new MigrationLocation
+            {
+                Path = ".migration-evidence/enforcement/work-items/packet/rollback/A.cs"
+            }
+        ];
+
+        await UwpTodoWorkExecution.PreserveIssuedGraphContractAsync(
+            fixture.Root,
+            issuedReport,
+            verifiedReport);
+
+        Assert.AreEqual(
+            issuedReport.Todos[0].Summary,
+            verifiedReport.Todos[0].Summary);
+        CollectionAssert.AreEqual(
+            issuedReport.Todos[0].Locations
+                .Select(location => location.Path)
+                .ToArray(),
+            verifiedReport.Todos[0].Locations
+                .Select(location => location.Path)
+                .ToArray());
+        await fixture.SaveReportAsync(verifiedReport);
+        await fixture.RecordMechanicalVerificationAsync();
+        var completed = await UwpTodoWorkExecution.CompleteWaveAsync(
+            fixture.Root,
+            0);
+        Assert.IsTrue(completed.BuildReady);
+        Assert.IsTrue(completed.ClosureReady);
+    }
+
+    [TestMethod]
     public async Task WorkExecution_RejectsForgedTerminalLedgerState()
     {
         using var fixture = await WorkFixture.CreateAsync(secondWave: false);

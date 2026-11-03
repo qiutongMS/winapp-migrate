@@ -496,6 +496,38 @@ public static class UwpTodoWorkExecution
             cancellationToken);
     }
 
+    public static async Task PreserveIssuedGraphContractAsync(
+        DirectoryInfo target,
+        MigrationReport issuedReport,
+        MigrationReport verifiedReport,
+        CancellationToken cancellationToken = default)
+    {
+        MigrationReportStore.NormalizeForWrite(issuedReport);
+        var (ledger, ledgerError) =
+            await EnforcementStore.TryLoadAsync<TodoWorkExecutionLedger>(
+                target,
+                EnforcementStore.TodoWorkExecutionPath,
+                cancellationToken);
+        if (ledgerError is not null)
+            throw new InvalidDataException(ledgerError);
+        if (ledger is null || ApplicableWorkItemIds(issuedReport).Count == 0)
+            return;
+
+        var graphHash = ComputeGraphHash(issuedReport);
+        var validation = ValidateLedger(issuedReport, ledger, graphHash);
+        if (validation is not null)
+            throw new InvalidDataException(validation);
+
+        var issuedTodoIds = issuedReport.Todos
+            .Select(todo => todo.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        if (verifiedReport.Todos.Any(todo => !issuedTodoIds.Contains(todo.Id)))
+            return;
+
+        verifiedReport.Todos = issuedReport.Todos;
+        verifiedReport.TodoGraph = issuedReport.TodoGraph;
+    }
+
     public static async Task<TodoWorkExecutionAssessment> AssessAsync(
         DirectoryInfo requestedTarget,
         CancellationToken cancellationToken = default)

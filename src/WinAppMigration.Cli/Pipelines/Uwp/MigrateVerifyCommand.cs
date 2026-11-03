@@ -103,6 +103,9 @@ internal sealed class MigrateVerifyCommand : Command
                 Console.Out.WriteLine($"[ERROR] {exception.Message}");
                 return 1;
             }
+            var issuedWorkReport = await MigrationReportStore.LoadAsync(
+                reportPath,
+                cancellationToken);
             if (report.TodoGraph.Status == "invalid")
             {
                 await MigrationReportStore.WriteAtomicAsync(
@@ -229,6 +232,11 @@ internal sealed class MigrateVerifyCommand : Command
                 targetProject,
                 report,
                 msBuildProjectItemEvaluator,
+                cancellationToken);
+            await UwpTodoWorkExecution.PreserveIssuedGraphContractAsync(
+                new DirectoryInfo(targetRoot),
+                issuedWorkReport,
+                report,
                 cancellationToken);
             report.Status = report.MechanicalVerification.Status == "passed"
                 ? "mechanical-migration-complete"

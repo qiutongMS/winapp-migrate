@@ -35,7 +35,7 @@ public static partial class MechanicalMigration
 
     private static readonly string[] ExcludeDirSegments =
     [
-        "bin", "obj", ".uwp-source", ".vs", ".git", ".github", ".copilot"
+        "bin", "obj", ".uwp-source", ".migration-evidence", ".vs", ".git", ".github", ".copilot"
     ];
 
     private static readonly HashSet<string> AllowedExistingOutputEntries =
