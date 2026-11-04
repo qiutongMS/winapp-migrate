@@ -389,12 +389,24 @@ public static class StateClosureProtocol
             finding.StateIds.Any(id => !finding.CompletionAssertions.Any(item => item.StateId == id)))
             return false;
         return finding.StateIds.All(id =>
-        {
-            var state = plan.States.SingleOrDefault(candidate => candidate.Id == id);
-            return state is not null && Verify(root, state, replay, now, out _, windowOwnerResolver) &&
-                finding.CompletionAssertions.Where(item => item.StateId == id)
-                    .All(item => state.Assertions.Any(assertion => assertion.Id == item.AssertionId));
-        });
+            FindingStateSatisfied(root, finding, plan, replay, now, id, windowOwnerResolver));
+    }
+
+    internal static bool FindingStateSatisfied(
+        DirectoryInfo root, SemanticFinding finding, StatePlanDocument? plan,
+        ReplayAttestation? replay, DateTimeOffset now, string stateId,
+        IWindowOwnerResolver? windowOwnerResolver = null)
+    {
+        if (plan is null || finding.StateIds is not { Count: > 0 } ||
+            !finding.StateIds.Contains(stateId, StringComparer.Ordinal) ||
+            finding.CompletionAssertions is not { Count: > 0 })
+            return false;
+        var assertions = finding.CompletionAssertions
+            .Where(item => item is not null && item.StateId == stateId).ToArray();
+        if (assertions.Length == 0) return false;
+        var state = plan.States.SingleOrDefault(candidate => candidate.Id == stateId);
+        return state is not null && Verify(root, state, replay, now, out _, windowOwnerResolver) &&
+            assertions.All(item => state.Assertions.Any(assertion => assertion.Id == item.AssertionId));
     }
 
     private static void CheckFile(DirectoryInfo root, string path, string? hash, DateTimeOffset after)

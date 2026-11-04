@@ -124,6 +124,43 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
+    public void Attribution_MultiStateFindingSkipsAlreadySatisfiedMappedState()
+    {
+        using var fixture = new EvaluatorFixture();
+        var input = fixture.ClosedInput();
+        input.StatePlan!.States.Add(State("later-state"));
+        input = input with
+        {
+            FindingLedger = new SemanticFindingLedger
+            {
+                Findings =
+                [
+                    new SemanticFinding
+                    {
+                        Id = "multi-state", Category = "behavior", Status = "open",
+                        StateIds = ["state-1", "later-state"],
+                        SourceInvariant = "Preserve both observations.",
+                        CompletionCondition = "Verify both mapped state assertions.",
+                        CompletionAssertions =
+                        [
+                            new FindingCompletionAssertion { StateId = "state-1", AssertionId = "main-name" },
+                            new FindingCompletionAssertion { StateId = "later-state", AssertionId = "later-name" }
+                        ]
+                    }
+                ]
+            }
+        };
+
+        var snapshot = EnforcementEvaluator.Evaluate(input);
+        var binding = StateAttribution.Authorize(input, "later-state");
+
+        Assert.AreEqual("later-state", snapshot.ActiveSlice);
+        Assert.AreEqual("later-state", binding.StateId);
+        Assert.AreEqual("later-state", binding.SliceId);
+        Assert.ThrowsExactly<InvalidDataException>(() => StateAttribution.Authorize(input, "state-1"));
+    }
+
+    [TestMethod]
     public void Attribution_MultipleUnresolvedStatesRemainSliceOnly()
     {
         using var fixture = new EvaluatorFixture();

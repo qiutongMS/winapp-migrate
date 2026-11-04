@@ -365,7 +365,11 @@ public static class EnforcementEvaluator
         if (!FindingCollectionsValid(input.FindingLedger)) return false;
         var relevant = new SemanticFindingLedger
         {
-            Findings = input.FindingLedger!.Findings.Where(finding => finding.StateIds.Contains(state.Id, StringComparer.Ordinal) ||
+            Findings = input.FindingLedger!.Findings.Where(finding =>
+                finding.StateIds.Contains(state.Id, StringComparer.Ordinal) &&
+                    !StateClosureProtocol.FindingStateSatisfied(
+                        input.TargetRoot, finding, input.StatePlan, input.Replay,
+                        input.GeneratedAt, state.Id, input.WindowOwnerResolver) ||
                 finding.StateIds.Count == 0 && SemanticSlicePlanner.SliceId(state) ==
                     SemanticSlicePlanner.SliceId(input.StatePlan!.States[0])).ToList()
         };
@@ -411,7 +415,10 @@ public static class EnforcementEvaluator
             {
                 Findings = ledger!.Findings.Where(finding =>
                     finding.StateIds.Count == 0 ? index == 0 :
-                    slice.States.Any(state => finding.StateIds.Contains(state.Id, StringComparer.Ordinal))).ToList()
+                    slice.States.Any(state => finding.StateIds.Contains(state.Id, StringComparer.Ordinal) &&
+                        !StateClosureProtocol.FindingStateSatisfied(
+                            input.TargetRoot, finding, input.StatePlan, input.Replay,
+                            input.GeneratedAt, state.Id, input.WindowOwnerResolver))).ToList()
             };
             return ValidateFindings(relevant, null, out var reason, out _, input)
                 ? slice : slice with { Complete = false, Resolved = false, Reason = reason };
