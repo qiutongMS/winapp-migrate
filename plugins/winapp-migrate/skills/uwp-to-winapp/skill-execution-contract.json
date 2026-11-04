@@ -51,29 +51,5 @@
     "saps",
     "start",
     "Start-Process"
-  ],
-  "protectedWrites": {
-    "activationFile": ".migration-evidence/enforcement/work-execution.json",
-    "activationCngKeyPrefix": "WinAppMigration.Anchor.todo-work-root-",
-    "toolNames": [
-      "apply_patch",
-      "create",
-      "edit",
-      "replace_string_in_file",
-      "str_replace_editor",
-      "write_file"
-    ],
-    "pathProperties": [
-      "filePath",
-      "file_path",
-      "filename",
-      "path",
-      "target"
-    ],
-    "patchProperties": [
-      "patch"
-    ],
-    "reason": "Direct file-tool writes to the canonical migration target are not permitted while the optional TODO scheduler is active. Edit only the product-issued isolated workspace and integrate through 'winapp-migrate uwp closure work integrate'.",
-    "unknownPathReason": "The file-write request does not expose a path that can be checked against the active Skill execution contract."
-  }
+  ]
 }

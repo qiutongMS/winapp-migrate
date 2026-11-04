@@ -3,8 +3,6 @@
 
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using WinAppMigration.Enforcement;
@@ -123,116 +121,6 @@ public sealed class PluginHookTests
     }
 
     [TestMethod]
-    public async Task Guard_ProtectsCanonicalFileWritesOnlyWhileSchedulerIsActive()
-    {
-        using var fixture = await HookFixture.CreateAsync();
-        var targetFile = Path.Combine(fixture.Target.FullName, "Page.xaml.cs");
-        var outsideFile = Path.Combine(fixture.Outside.FullName, "Page.xaml.cs");
-        var beforeActivation = await fixture.InvokeToolAsync(
-            "apply_patch",
-            new
-            {
-                patch = $"*** Begin Patch\n*** Update File: {targetFile}\n@@\n-old\n+new\n*** End Patch"
-            });
-        Assert.AreEqual("{}", beforeActivation.Output.Trim());
-
-        var ledgerPath = Path.Combine(
-            fixture.Target.FullName,
-            EnforcementStore.TodoWorkExecutionPath);
-        Directory.CreateDirectory(Path.GetDirectoryName(ledgerPath)!);
-        await File.WriteAllTextAsync(ledgerPath, "{}");
-
-        var denied = await fixture.InvokeToolAsync(
-            "apply_patch",
-            new
-            {
-                patch = $"*** Begin Patch\n*** Update File: {targetFile}\n@@\n-old\n+new\n*** End Patch"
-            });
-        var allowed = await fixture.InvokeToolAsync(
-            "apply_patch",
-            new
-            {
-                patch = $"*** Begin Patch\n*** Update File: {outsideFile}\n@@\n-old\n+new\n*** End Patch"
-            });
-        File.Delete(ledgerPath);
-        StateClosureSeal.WriteContractAnchor(
-            SchedulerAnchorName(fixture.Target),
-            "test-activation");
-        var deniedEditor = await fixture.InvokeToolAsync(
-            "str_replace_editor",
-            new
-            {
-                command = "str_replace",
-                path = targetFile,
-                old_str = "old",
-                new_str = "new"
-            });
-        var deniedExtendedPath = await fixture.InvokeToolAsync(
-            "str_replace_editor",
-            new
-            {
-                command = "str_replace",
-                path = @"\\?\" + targetFile,
-                old_str = "old",
-                new_str = "new"
-            });
-
-        Assert.AreEqual(0, denied.ExitCode, denied.Error);
-        Assert.AreEqual(
-            "deny",
-            JsonNode.Parse(denied.Output)!["permissionDecision"]!
-                .GetValue<string>());
-        StringAssert.Contains(
-            JsonNode.Parse(denied.Output)!["permissionDecisionReason"]!
-                .GetValue<string>(),
-            "canonical migration target");
-        Assert.AreEqual(
-            "deny",
-            JsonNode.Parse(deniedEditor.Output)!["permissionDecision"]!
-                .GetValue<string>());
-        Assert.AreEqual(
-            "deny",
-            JsonNode.Parse(deniedExtendedPath.Output)!["permissionDecision"]!
-                .GetValue<string>());
-        Assert.AreEqual("{}", allowed.Output.Trim());
-    }
-
-    [TestMethod]
-    public async Task Guard_ResolvesJunctionBeforeCanonicalWriteContainment()
-    {
-        using var fixture = await HookFixture.CreateAsync();
-        var ledgerPath = Path.Combine(
-            fixture.Target.FullName,
-            EnforcementStore.TodoWorkExecutionPath);
-        Directory.CreateDirectory(Path.GetDirectoryName(ledgerPath)!);
-        await File.WriteAllTextAsync(ledgerPath, "{}");
-        var junction = Path.Combine(fixture.Outside.FullName, "target-alias");
-        await CreateJunctionAsync(junction, fixture.Target.FullName);
-        try
-        {
-            var result = await fixture.InvokeToolAsync(
-                "str_replace_editor",
-                new
-                {
-                    command = "str_replace",
-                    path = Path.Combine(junction, "Page.xaml.cs"),
-                    old_str = "old",
-                    new_str = "new"
-                });
-
-            Assert.AreEqual(0, result.ExitCode, result.Error);
-            Assert.AreEqual(
-                "deny",
-                JsonNode.Parse(result.Output)!["permissionDecision"]!
-                    .GetValue<string>());
-        }
-        finally
-        {
-            Directory.Delete(junction);
-        }
-    }
-
-    [TestMethod]
     public async Task Guard_UsesDeclarativeRulesInsteadOfSkillSpecificCode()
     {
         using var fixture = await HookFixture.CreateAsync();
@@ -298,45 +186,6 @@ public sealed class PluginHookTests
             "..", "..", "..", "..",
             "plugins", "winapp-migrate", "skills", "uwp-to-winapp",
             "skill-execution-contract.json"));
-
-    private static string SchedulerAnchorName(DirectoryInfo target)
-    {
-        var path = Path.GetFullPath(target.FullName).ToUpperInvariant();
-        var hash = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(path)))
-            .ToLowerInvariant();
-        return "todo-work-root-" + hash[..32];
-    }
-
-    private static async Task CreateJunctionAsync(
-        string junction,
-        string target)
-    {
-        var startInfo = new ProcessStartInfo("pwsh")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        startInfo.ArgumentList.Add("-NoProfile");
-        startInfo.ArgumentList.Add("-NonInteractive");
-        startInfo.ArgumentList.Add("-Command");
-        startInfo.ArgumentList.Add(
-            "New-Item -ItemType Junction -Path $env:TEST_JUNCTION_PATH -Target $env:TEST_JUNCTION_TARGET | Out-Null");
-        startInfo.Environment["TEST_JUNCTION_PATH"] = junction;
-        startInfo.Environment["TEST_JUNCTION_TARGET"] = target;
-        using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException(
-                "PowerShell junction process did not start.");
-        var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        Assert.AreEqual(
-            0,
-            process.ExitCode,
-            $"Junction creation failed. stdout={output} stderr={error}");
-    }
 
     private sealed class HookFixture : IDisposable
     {

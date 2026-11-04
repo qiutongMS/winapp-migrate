@@ -71,7 +71,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Attribution_AuthorizationSkipsDeferredOptionalWork()
+    public void Attribution_RequestedStateBindingDoesNotDependOnSchedulerSelection()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -85,16 +85,17 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
         var binding = StateAttribution.Authorize(input, "required-state");
+        var optionalBinding = StateAttribution.Authorize(input, optional.Id);
 
         Assert.AreEqual(snapshot.ActiveSlice, binding.SliceId);
         Assert.AreEqual("required-state", binding.StateId);
-        Assert.ThrowsExactly<InvalidDataException>(() => StateAttribution.Authorize(input, optional.Id));
+        Assert.AreEqual(new StateSliceBinding(optional.Id, optional.Id), optionalBinding);
     }
 
     [TestMethod]
     [DataRow("finding")]
     [DataRow("failure")]
-    public void Attribution_AuthorizationIncludesMappedReopenedStates(string cause)
+    public void Attribution_FrontierAdvisesWithoutRejectingAnotherDeclaredState(string cause)
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -117,10 +118,11 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
         var binding = StateAttribution.Authorize(input, "state-1");
+        var laterBinding = StateAttribution.Authorize(input, "later-state");
 
         Assert.AreEqual(snapshot.ActiveSlice, binding.SliceId);
         Assert.AreEqual("state-1", binding.StateId);
-        Assert.ThrowsExactly<InvalidDataException>(() => StateAttribution.Authorize(input, "later-state"));
+        Assert.AreEqual(new StateSliceBinding("later-state", "later-state"), laterBinding);
     }
 
     [TestMethod]
@@ -157,7 +159,8 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual("later-state", snapshot.ActiveSlice);
         Assert.AreEqual("later-state", binding.StateId);
         Assert.AreEqual("later-state", binding.SliceId);
-        Assert.ThrowsExactly<InvalidDataException>(() => StateAttribution.Authorize(input, "state-1"));
+        Assert.AreEqual(new StateSliceBinding("state-1", "state-1"),
+            StateAttribution.Authorize(input, "state-1"));
     }
 
     [TestMethod]
@@ -355,20 +358,25 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Attribution_CallerStateCannotUseAStaleVerifiedActiveTuple()
+    public async Task Attribution_DeclaredStateDoesNotDependOnAdvisoryActiveTuple()
     {
         using var fixture = await AttributionFixtureAsync();
         await SetStaleActiveTupleAsync(fixture);
         var process = new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, ""));
         var runner = new UwpEnforcementRunner(process, windowOwnerResolver: TestWindowOwnerResolver.Shared);
 
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => runner.InvokeUiAsync(fixture.Root,
-            "winapp", ["inspect", "-w", "42", "--json"], [], "initial-state"));
-        Assert.AreEqual(0, process.CallCount);
+        await runner.InvokeUiAsync(fixture.Root,
+            "winapp", ["inspect", "-w", "42", "--json"], [], "initial-state");
+        Assert.AreEqual(1, process.CallCount);
         const string evidence = ".migration-evidence/observed-category.txt";
         await File.WriteAllTextAsync(fixture.Path(evidence), "A later unresolved selection failure.");
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => UwpEnforcementRunner.RecordFailureAsync(
-            fixture.Root, TestWindowOwnerResolver.Shared, "runtime", "later-selection", "initial-state", [evidence]));
+        await UwpEnforcementRunner.RecordFailureAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "runtime", "later-selection", "initial-state", [evidence]);
+
+        var attempt = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath))
+            .Attempts.Single(item => item.Evidence.Contains(evidence, StringComparer.Ordinal));
+        Assert.AreEqual("initial-state", attempt.StateId);
+        Assert.AreEqual("initial-slice", attempt.SliceId);
     }
 
     [TestMethod]

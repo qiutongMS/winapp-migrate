@@ -676,10 +676,6 @@ public sealed class UwpEnforcementRunner
             cancellationToken, _timeProvider, _windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
-        var workGate = snapshot.Gates.First(gate =>
-            gate.Id == "work-execution");
-        if (workGate.Status != "passed")
-            throw new InvalidDataException(workGate.Reason);
         var replayGate = snapshot.Gates.First(gate =>
             gate.Id == "canonical-replay");
         if (replayGate.Status != "passed")
@@ -857,10 +853,6 @@ public sealed class UwpEnforcementRunner
         var workspace = await LoadWorkspaceAsync(target, 2, cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
-        var workGate = snapshot.Gates.First(gate =>
-            gate.Id == "work-execution");
-        if (workGate.Status != "passed")
-            throw new InvalidDataException(workGate.Reason);
         if (snapshot.Gates.First(gate => gate.Id == "state-plan").Status != "passed" ||
             snapshot.Gates.First(gate => gate.Id == "canonical-replay").Status != "passed")
             throw new InvalidDataException("A valid state plan and fresh canonical replay are required before recording state closure.");
@@ -1053,40 +1045,57 @@ public sealed class UwpEnforcementRunner
         {
             ValidateCanonicalStateId(state.Id);
             var nonvisual = StateClosureProtocol.VerifyEvidence(target, state, replay, now, out var proof, out _, windowOwnerResolver);
-            var sourceEvidence = await SelectCanonicalEvidenceAsync(
-                target,
-                state.Id,
-                "source",
-                state.Source.Evidence,
-                nonvisual, cancellationToken);
-            var targetEvidence = await SelectCanonicalEvidenceAsync(
-                target,
-                state.Id,
-                "target",
-                state.Target.Evidence,
-                nonvisual, cancellationToken);
-            if (sourceEvidence.ScreenshotPath is not null)
+            if (state.Source.Status == "captured")
+            {
+                var sourceEvidence = await SelectCanonicalEvidenceAsync(
+                    target,
+                    state.Id,
+                    "source",
+                    state.Source.Evidence,
+                    nonvisual, cancellationToken);
+                if (sourceEvidence.ScreenshotPath is not null)
+                    copies.Add(new CanonicalEvidenceCopy(
+                        sourceEvidence.ScreenshotPath,
+                        ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png"),
+                        ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, sourceEvidence.ScreenshotPath)));
+                else if (nonvisual)
+                    removals.Add(ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png"));
                 copies.Add(new CanonicalEvidenceCopy(
-                    sourceEvidence.ScreenshotPath,
-                    ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png"),
-                    ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, sourceEvidence.ScreenshotPath)));
-            else if (nonvisual)
+                    sourceEvidence.TreePath,
+                    ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json"),
+                    ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, sourceEvidence.TreePath)));
+            }
+            else
+            {
                 removals.Add(ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png"));
-            copies.Add(new CanonicalEvidenceCopy(
-                sourceEvidence.TreePath,
-                ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json"),
-                ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, sourceEvidence.TreePath)));
-            if (targetEvidence.ScreenshotPath is not null)
+                removals.Add(ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json"));
+            }
+
+            if (state.Target.Status == "passed")
+            {
+                var targetEvidence = await SelectCanonicalEvidenceAsync(
+                    target,
+                    state.Id,
+                    "target",
+                    state.Target.Evidence,
+                    nonvisual, cancellationToken);
+                if (targetEvidence.ScreenshotPath is not null)
+                    copies.Add(new CanonicalEvidenceCopy(
+                        targetEvidence.ScreenshotPath,
+                        ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"),
+                        ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, targetEvidence.ScreenshotPath)));
+                else if (nonvisual)
+                    removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"));
                 copies.Add(new CanonicalEvidenceCopy(
-                    targetEvidence.ScreenshotPath,
-                    ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"),
-                    ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, targetEvidence.ScreenshotPath)));
-            else if (nonvisual)
+                    targetEvidence.TreePath,
+                    ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"),
+                    ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, targetEvidence.TreePath)));
+            }
+            else
+            {
                 removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"));
-            copies.Add(new CanonicalEvidenceCopy(
-                targetEvidence.TreePath,
-                ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"),
-                ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, targetEvidence.TreePath)));
+                removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"));
+            }
         }
 
         foreach (var copy in copies)
@@ -1097,7 +1106,8 @@ public sealed class UwpEnforcementRunner
         {
             if (!EnforcementStore.TryResolveContainedPath(target, removal.RelativePath, out var path, out var error))
                 throw new InvalidDataException(error);
-            File.Delete(path);
+            if (File.Exists(path))
+                File.Delete(path);
         }
     }
 
@@ -1939,11 +1949,6 @@ public sealed class UwpEnforcementRunner
         var mechanicalReady =
             report.Status == "mechanical-migration-complete" &&
             report.MechanicalVerification.Status == "passed";
-        var workExecution = await UwpTodoWorkExecution.AssessAsync(
-            target,
-            report,
-            fingerprint,
-            cancellationToken);
         var (reportClosureReady, reportClosureReason) =
             await AssessReportClosureAsync(
                 target,
@@ -1954,11 +1959,6 @@ public sealed class UwpEnforcementRunner
                 generatedAt,
                 windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
                 cancellationToken);
-        if (!workExecution.ClosureReady)
-        {
-            reportClosureReady = false;
-            reportClosureReason = workExecution.Reason;
-        }
         var input = new EnforcementEvaluationInput
         {
             RequiredContractHash = requiredHash,
@@ -1970,8 +1970,6 @@ public sealed class UwpEnforcementRunner
             MechanicalReason = mechanicalReady
                 ? "Mechanical verification passed."
                 : $"Mechanical status is report={report.Status}, verification={report.MechanicalVerification.Status}.",
-            WorkExecutionReady = workExecution.BuildReady,
-            WorkExecutionReason = workExecution.Reason,
             AnalyzerReferencePresent = analyzer.Present,
             AnalyzerPrivateAssets = analyzer.PrivateAssets,
             StatePlan = statePlan,

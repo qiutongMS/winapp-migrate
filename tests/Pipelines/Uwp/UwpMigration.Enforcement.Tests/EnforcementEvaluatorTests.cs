@@ -101,48 +101,6 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Evaluate_IncompleteTodoWorkBlocksCanonicalBuildFrontier()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput() with
-        {
-            WorkExecutionReady = false,
-            WorkExecutionReason = "Wave 0 has not been integrated.",
-            Build = null,
-            Replay = null
-        };
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("work-item", snapshot.Frontier?.Kind);
-        Assert.AreEqual(
-            "blocked",
-            snapshot.Gates.Single(gate => gate.Id == "work-execution").Status);
-    }
-
-    [TestMethod]
-    public void Evaluate_SourceOraclePrecedesTodoWorkExecution()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput() with
-        {
-            WorkExecutionReady = false,
-            WorkExecutionReason = "Wave 0 has not been integrated.",
-            Build = null,
-            Replay = null
-        };
-        input.StatePlan!.States[0].Source.Status = "not-run";
-        input.StatePlan.States[0].Source.Evidence = [];
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("source-oracle", snapshot.Frontier?.Kind);
-        Assert.AreEqual(
-            "blocked",
-            snapshot.Gates.Single(gate => gate.Id == "work-execution").Status);
-    }
-
-    [TestMethod]
     public void Evaluate_StaleBuildRequiresRebuild()
     {
         using var fixture = new EvaluatorFixture();

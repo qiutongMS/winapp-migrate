@@ -424,7 +424,6 @@ public sealed partial class RunnerAcceptanceTests
                 NextActions = ["Verify complete contract parity."],
                 CompletionAssertions = assertionIds.Select(id => new FindingCompletionAssertion { StateId = "state-1", AssertionId = id }).ToList()
             }] });
-        await ContractTestAuthority.CompletePendingTodoWorkAsync(fixture.Root);
     }
 
     private static byte[] SemanticScene(string mode) => PngTestData.Image(128, 128, (x, y) =>

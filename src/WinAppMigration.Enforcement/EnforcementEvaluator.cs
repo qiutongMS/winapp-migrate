@@ -52,12 +52,6 @@ public static class EnforcementEvaluator
             input.MechanicalReady
                 ? "Mechanical verification passed."
                 : input.MechanicalReason);
-        AddGate(
-            gates,
-            "work-execution",
-            input.WorkExecutionReady,
-            input.WorkExecutionReason);
-
         var planValid = ValidateStatePlan(
             input.StatePlan,
             input.StatePlanError,
@@ -862,14 +856,6 @@ public static class EnforcementEvaluator
             {
                 Kind = "mechanical",
                 Reason = input.MechanicalReason
-            };
-        }
-        if (!input.WorkExecutionReady)
-        {
-            return new EnforcementFrontier
-            {
-                Kind = "work-item",
-                Reason = input.WorkExecutionReason
             };
         }
         if (!input.AnalyzerReferencePresent || !input.AnalyzerPrivateAssets)

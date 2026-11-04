@@ -1,136 +1,49 @@
 # Parallel migration work orchestration
 
-This is an optional execution optimizer for schema `1.6` `todoGraph` work, not
-a migration-completion protocol. Use it only when dependency-safe isolation or
-parallel preparation is worth its coordination cost. A small serial migration
-may leave the scheduler inactive and still use the full migration closure.
+Parallel work is an optional efficiency technique for schema `1.6`
+`todoGraph` items. It does not determine migration correctness and is never
+required for closure.
 
-The product defines
-work items, dependencies, touch sets, conflict keys, and execution waves. The
-product also owns the signed execution ledger, immutable packet issuance,
-isolated workspace creation, handoff validation, serial integration, and wave
-completion gates. The Skill may schedule workers against product-issued
-workspaces; benchmark code never selects, starts, merges, or retries migration
-work.
+The mechanical report supplies dependencies, touch sets, conflict keys,
+acceptance checks, and suggested waves. The parent agent uses that metadata to
+choose work:
 
-## Preconditions
+1. List incomplete TODOs whose `dependsOn` blockers are complete.
+2. Prefer the smallest coherent set that advances observable behavior.
+3. Run serially when independence is uncertain.
+4. Parallelize only ready items with disjoint touch sets and independent
+   acceptance checks.
+5. Integrate results into the canonical target and verify before treating a
+   TODO as complete.
 
-Activate scheduling before delegation:
+Copilot CLI `/fleet` can run independent subagents and `/tasks` can display
+their status. These commands do not make dependency decisions, detect file
+conflicts, isolate workspaces, or prove completion. The parent agent retains
+those responsibilities.
 
-```powershell
-winapp-migrate uwp closure work next "<target>"
-```
+## Delegate bounded work
 
-This command creates or validates
-`.migration-evidence/enforcement/work-execution.json` and returns only the
-earliest incomplete wave. Creation seals the graph and canonical target before
-source capture is complete; packet issuance remains unavailable until required
-source-oracle evidence is captured. After activation:
+Give each worker one TODO or compatible work slice with:
 
-1. require the returned graph and signed ledger to be valid;
-2. establish the required state contract, capture every required source-oracle
-   state, and complete the post-capture workflow assessment before `work issue`;
-3. select only unresolved work items in the returned wave;
-4. let `closure work issue` freeze the product target fingerprint and create
-   one immutable-base workspace per item.
+- its stable ID and completed dependencies;
+- authoritative facts and source invariants;
+- allowed touch paths and known conflicts;
+- candidate strategies and forbidden shortcuts;
+- concrete acceptance checks.
 
-Do not flatten an invalid graph or infer missing dependencies. Rerun
-`winapp-migrate uwp verify` after correcting the product-owned input.
-Do not return to direct canonical edits after activation. To use the serial
-path, leave the scheduler inactive from the start. Activation is independently
-anchored and cannot be reset by deleting the execution ledger.
+A worker must report changed paths, completed checks, and unresolved findings.
+Its completion claim is not migration evidence. The parent reviews overlap,
+reconciles conflicts, and runs canonical verification.
 
-## Issue a complete work packet
+## Integrate conservatively
 
-For each non-verification item, choose a product-listed strategy with proven
-preconditions, or `custom:<description>` only when strategies are explicitly
-non-exhaustive:
+Parallel preparation may be useful for disjoint project, dependency, resource,
+or manifest work. Startup/lifetime changes, shared project files, generated
+code boundaries, and overlapping XAML/code-behind pairs usually require serial
+integration.
 
-```powershell
-winapp-migrate uwp closure work issue "<target>" `
-  --work-item "<stable-id>" `
-  --strategy "<strategy-id>"
-```
-
-The signed packet contains the parent TODO, stage, dependencies, authoritative
-guidance, selected strategy, touch set, completion checks, graph hash, base
-fingerprint, and isolated workspace path. Give one worker exactly this packet
-and workspace. Do not reconstruct, broaden, or combine packets.
-
-## Isolate concurrent work
-
-`closure work issue` creates one product-owned immutable-base workspace per
-work item. Workers may read source evidence and edit that workspace, but they
-must not:
-
-- edit the canonical target worktree;
-- edit `migration-report.json`, mechanically owned evidence, required
-  contracts, workflow progress, or closure attestations;
-- invoke canonical build, replay, capture, record-state, or finalize;
-- expand into another work item without returning the newly discovered
-  dependency or finding to the parent.
-
-The worker reports only claimed completion-check IDs and unresolved findings.
-The parent converts the workspace into a signed, touch-set-validated handoff:
-
-```powershell
-winapp-migrate uwp closure work submit "<target>" `
-  --work-item "<stable-id>" `
-  --check "<completion-check-id>"
-```
-
-Use repeated `--unresolved "<finding>"` arguments instead of pretending a
-blocked candidate is ready. If workers are unavailable, the parent edits each
-issued workspace serially and still uses `submit`, `integrate`, and
-`complete-wave`; it never edits the canonical target directly.
-
-## Execute waves
-
-- **Preparation:** independent items in one product-generated wave may run
-  concurrently.
-- **Integration:** candidate patches may be prepared concurrently only when the
-  graph places them in the same wave. The parent still integrates them one at a
-  time in stable work-item order.
-- **Verification:** never delegate or parallelize this stage. The parent owns
-  the integrated target and all gateway operations.
-
-Do not start a later wave until `complete-wave` accepts the current wave. A
-truthful blocking finding remains nonterminal and prevents later issuance.
-
-## Integrate serially
-
-For each prepared handoff, the parent runs:
-
-```powershell
-winapp-migrate uwp closure work integrate "<target>" `
-  --work-item "<stable-id>"
-```
-
-The command verifies the signed packet and handoff, frozen base, graph hash,
-candidate hashes, declared touch paths, current canonical fingerprint, overlap,
-and stable item order before applying the candidate transactionally. A normal
-disjoint sibling remains valid after an earlier integration; overlap, direct
-canonical edits, or graph changes fail closed.
-
-After every coherent non-verification wave:
-
-```powershell
-winapp-migrate uwp verify "<target>"
-winapp-migrate uwp closure work complete-wave "<target>" --wave <index>
-```
-
-Integration resets mechanical verification. `complete-wave` requires a fresh
-signed verification record for the current graph and target fingerprint, then
-marks the wave's entries verified. A verification wave additionally requires a
-fresh signed canonical build and is never issued to a worker.
-
-Only after integration is stable may the parent perform the serialized
-canonical sequence: build/replay attestation, state capture, record-state,
-report synchronization, and finalization. While scheduling is active, the
-closure frontier remains
-`work-item` until all non-verification work is verified, and final closure
-remains blocked until every execution entry is verified. No worker result can
-close a TODO, finding, state, or parity claim. Without an active scheduler,
-these execution-ledger gates do not exist; the ordinary migration closure still
-requires the same mechanical, build, replay, state, finding, and parity
-evidence.
+After integrating a logical group, run the smallest relevant mechanical or
+build check. Use canonical replay and state capture only from the parent.
+If a conflict, missing dependency, or new semantic finding appears, return the
+affected TODOs to serial work. Falling back to serial execution affects only
+speed, not the validity of the migration.

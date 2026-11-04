@@ -31,6 +31,12 @@ public static class StateAttribution
         }
         if (!EnforcementEvaluator.ValidateStatePlan(plan, input.StatePlanError, out var reason))
             throw new InvalidDataException(reason);
+        if (requestedState is not null)
+        {
+            var state = plan.States.SingleOrDefault(candidate => candidate.Id == requestedState) ??
+                throw new InvalidDataException($"Unknown planned state: {requestedState}.");
+            return new StateSliceBinding(state.Id, SemanticSlicePlanner.SliceId(state));
+        }
         var slices = EnforcementEvaluator.AssessSlices(input, EnforcementEvaluator.FreshReplay(input));
         var debt = input.Progress?.Debt ?? [];
         var selected = SemanticSlicePlanner.Select(slices, debt);
@@ -41,12 +47,6 @@ public static class StateAttribution
                 !debt.Any(item => item.SliceId == slice.Id));
         var candidates = selected?.States.Where(state => revalidate ||
             EnforcementEvaluator.StateRequiresWork(input, state)).ToArray() ?? [];
-        if (requestedState is not null)
-        {
-            var state = candidates.SingleOrDefault(candidate => candidate.Id == requestedState) ??
-                throw new InvalidDataException("Caller --state is not in the currently authorized unresolved/revalidation slice contract.");
-            return new StateSliceBinding(state.Id, SemanticSlicePlanner.SliceId(state));
-        }
         return selected is null ? StateSliceBinding.Unbound :
             new StateSliceBinding(candidates.Length == 1 ? candidates[0].Id : null, selected.Id);
     }

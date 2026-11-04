@@ -9,18 +9,13 @@ A contract declares:
 - how to recognize its active workspace from a marker and JSON requirements;
 - shell executable and verb combinations that must be denied;
 - opaque or dynamic process launchers that cannot be inspected safely;
-- an optional scheduler activation artifact plus an independent CNG activation
-  anchor;
-- file-write tool names and argument fields whose paths must stay outside the
-  protected canonical workspace after activation.
+- optional file-write rules for contracts that need a protected workspace.
 
 The UWP policy is
 `skills/uwp-to-winapp/skill-execution-contract.json`. Plugin `hooks.json`
 passes that file to the generic guard. The guard persists workspace identity
 per contract and session so changing the shell working directory cannot bypass
-the boundary. File paths are resolved through reparse points before containment
-checks. Deleting the scheduler ledger does not disable write protection because
-the independently committed activation anchor is monotonic for that workspace.
+the boundary.
 
 This layer constrains observable tool side effects; it does not prove that a
 model read or understood Skill prose. Outcome correctness remains the

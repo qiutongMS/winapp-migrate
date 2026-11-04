@@ -10,11 +10,11 @@ Preserve the app; do not redesign it. Keep every page, control, resource, helper
 This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.6`. WinApp CLI remains a separate implementation tool, but every source baseline operation must cross the `winapp-migrate uwp source` boundary and every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp closure` boundary.
 
 Three controls remain independent. The plugin's machine-readable Skill
-execution contract enforces gateway and protected-write boundaries. Migration
+execution contract enforces gateway boundaries. Migration
 closure determines whether the resulting app is mechanically and behaviorally
-complete. The TODO scheduler is optional and exists only to coordinate
-dependency-safe parallel work; it does not replace closure or define migration
-correctness.
+complete. TODO dependencies and touch sets are advisory coordination metadata;
+the agent chooses ready work and may use parallel subagents when tasks are
+independent.
 
 ## Tool and contract compatibility
 
@@ -84,20 +84,20 @@ requirements. `--extend` is append-only before source/workflow start; it cannot
 remove actions/assertions or rewrite order. Run the initial assessment after
 contract establishment and before source UI capture, semantic target edits,
 or delegating implementation work. It
-resumes the deterministic migration checklist and returns the authoritative
-stage, frontier, disposition, and allowed operations. Elapsed time and operation
+resumes the deterministic migration checklist and returns the current
+stage, frontier, disposition, and recommended next operations. Elapsed time and operation
 totals are telemetry only. If the state plan is missing, create only that plan
 first, seal its requirements, then assess before doing any capture or implementation.
 
-Stop when the disposition is terminal. Otherwise, perform only work consistent
-with the reported frontier and allowed operations. Reassess only at a workflow
+Treat the reported frontier as guidance, not execution permission. You may
+work on any declared state whose dependencies are understood. Reassess only at a workflow
 boundary: after a target-fingerprint change, source/state completion, semantic
 finding resolution, slice completion, or immediately before finalization. Do
 not reassess after each build substep or UI command. The default bounded receipt
 points to the durable full state; use `--full` only for focused workflow repair.
-Target execution must still use the specific `closure attest`,
-`closure diagnose`, or `closure capture` operation compatible with the current
-stage and evidence frontier.
+Target execution must still use the gateway `closure attest`, `closure diagnose`,
+and `closure capture` operations so process identity and evidence provenance
+remain verifiable.
 
 If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is available, stop before scaffolding or copying application files. Report that deterministic migration is unavailable. Do not replace the missing tool with hand-written namespace replacement, a second scaffold, or a fabricated report.
 
@@ -128,16 +128,12 @@ Read
 [Migration TODO guidance and graph](references/migration-todo-graph.md) and
 [Parallel migration work orchestration](references/parallel-work-orchestration.md).
 The graph determines safe dependency/touch-set waves, not the repair strategy
-or completion verdict. Activate the optional scheduler with
-`winapp-migrate uwp closure work next "<target>"` only when independent work
-items justify isolated or parallel execution. Activation seals the graph and
-canonical target; after activation, use only product-issued workspaces and
-integration commands. Activation is monotonic for that workspace; deleting the
-ledger does not return it to serial mode. For a small serial migration, leave
-the scheduler inactive, edit the canonical target coherently, and rely on the
-same mechanical verification and migration closure. Never mix direct canonical
-edits with an
-active scheduler.
+or completion verdict. Select work items whose `dependsOn` blockers are complete.
+Run items serially unless their touch sets are disjoint and their acceptance
+conditions are independently verifiable. For independent items, use Copilot CLI
+parallel subagents and reconcile their results in the canonical target before
+verification. Parallel execution is an optimization, never a completion
+requirement.
 
 Use the **fast path** when the primary behavior is page-local, dependencies and APIs have direct target mappings, and it crosses no uncertain project, lifetime, activation, window, native-host, or shared asynchronous boundary. Read only startup, capability-bearing manifest entries, relevant pages, and their custom controls or resources. Do not create a semantic finding ledger before a real finding exists.
 
@@ -163,26 +159,12 @@ perform target work between changing the source statuses and this assessment.
 
 Treat report categories as evidence within the active behavior scope, not as an exhaustive worklist or a completion definition.
 
-If the optional scheduler is active, execute only the
-earliest dependency-ready wave returned by
-`winapp-migrate uwp closure work next "<target>"`. For each non-verification
-item, select a strategy whose preconditions are proven, then call
-`closure work issue --work-item <id> --strategy <strategy> "<target>"`.
-Delegate exactly the returned packet and workspace to one worker; the worker
-must edit only that workspace. A worker response is not a patch or completion
-authority. The parent calls `closure work submit` for that item, including any
-claimed `--check` or truthful `--unresolved` finding, then calls
-`closure work integrate` in the listed stable order. Never copy worker files
-into the canonical target yourself.
-
-After every non-verification wave is integrated, run
-`winapp-migrate uwp verify "<target>"`, then
-`closure work complete-wave --wave <index> "<target>"`. Do not issue the next
-wave until completion succeeds. For a verification wave, do not issue a worker:
-run the canonical closure attestation to produce a fresh build, rerun mechanical
-`verify`, then complete the wave. The active ledger must settle before canonical
-build/replay resumes. When the scheduler was never activated, canonical
-operations and final closure remain governed by migration evidence alone.
+Choose ready TODOs dynamically. A TODO is ready when its declared dependencies
+are complete. Parallelize only ready TODOs with non-overlapping touch sets and
+clear acceptance checks; otherwise proceed serially. After integrating a logical
+group, run the smallest relevant verification before selecting more work. The
+parent agent owns dependency decisions, conflict handling, and final closure;
+subagent completion is not verification evidence.
 
 On the fast path, migrate the complete small behavior surface as one coherent patch when practical. On the expanded path, implement the smallest architecture slice that can build and exercise startup plus the active sentinel: its consumed dependency contract, owning projects, shared abstraction, and direct call path.
 
@@ -245,10 +227,8 @@ counts never authorize, cancel, defer, or terminate otherwise valid work.
 Progressive corrections may use as many informative gateway operations as
 needed.
 
-Source oracle allows no target operations; mechanical stabilization allows
-builds only; bootstrap allows replay and runtime-failure diagnosis/hypothesis,
-never UI automation. Closure permits revalidation build/replay/UI only when
-the evidence frontier requires it. Repeated replay requires new
+Use the closure stage and frontier to choose useful next evidence, but do not
+treat them as a scheduler authorization boundary. Repeated replay requires new
 `--discriminating-evidence`; closure UI uses one fresh state intent for the
 whole state sequence, not one justification per command. Workflow schema `2.0`
 is imported to `3.0` while preserving operation/evidence history and clearing
@@ -266,7 +246,7 @@ After the gateway returns a successful detached-launch attestation, replay the
 active sentinel immediately. Control existence and process survival are not
 sufficient.
 
-If the sentinel fails, it becomes the active migration frontier. For a
+If the sentinel fails, prioritize it as the active migration problem. For a
 foreground target diagnostic, use only:
 
 ```powershell
@@ -336,25 +316,18 @@ use real `expandState`/`ExpandCollapseState` enums, never synthetic `isExpanded`
 default and persists raw stdout/stderr plus
 `probes/<probe-id>/probe.json`. Read only the relevant persisted output; use
 `--raw-output` only when that focused payload is itself needed.
-The gateway selects only the first dependency-ready semantically unresolved slice. Required
-blocked work stops; optional debt never verifies a state or unlocks a dependent
-slice. Follow snapshot `activeSlice`, `activeStateIds`, and `frontier`. Whenever
-state evidence completes a slice, consume the assessment returned by
-`record-state` before editing the next slice. That assessment records the
-resolution and activates the next dependency-ready slice.
+The snapshot recommends the first dependency-ready semantically unresolved
+slice through `activeSlice`, `activeStateIds`, and `frontier`. It does not reject
+capture or recording for another declared state. Whenever state evidence
+completes a slice, consume the assessment returned by `record-state` and use it
+to choose the next useful action.
 A target change makes resolved evidence stale without returning those slices
 to semantic implementation work. Closure selects stale resolved evidence with
 a `revalidate` frontier; failed comparisons, runtime regressions, and open
 findings can reopen semantic work before terminal completion.
-Inspect snapshot `disposition`, not just the legacy `status`.
-`continue-with-debt` is nonterminal. `complete`, genuinely
-`blocked-required`, and `infrastructure-failure` are durable terminal outcomes
-and reject target operations while valid. A completed workflow whose current
-target build/replay chain or closure evidence becomes stale automatically
-reopens; it cannot retain success through an old replay. Other terminal
-outcomes remain immutable. Historical `total-hard-limit`,
-`unit-hard-limit`, `operation-ceiling`, and `stage-soft-limit` dispositions are
-retired and resume during schema import.
+Inspect snapshot `disposition`, not just the legacy `status`. A completed
+workflow whose current target build/replay chain or closure evidence becomes
+stale automatically reopens; it cannot retain success through an old replay.
 
 ## 6. Falsify and finalize
 
@@ -423,13 +396,18 @@ Before claiming completion:
 - the current build is analyzer-enabled and successful;
 - the primary sentinel and every runnable target state pass in one fresh canonical sequence;
 - mechanically owned schema `1.6` evidence remains current according to `winapp-migrate uwp verify`;
-- `winapp-migrate uwp closure assess "<target>"` reports every closure gate as passed.
+- `winapp-migrate uwp closure assess "<target>" --strict` reports every closure gate as passed.
 
 After updating state and finding evidence, run:
 
 ```powershell
-winapp-migrate uwp closure finalize "<target>"
+winapp-migrate uwp closure finalize "<target>" --strict
 ```
+
+Without `--strict`, `assess` and `finalize` synchronize and report closure
+status without failing merely because work or evidence remains. Use strict mode
+only for a final acceptance decision. A partial result is valid progress but
+must be reported as partial or unverified, never as complete.
 
 Do not hand-edit its derived validation summary.
 Every assessment verifies canonical copy hashes against re-derived state

@@ -131,10 +131,6 @@ internal sealed class MigrateProjectItemDecisionCommand : Command
                 Console.Out.WriteLine($"[ERROR] {exception.Message}");
                 return 1;
             }
-            var issuedWorkReport = await MigrationReportStore.LoadAsync(
-                reportPath,
-                cancellationToken);
-
             if (!MigrationPathResolver.TryCanonicalizeRoot(
                     report.Source.Root,
                     out var sourceRoot,
@@ -335,11 +331,6 @@ internal sealed class MigrateProjectItemDecisionCommand : Command
                     msBuildProjectItemEvaluator,
                     cancellationToken,
                     projectItemEvaluation);
-            await UwpTodoWorkExecution.PreserveIssuedGraphContractAsync(
-                new DirectoryInfo(targetRoot),
-                issuedWorkReport,
-                report,
-                cancellationToken);
             report.Status = report.MechanicalVerification.Status == "passed"
                 ? "mechanical-migration-complete"
                 : "mechanical-verification-failed";

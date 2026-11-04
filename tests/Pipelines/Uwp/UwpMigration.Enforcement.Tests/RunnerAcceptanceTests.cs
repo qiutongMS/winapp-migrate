@@ -43,10 +43,39 @@ public sealed partial class RunnerAcceptanceTests
             parseResult.InvocationConfiguration,
             CancellationToken.None);
 
-        Assert.AreEqual(2, exitCode);
+        Assert.AreEqual(0, exitCode);
         Assert.AreEqual(2, process.CallCount);
         Assert.IsTrue(File.Exists(
             fixture.Path(EnforcementStore.StatePath)));
+    }
+
+    [TestMethod]
+    public async Task Cli_AssessmentIsAdvisoryUnlessStrictIsRequested()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var command = new UwpEnforceCommand(new FakeProcessRunner());
+        var advisory = command.Parse(["assess", fixture.Root.FullName]);
+        var strict = command.Parse(["assess", fixture.Root.FullName, "--strict"]);
+        var advisoryFinalize = command.Parse(["finalize", fixture.Root.FullName]);
+        var strictFinalize = command.Parse(["finalize", fixture.Root.FullName, "--strict"]);
+
+        var advisoryExit = await advisory.InvokeAsync(
+            advisory.InvocationConfiguration,
+            CancellationToken.None);
+        var strictExit = await strict.InvokeAsync(
+            strict.InvocationConfiguration,
+            CancellationToken.None);
+        var advisoryFinalizeExit = await advisoryFinalize.InvokeAsync(
+            advisoryFinalize.InvocationConfiguration,
+            CancellationToken.None);
+        var strictFinalizeExit = await strictFinalize.InvokeAsync(
+            strictFinalize.InvocationConfiguration,
+            CancellationToken.None);
+
+        Assert.AreEqual(0, advisoryExit);
+        Assert.AreEqual(2, strictExit);
+        Assert.AreEqual(0, advisoryFinalizeExit);
+        Assert.AreEqual(2, strictFinalizeExit);
     }
 
     [TestMethod]
@@ -758,7 +787,6 @@ public sealed partial class RunnerAcceptanceTests
             Reason = "The app resource migration requires semantic verification."
         });
         await fixture.SaveReportAsync(report);
-        await ContractTestAuthority.CompletePendingTodoWorkAsync(fixture.Root);
         var plan = await fixture.LoadAsync<StatePlanDocument>(
             ".migration-evidence/state-plan.json");
         plan.States[0].TodoIds = ["UWMIG001"];
@@ -766,7 +794,6 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, ".migration-evidence/state-plan.json", plan);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
             fixture.Root, new UwpEnforcementOptions());
-        await ContractTestAuthority.CompletePendingTodoVerificationAsync(fixture.Root);
         await fixture.WriteTargetEvidenceAsync();
         plan = await fixture.LoadAsync<StatePlanDocument>(
             ".migration-evidence/state-plan.json");
@@ -815,8 +842,6 @@ public sealed partial class RunnerAcceptanceTests
             Reason = "The required activation work is not mapped to a state."
         });
         await fixture.SaveReportAsync(report);
-        await ContractTestAuthority.CompletePendingTodoWorkAsync(fixture.Root);
-        await ContractTestAuthority.CompletePendingTodoVerificationAsync(fixture.Root);
 
         var reassessed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual("blocked", reassessed.Status);

@@ -763,9 +763,6 @@ public sealed record EnforcementEvaluationInput
     public required string TargetFingerprint { get; init; }
     public required bool MechanicalReady { get; init; }
     public required string MechanicalReason { get; init; }
-    public bool WorkExecutionReady { get; init; } = true;
-    public string WorkExecutionReason { get; init; } =
-        "No product-owned TODO work execution is required.";
     public required bool AnalyzerReferencePresent { get; init; }
     public required bool AnalyzerPrivateAssets { get; init; }
     public string? StatePlanError { get; init; }

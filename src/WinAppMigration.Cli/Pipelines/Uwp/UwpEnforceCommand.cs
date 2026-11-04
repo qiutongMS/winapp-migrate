@@ -29,7 +29,6 @@ internal sealed class UwpEnforceCommand : Command
         Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
         Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
         Subcommands.Add(new ConfigureCommand());
-        Subcommands.Add(new UwpTodoWorkCommand());
     }
 
     private sealed class SealContractCommand : Command
@@ -132,9 +131,14 @@ internal sealed class UwpEnforceCommand : Command
             var target = TargetArgument();
             var attempts = AttemptsOption();
             var full = FullOutputOption();
+            var strict = new Option<bool>("--strict")
+            {
+                Description = "Return a nonzero exit code unless migration closure is fully verified."
+            };
             Arguments.Add(target);
             Options.Add(attempts);
             Options.Add(full);
+            Options.Add(strict);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -143,7 +147,7 @@ internal sealed class UwpEnforceCommand : Command
                         windowOwnerResolver,
                         parseResult.GetValue(attempts) ?? 2,
                         cancellationToken);
-                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
+                    return WriteSnapshot(snapshot, parseResult.GetValue(full), parseResult.GetValue(strict));
                 }));
         }
     }
@@ -372,9 +376,14 @@ internal sealed class UwpEnforceCommand : Command
             var target = TargetArgument();
             var attempts = AttemptsOption();
             var full = FullOutputOption();
+            var strict = new Option<bool>("--strict")
+            {
+                Description = "Return a nonzero exit code unless migration closure is fully verified."
+            };
             Arguments.Add(target);
             Options.Add(attempts);
             Options.Add(full);
+            Options.Add(strict);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -384,7 +393,7 @@ internal sealed class UwpEnforceCommand : Command
                             windowOwnerResolver,
                             parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
-                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
+                    return WriteSnapshot(snapshot, parseResult.GetValue(full), parseResult.GetValue(strict));
                 }));
         }
     }
@@ -647,7 +656,7 @@ internal sealed class UwpEnforceCommand : Command
         }
     }
 
-    private static int WriteSnapshot(EnforcementSnapshot snapshot, bool full)
+    private static int WriteSnapshot(EnforcementSnapshot snapshot, bool full, bool strict = false)
     {
         object output = full
             ? snapshot
@@ -699,7 +708,7 @@ internal sealed class UwpEnforceCommand : Command
             JsonSerializer.Serialize(
                 output,
                 EnforcementStore.JsonOptions));
-        return snapshot.Status == "passed" ? 0 : 2;
+        return strict && snapshot.Status != "passed" ? 2 : 0;
     }
 
     private static async Task WriteRawProbeOutputAsync(
