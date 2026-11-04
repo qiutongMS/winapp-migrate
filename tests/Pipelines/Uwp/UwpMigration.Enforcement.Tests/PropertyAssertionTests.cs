@@ -61,6 +61,40 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PropertyAssertions_EmptyNameFromOmittedInspectAndNullQueryAreEquivalent(bool reverse)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var inspect = InspectObservationWithoutName();
+        var query = NullPropertyObservation("Name");
+        await PlanPropertyAsync(fixture, "name", reverse ? query : inspect);
+        var probe = await CaptureClosureProbeAsync(fixture,
+            new EnforcementProcessResult(0, reverse ? inspect : query, ""),
+            arguments: reverse ? ["inspect", "main", "-w", "42", "--json"] :
+                ["get-property", "main", "-p", "Name", "-w", "42", "--json"]);
+
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        Assert.AreEqual("passed", recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
+    }
+
+    [TestMethod]
+    public async Task PropertyAssertions_NullValuePropertyRemainsUnsupported()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await PlanPropertyAsync(fixture, "value", PropertyObservation("Value", ""));
+        var probe = await CaptureClosureProbeAsync(fixture,
+            new EnforcementProcessResult(0, NullPropertyObservation("Value"), ""),
+            arguments: ["get-property", "main", "-p", "Value", "-w", "42", "--json"]);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpEnforcementRunner.RecordStateAsync(
+                fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
+    }
+
+    [TestMethod]
     public async Task PropertyAssertions_ExplicitSelectorIsBoundToCommandNotRuntimeElementId()
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -293,5 +327,29 @@ public sealed partial class RunnerAcceptanceTests
                 [property] = JsonNode.Parse(rawValue)
             })
         })
+    }.ToJsonString();
+
+    private static string InspectObservationWithoutName() => new JsonObject
+    {
+        ["windows"] = new JsonArray(new JsonObject
+        {
+            ["elements"] = new JsonArray(new JsonObject
+            {
+                ["type"] = "Text", ["automationId"] = "main", ["selector"] = "main"
+            })
+        })
+    }.ToJsonString();
+
+    private static string NullPropertyObservation(string native) => new JsonObject
+    {
+        ["elementId"] = "tab-main-a1b2",
+        ["element"] = new JsonObject
+        {
+            ["type"] = "Text", ["name"] = null, ["automationId"] = "main",
+            ["selector"] = "tab-main-a1b2", ["className"] = "TextBlock",
+            ["isEnabled"] = true, ["isOffscreen"] = false, ["isInvokable"] = false,
+            ["x"] = 10, ["y"] = 20, ["width"] = 120, ["height"] = 32
+        },
+        ["properties"] = new JsonObject { [native] = null }
     }.ToJsonString();
 }
