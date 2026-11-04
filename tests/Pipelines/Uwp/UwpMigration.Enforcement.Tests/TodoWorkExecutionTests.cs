@@ -183,8 +183,11 @@ public sealed class TodoWorkExecutionTests
 
         var assessment = await UwpTodoWorkExecution.AssessAsync(
             fixture.Root);
+        var nextError = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpTodoWorkExecution.GetNextAsync(fixture.Root));
         Assert.IsFalse(assessment.BuildReady);
         StringAssert.Contains(assessment.Reason, "changed outside the execution ledger");
+        StringAssert.Contains(nextError.Message, "changed outside the execution ledger");
     }
 
     [TestMethod]

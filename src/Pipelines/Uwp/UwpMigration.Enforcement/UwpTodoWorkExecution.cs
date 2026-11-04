@@ -58,6 +58,7 @@ public static class UwpTodoWorkExecution
         await using var enforcementLock =
             await EnforcementStore.AcquireLockAsync(target, cancellationToken);
         var context = await LoadContextAsync(target, createLedger: true, cancellationToken);
+        RequireCurrentTarget(context);
         return BuildView(context);
     }
 
