@@ -33,17 +33,74 @@ public sealed class TodoWorkExecutionTests
     }
 
     [TestMethod]
-    public async Task WorkExecution_RequiresSourceOracleBeforeLedgerCreation()
+    public async Task WorkExecution_SealsLedgerBeforeSourceOracleButRejectsIssuance()
     {
         using var fixture = await WorkFixture.CreateAsync(secondWave: false);
         File.Delete(fixture.Path(".migration-evidence/source.json"));
 
+        var next = await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpTodoWorkExecution.IssueAsync(
+                fixture.Root,
+                "UWMIG900:first",
+                "direct",
+                fixture.Workspaces));
+
+        StringAssert.Contains(error.Message, "needs captured source-oracle evidence");
+        Assert.AreEqual(0, next.Wave!.Index);
+        Assert.IsTrue(File.Exists(fixture.Path(
+            EnforcementStore.TodoWorkExecutionPath)));
+    }
+
+    [TestMethod]
+    public async Task WorkExecution_InactiveSchedulerDoesNotGateMigrationClosure()
+    {
+        using var fixture = await WorkFixture.CreateAsync(secondWave: false);
+
+        var assessment = await UwpTodoWorkExecution.AssessAsync(fixture.Root);
+
+        Assert.IsTrue(assessment.BuildReady);
+        Assert.IsTrue(assessment.ClosureReady);
+        StringAssert.Contains(assessment.Reason, "optional TODO scheduler is inactive");
+        Assert.IsFalse(File.Exists(fixture.Path(
+            EnforcementStore.TodoWorkExecutionPath)));
+    }
+
+    [TestMethod]
+    public async Task WorkExecution_DeletedLedgerCannotDeactivateScheduler()
+    {
+        using var fixture = await WorkFixture.CreateAsync(secondWave: false);
+        await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+        File.Delete(fixture.Path(EnforcementStore.TodoWorkExecutionPath));
+
+        var assessment = await UwpTodoWorkExecution.AssessAsync(fixture.Root);
         var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpTodoWorkExecution.GetNextAsync(fixture.Root));
 
-        StringAssert.Contains(error.Message, "needs captured source-oracle evidence");
-        Assert.IsFalse(File.Exists(fixture.Path(
-            EnforcementStore.TodoWorkExecutionPath)));
+        Assert.IsFalse(assessment.BuildReady);
+        Assert.IsFalse(assessment.ClosureReady);
+        StringAssert.Contains(assessment.Reason, "ledger is missing");
+        StringAssert.Contains(error.Message, "ledger is missing");
+    }
+
+    [TestMethod]
+    public async Task WorkExecution_EmptyActiveLedgerStillProtectsTargetFingerprint()
+    {
+        using var fixture = await WorkFixture.CreateAsync(secondWave: false);
+        var report = await fixture.LoadReportAsync();
+        report.Todos[0].Status = "accepted";
+        await fixture.SaveReportAsync(report);
+        var next = await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
+        await File.AppendAllTextAsync(
+            fixture.Path("C.cs"),
+            "// mutation after empty scheduler activation");
+
+        var assessment = await UwpTodoWorkExecution.AssessAsync(fixture.Root);
+
+        Assert.IsTrue(next.ClosureReady);
+        Assert.IsFalse(assessment.BuildReady);
+        Assert.IsFalse(assessment.ClosureReady);
+        StringAssert.Contains(assessment.Reason, "changed outside");
     }
 
     [TestMethod]
@@ -345,7 +402,7 @@ public sealed class TodoWorkExecutionTests
     }
 
     [TestMethod]
-    public async Task WorkExecution_TerminalRequiredTodoDoesNotRequireNewLedger()
+    public async Task WorkExecution_TerminalTodoCannotBypassActiveLedger()
     {
         using var fixture = await WorkFixture.CreateAsync(secondWave: false);
         await UwpTodoWorkExecution.GetNextAsync(fixture.Root);
@@ -355,9 +412,34 @@ public sealed class TodoWorkExecutionTests
 
         var assessment = await UwpTodoWorkExecution.AssessAsync(fixture.Root);
 
-        Assert.IsTrue(assessment.BuildReady);
-        Assert.IsTrue(assessment.ClosureReady);
-        StringAssert.Contains(assessment.Reason, "No unresolved required");
+        Assert.IsFalse(assessment.BuildReady);
+        Assert.IsFalse(assessment.ClosureReady);
+        StringAssert.Contains(assessment.Reason, "wave 0");
+    }
+
+    [TestMethod]
+    public async Task WorkExecution_VerificationWaveRejectsCanonicalBypass()
+    {
+        using var fixture = await WorkFixture.CreateAsync(
+            secondWave: false,
+            verificationWave: true);
+        await PrepareAndIntegrateWaveAsync(fixture);
+        await fixture.RecordMechanicalVerificationAsync();
+        await UwpTodoWorkExecution.CompleteWaveAsync(fixture.Root, 0);
+        await File.AppendAllTextAsync(
+            fixture.Path("C.cs"),
+            "// bypass after implementation");
+        await fixture.RecordCanonicalBuildAsync();
+        await fixture.RecordMechanicalVerificationAsync();
+
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpTodoWorkExecution.CompleteWaveAsync(fixture.Root, 1));
+        StringAssert.Contains(error.Message, "changed outside the execution ledger");
+
+        var assessment = await UwpTodoWorkExecution.AssessAsync(fixture.Root);
+        Assert.IsFalse(assessment.BuildReady);
+        Assert.IsFalse(assessment.ClosureReady);
+        StringAssert.Contains(assessment.Reason, "changed outside");
     }
 
     private static async Task PrepareAndIntegrateWaveAsync(WorkFixture fixture)

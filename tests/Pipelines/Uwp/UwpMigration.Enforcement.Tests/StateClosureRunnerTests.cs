@@ -16,6 +16,43 @@ public sealed partial class RunnerAcceptanceTests
     private const string ClosurePlan = ".migration-evidence/state-plan.json";
 
     [TestMethod]
+    public async Task TodoWork_InactiveSchedulerLeavesTargetCaptureToMigrationClosure()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        var report = await fixture.LoadReportAsync();
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "UWMIG-SERIAL",
+            Category = "behavior",
+            Priority = "required",
+            Summary = "Complete serial migration work.",
+            Reason = "Migration closure remains authoritative without scheduler activation."
+        });
+        await fixture.SaveReportAsync(report);
+        var runner = new UwpEnforcementRunner(
+            new FakeProcessRunner(new EnforcementProcessResult(
+                0,
+                ClosureTree,
+                "")),
+            windowOwnerResolver: TestWindowOwnerResolver.Shared);
+
+        var probe = await runner.InvokeUiAsync(
+            fixture.Root,
+            "winapp",
+            ["inspect", "-w", "42", "--json"],
+            [],
+            "state-1");
+
+        Assert.AreEqual(0, probe.ExitCode);
+        Assert.IsFalse(File.Exists(Path.Combine(
+            fixture.Root.FullName,
+            EnforcementStore.TodoWorkExecutionPath)));
+    }
+
+    [TestMethod]
     public async Task TodoWork_IncompleteLedgerBlocksTargetCaptureEvenWithFreshReplay()
     {
         using var fixture = await RunnerFixture.CreateAsync();

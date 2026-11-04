@@ -4,8 +4,7 @@
     "preToolUse": [
       {
         "type": "command",
-        "matcher": "powershell",
-        "powershell": "& \"${PLUGIN_ROOT}/com.github.copilot/hooks/guard-winapp-boundary.ps1\"",
+        "powershell": "& \"${PLUGIN_ROOT}/com.github.copilot/hooks/guard-skill-execution.ps1\" -ContractPath \"${PLUGIN_ROOT}/skills/uwp-to-winapp/skill-execution-contract.json\"",
         "timeoutSec": 5
       }
     ]

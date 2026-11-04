@@ -1,6 +1,11 @@
 # Parallel migration work orchestration
 
-Use this protocol only for schema `1.6` `todoGraph` work. The product defines
+This is an optional execution optimizer for schema `1.6` `todoGraph` work, not
+a migration-completion protocol. Use it only when dependency-safe isolation or
+parallel preparation is worth its coordination cost. A small serial migration
+may leave the scheduler inactive and still use the full migration closure.
+
+The product defines
 work items, dependencies, touch sets, conflict keys, and execution waves. The
 product also owns the signed execution ledger, immutable packet issuance,
 isolated workspace creation, handoff validation, serial integration, and wave
@@ -10,7 +15,7 @@ work.
 
 ## Preconditions
 
-Before delegation, run:
+Activate scheduling before delegation:
 
 ```powershell
 winapp-migrate uwp closure work next "<target>"
@@ -18,17 +23,22 @@ winapp-migrate uwp closure work next "<target>"
 
 This command creates or validates
 `.migration-evidence/enforcement/work-execution.json` and returns only the
-earliest incomplete wave. Then:
+earliest incomplete wave. Creation seals the graph and canonical target before
+source capture is complete; packet issuance remains unavailable until required
+source-oracle evidence is captured. After activation:
 
 1. require the returned graph and signed ledger to be valid;
 2. establish the required state contract, capture every required source-oracle
-   state, and complete the post-capture workflow assessment;
+   state, and complete the post-capture workflow assessment before `work issue`;
 3. select only unresolved work items in the returned wave;
 4. let `closure work issue` freeze the product target fingerprint and create
    one immutable-base workspace per item.
 
 Do not flatten an invalid graph or infer missing dependencies. Rerun
 `winapp-migrate uwp verify` after correcting the product-owned input.
+Do not return to direct canonical edits after activation. To use the serial
+path, leave the scheduler inactive from the start. Activation is independently
+anchored and cannot be reset by deleting the execution ledger.
 
 ## Issue a complete work packet
 
@@ -116,7 +126,11 @@ fresh signed canonical build and is never issued to a worker.
 
 Only after integration is stable may the parent perform the serialized
 canonical sequence: build/replay attestation, state capture, record-state,
-report synchronization, and finalization. The closure frontier remains
+report synchronization, and finalization. While scheduling is active, the
+closure frontier remains
 `work-item` until all non-verification work is verified, and final closure
 remains blocked until every execution entry is verified. No worker result can
-close a TODO, finding, state, or parity claim.
+close a TODO, finding, state, or parity claim. Without an active scheduler,
+these execution-ledger gates do not exist; the ordinary migration closure still
+requires the same mechanical, build, replay, state, finding, and parity
+evidence.

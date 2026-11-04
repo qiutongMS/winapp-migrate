@@ -13,7 +13,7 @@ internal sealed class UwpTodoWorkCommand : Command
     public UwpTodoWorkCommand()
         : base(
             "work",
-            "Execute the product-generated TODO DAG through immutable work packets, isolated workspaces, serial integration, and verified waves.")
+            "Optionally coordinate product-generated TODO work through immutable packets, isolated workspaces, serial integration, and verified waves.")
     {
         Subcommands.Add(new NextCommand());
         Subcommands.Add(new IssueCommand());
@@ -24,7 +24,7 @@ internal sealed class UwpTodoWorkCommand : Command
 
     private sealed class NextCommand : Command
     {
-        public NextCommand() : base("next", "Create or inspect the execution ledger and return the earliest incomplete wave.")
+        public NextCommand() : base("next", "Activate or inspect the optional execution ledger and return the earliest incomplete wave.")
         {
             var target = TargetArgument();
             Arguments.Add(target);

@@ -16,6 +16,7 @@ namespace UwpMigration.Enforcement;
 public static class UwpTodoWorkExecution
 {
     public const string WorkspacePacketFileName = ".winapp-migrate-work-packet.json";
+    private const string SchedulerAnchorPrefix = "todo-work-root-";
 
     private static readonly HashSet<string> ExcludedDirectories =
         new(StringComparer.OrdinalIgnoreCase)
@@ -76,6 +77,7 @@ public static class UwpTodoWorkExecution
         await using var enforcementLock =
             await EnforcementStore.AcquireLockAsync(target, cancellationToken);
         var context = await LoadContextAsync(target, createLedger: true, cancellationToken);
+        await RequireSourceOracleAsync(target, context.Report, cancellationToken);
         var wave = EarliestIncompleteWave(context);
         var item = context.Report.TodoGraph.WorkItems.SingleOrDefault(candidate =>
             candidate.Id.Equals(workItemId, StringComparison.Ordinal))
@@ -343,7 +345,7 @@ public static class UwpTodoWorkExecution
             throw new InvalidDataException(
                 $"Work item {workItemId} is not in the earliest incomplete wave.");
         }
-        var applicable = ApplicableWorkItemIds(context.Report);
+        var applicable = ScheduledWorkItemIds(context);
         var orderedEntries = wave.WorkItemIds
             .Where(id => applicable.Contains(id) &&
                 context.Ledger.Entries.Any(candidate =>
@@ -419,7 +421,8 @@ public static class UwpTodoWorkExecution
             throw new InvalidDataException(
                 $"Wave {waveIndex} cannot complete before earliest incomplete wave {wave.Index}.");
         }
-        var applicable = ApplicableWorkItemIds(context.Report);
+        RequireCurrentTarget(context);
+        var applicable = ScheduledWorkItemIds(context);
         var entries = wave.WorkItemIds
             .Where(id => applicable.Contains(id) &&
                 context.Ledger.Entries.Any(candidate =>
@@ -445,7 +448,6 @@ public static class UwpTodoWorkExecution
                 throw new InvalidDataException(
                     $"Wave {wave.Index} is incomplete because {incomplete.WorkItemId} is {incomplete.Status}.");
             }
-            RequireCurrentTarget(context);
         }
         await RequireFreshMechanicalVerificationAsync(
             target,
@@ -469,8 +471,6 @@ public static class UwpTodoWorkExecution
         CancellationToken cancellationToken = default)
     {
         MigrationReportStore.NormalizeForWrite(report);
-        if (ApplicableWorkItemIds(report).Count == 0)
-            return;
         var (ledger, ledgerError) =
             await EnforcementStore.TryLoadAsync<TodoWorkExecutionLedger>(
                 target,
@@ -480,10 +480,14 @@ public static class UwpTodoWorkExecution
             throw new InvalidDataException(ledgerError);
         if (ledger is null)
             return;
+        var graphHash = ComputeGraphHash(report);
+        var validation = ValidateLedger(report, ledger, graphHash);
+        if (validation is not null)
+            throw new InvalidDataException(validation);
         var fingerprint = await TargetFingerprint.ComputeAsync(target, cancellationToken);
         var verification = new TodoWorkMechanicalVerification
         {
-            GraphHash = ComputeGraphHash(report),
+            GraphHash = graphHash,
             TargetFingerprint = fingerprint,
             Status = report.MechanicalVerification.Status,
             RecordedAt = DateTimeOffset.UtcNow
@@ -510,7 +514,7 @@ public static class UwpTodoWorkExecution
                 cancellationToken);
         if (ledgerError is not null)
             throw new InvalidDataException(ledgerError);
-        if (ledger is null || ApplicableWorkItemIds(issuedReport).Count == 0)
+        if (ledger is null)
             return;
 
         var graphHash = ComputeGraphHash(issuedReport);
@@ -552,30 +556,6 @@ public static class UwpTodoWorkExecution
         string currentFingerprint,
         CancellationToken cancellationToken = default)
     {
-        if (report.TodoGraph.WorkItems.Count == 0 &&
-            report.TodoGraph.ExecutionWaves.Count == 0)
-        {
-            return new TodoWorkExecutionAssessment(
-                true,
-                true,
-                "No product-generated TODO work graph requires execution.");
-        }
-        if (!report.TodoGraph.Status.Equals("valid", StringComparison.Ordinal) ||
-            report.TodoGraph.Issues.Count > 0)
-        {
-            return new TodoWorkExecutionAssessment(
-                false,
-                false,
-                "The product-generated TODO graph must be valid before work can be issued.");
-        }
-        var applicable = ApplicableWorkItemIds(report);
-        if (applicable.Count == 0)
-        {
-            return new TodoWorkExecutionAssessment(
-                true,
-                true,
-                "No unresolved required TODO work item requires execution.");
-        }
         var (ledger, error) =
             await EnforcementStore.TryLoadAsync<TodoWorkExecutionLedger>(
                 target,
@@ -585,31 +565,68 @@ public static class UwpTodoWorkExecution
             return new TodoWorkExecutionAssessment(false, false, error);
         if (ledger is null)
         {
+            if (SchedulerActivationExists(target))
+            {
+                return new TodoWorkExecutionAssessment(
+                    false,
+                    false,
+                    "The optional TODO scheduler was activated, but its execution ledger is missing.");
+            }
+            return new TodoWorkExecutionAssessment(
+                true,
+                true,
+                "The optional TODO scheduler is inactive; migration closure remains authoritative.");
+        }
+        if (report.TodoGraph.WorkItems.Count == 0 &&
+            report.TodoGraph.ExecutionWaves.Count == 0)
+        {
             return new TodoWorkExecutionAssessment(
                 false,
                 false,
-                "TODO work execution has not started; run `uwp closure work next`.");
+                "An active TODO execution ledger no longer has a product-generated graph.");
+        }
+        if (!report.TodoGraph.Status.Equals("valid", StringComparison.Ordinal) ||
+            report.TodoGraph.Issues.Count > 0)
+        {
+            return new TodoWorkExecutionAssessment(
+                false,
+                false,
+                "The active TODO execution ledger requires a valid product-generated graph.");
         }
         var graphHash = ComputeGraphHash(report);
         var validation = ValidateLedger(report, ledger, graphHash);
         if (validation is not null)
             return new TodoWorkExecutionAssessment(false, false, validation);
-
-        var nonVerificationReady = ledger.Entries
-            .Where(entry => applicable.Contains(entry.WorkItemId) &&
-                !entry.Stage.Equals("verification", StringComparison.Ordinal))
-            .All(entry => entry.Status == TodoWorkExecutionStatus.Verified);
-        var closureReady = ledger.Entries
-            .Where(entry => applicable.Contains(entry.WorkItemId))
-            .All(entry => entry.Status == TodoWorkExecutionStatus.Verified);
-        if (!nonVerificationReady &&
-            !ledger.CurrentTargetFingerprint.Equals(currentFingerprint, StringComparison.Ordinal))
+        var activationError = ValidateSchedulerActivation(target, ledger);
+        if (activationError is not null)
+            return new TodoWorkExecutionAssessment(false, false, activationError);
+        if (!ledger.CurrentTargetFingerprint.Equals(
+                currentFingerprint,
+                StringComparison.Ordinal))
         {
             return new TodoWorkExecutionAssessment(
                 false,
                 false,
-                "The canonical target changed outside the execution ledger while a TODO work wave was active.");
+                "The canonical target changed outside the execution ledger while the optional scheduler is active.");
         }
+        var scheduled = ledger.Entries
+            .Select(entry => entry.WorkItemId)
+            .ToHashSet(StringComparer.Ordinal);
+        if (scheduled.Count == 0)
+        {
+            return new TodoWorkExecutionAssessment(
+                true,
+                true,
+                "The active TODO scheduler has no issued work contract.");
+        }
+
+        var nonVerificationReady = ledger.Entries
+            .Where(entry => scheduled.Contains(entry.WorkItemId) &&
+                !entry.Stage.Equals("verification", StringComparison.Ordinal))
+            .All(entry => entry.Status == TodoWorkExecutionStatus.Verified);
+        var closureReady = ledger.Entries
+            .Where(entry => scheduled.Contains(entry.WorkItemId))
+            .All(entry => entry.Status == TodoWorkExecutionStatus.Verified);
         if (closureReady)
         {
             return new TodoWorkExecutionAssessment(
@@ -621,6 +638,7 @@ public static class UwpTodoWorkExecution
             .OrderBy(wave => wave.Index)
             .First(wave => wave.WorkItemIds.Any(id =>
                 ledger.Entries.Any(entry =>
+                    scheduled.Contains(entry.WorkItemId) &&
                     entry.WorkItemId.Equals(id, StringComparison.Ordinal) &&
                     entry.Status !=
                     TodoWorkExecutionStatus.Verified)));
@@ -647,7 +665,6 @@ public static class UwpTodoWorkExecution
             throw new FileNotFoundException("migration-report.json was not found.", reportPath);
         var report = await MigrationReportStore.LoadAsync(reportPath, cancellationToken);
         ValidateGraph(report);
-        await RequireSourceOracleAsync(target, report, cancellationToken);
         var graphHash = ComputeGraphHash(report);
         var currentFingerprint = await TargetFingerprint.ComputeAsync(target, cancellationToken);
         var (ledger, ledgerError) =
@@ -659,6 +676,11 @@ public static class UwpTodoWorkExecution
             throw new InvalidDataException(ledgerError);
         if (ledger is null)
         {
+            if (SchedulerActivationExists(target))
+            {
+                throw new InvalidDataException(
+                    "The optional TODO scheduler was activated, but its execution ledger is missing.");
+            }
             if (!createLedger)
             {
                 throw new InvalidDataException(
@@ -666,10 +688,14 @@ public static class UwpTodoWorkExecution
             }
             ledger = CreateLedger(report, graphHash, currentFingerprint);
             await SaveLedgerAsync(target, ledger, cancellationToken);
+            AnchorSchedulerActivation(target, ledger);
         }
         var validation = ValidateLedger(report, ledger, graphHash);
         if (validation is not null)
             throw new InvalidDataException(validation);
+        var activationError = ValidateSchedulerActivation(target, ledger);
+        if (activationError is not null)
+            throw new InvalidDataException(activationError);
         return new ExecutionContext(
             target,
             report,
@@ -879,7 +905,7 @@ public static class UwpTodoWorkExecution
 
     private static TodoWorkExecutionView BuildView(ExecutionContext context)
     {
-        var applicable = ApplicableWorkItemIds(context.Report);
+        var applicable = ScheduledWorkItemIds(context);
         var nonVerificationReady = context.Ledger.Entries
             .Where(entry => applicable.Contains(entry.WorkItemId) &&
                 !entry.Stage.Equals("verification", StringComparison.Ordinal))
@@ -940,7 +966,7 @@ public static class UwpTodoWorkExecution
     private static MigrationTodoExecutionWave? EarliestIncompleteWave(
         ExecutionContext context)
     {
-        var applicable = ApplicableWorkItemIds(context.Report);
+        var applicable = ScheduledWorkItemIds(context);
         return context.Report.TodoGraph.ExecutionWaves
             .OrderBy(wave => wave.Index)
             .FirstOrDefault(wave => wave.WorkItemIds.Any(id =>
@@ -981,6 +1007,11 @@ public static class UwpTodoWorkExecution
         }
         return applicable;
     }
+
+    private static HashSet<string> ScheduledWorkItemIds(ExecutionContext context) =>
+        context.Ledger.Entries
+            .Select(entry => entry.WorkItemId)
+            .ToHashSet(StringComparer.Ordinal);
 
     private static TodoWorkExecutionEntry RequireEntry(
         ExecutionContext context,
@@ -1632,6 +1663,44 @@ public static class UwpTodoWorkExecution
     private static string ShortHash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
             .ToLowerInvariant()[..16];
+
+    private static bool SchedulerActivationExists(DirectoryInfo target) =>
+        StateClosureSeal.ReadContractAnchor(SchedulerAnchorName(target)) is not null;
+
+    private static void AnchorSchedulerActivation(
+        DirectoryInfo target,
+        TodoWorkExecutionLedger ledger) =>
+        StateClosureSeal.WriteContractAnchor(
+            SchedulerAnchorName(target),
+            SchedulerActivationIdentity(ledger));
+
+    private static string? ValidateSchedulerActivation(
+        DirectoryInfo target,
+        TodoWorkExecutionLedger ledger)
+    {
+        var anchor = StateClosureSeal.ReadContractAnchor(
+            SchedulerAnchorName(target));
+        if (anchor is null)
+            return "The active TODO execution ledger is missing its independent activation anchor.";
+        return anchor.Equals(
+            SchedulerActivationIdentity(ledger),
+            StringComparison.Ordinal)
+            ? null
+            : "The active TODO execution ledger does not match its independent activation anchor.";
+    }
+
+    private static string SchedulerActivationIdentity(
+        TodoWorkExecutionLedger ledger) =>
+        $"{ledger.GraphHash}|{ledger.CreatedAt.ToUnixTimeMilliseconds()}";
+
+    private static string SchedulerAnchorName(DirectoryInfo target)
+    {
+        var path = Path.GetFullPath(target.FullName).ToUpperInvariant();
+        var hash = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(path)))
+            .ToLowerInvariant();
+        return SchedulerAnchorPrefix + hash[..32];
+    }
 
     private sealed record ExecutionContext(
         DirectoryInfo Target,

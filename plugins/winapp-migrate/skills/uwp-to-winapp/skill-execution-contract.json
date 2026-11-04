@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "1.0",
+  "id": "uwp-to-winapp",
+  "workspace": {
+    "marker": "migration-report.json",
+    "jsonRequirements": [
+      {
+        "path": "schemaVersion",
+        "equals": "1.6"
+      },
+      {
+        "path": "source.root",
+        "required": true
+      },
+      {
+        "path": "source.projectFile",
+        "required": true
+      },
+      {
+        "path": "target.root",
+        "required": true
+      }
+    ]
+  },
+  "shellRules": [
+    {
+      "id": "canonical-winapp-gateway",
+      "executables": [
+        "winapp",
+        "winapp.exe"
+      ],
+      "environmentInvocations": [
+        "$env:WINAPP_MIGRATE_WINAPP_PATH"
+      ],
+      "verbs": [
+        "run",
+        "build",
+        "ui"
+      ],
+      "allowHelp": true,
+      "reason": "Raw 'winapp {verb}' is not permitted in an active UWP migration workspace. Use 'winapp-migrate uwp source ...' for source-oracle operations or 'winapp-migrate uwp closure ...' for target operations so evidence and process identity remain provenance-bound."
+    }
+  ],
+  "dynamicShellInvocationReason": "Dynamic shell invocation is not permitted in an active UWP migration workspace because the Skill execution contract cannot prove which executable will run. Invoke an approved executable by literal name or path.",
+  "opaqueProcessLaunchers": [
+    "bash",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "sh",
+    "saps",
+    "start",
+    "Start-Process"
+  ],
+  "protectedWrites": {
+    "activationFile": ".migration-evidence/enforcement/work-execution.json",
+    "activationCngKeyPrefix": "WinAppMigration.Anchor.todo-work-root-",
+    "toolNames": [
+      "apply_patch",
+      "create",
+      "edit",
+      "replace_string_in_file",
+      "str_replace_editor",
+      "write_file"
+    ],
+    "pathProperties": [
+      "filePath",
+      "file_path",
+      "filename",
+      "path",
+      "target"
+    ],
+    "patchProperties": [
+      "patch"
+    ],
+    "reason": "Direct file-tool writes to the canonical migration target are not permitted while the optional TODO scheduler is active. Edit only the product-issued isolated workspace and integrate through 'winapp-migrate uwp closure work integrate'.",
+    "unknownPathReason": "The file-write request does not expose a path that can be checked against the active Skill execution contract."
+  }
+}

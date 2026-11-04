@@ -9,6 +9,13 @@ Preserve the app; do not redesign it. Keep every page, control, resource, helper
 
 This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.6`. WinApp CLI remains a separate implementation tool, but every source baseline operation must cross the `winapp-migrate uwp source` boundary and every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp closure` boundary.
 
+Three controls remain independent. The plugin's machine-readable Skill
+execution contract enforces gateway and protected-write boundaries. Migration
+closure determines whether the resulting app is mechanically and behaviorally
+complete. The TODO scheduler is optional and exists only to coordinate
+dependency-safe parallel work; it does not replace closure or define migration
+correctness.
+
 ## Tool and contract compatibility
 
 Treat three capabilities as independent:
@@ -116,19 +123,21 @@ Before semantic edits:
 7. Read startup, the feature registry or navigation shell, `dependencyAnalysis`, `activationAnalysis`, and enough source to classify the migration as fast or expanded.
 8. Identify the source behavior that proves the app's primary purpose and any user-critical flow.
 
-Require `todoGraph.status` to be `valid` before scheduling report work. Read
+Require `todoGraph.status` to be `valid` before activating parallel scheduling.
+Read
 [Migration TODO guidance and graph](references/migration-todo-graph.md) and
 [Parallel migration work orchestration](references/parallel-work-orchestration.md).
 The graph determines safe dependency/touch-set waves, not the repair strategy
-or completion verdict. The product-owned execution ledger determines whether a
-wave was actually issued, prepared, integrated, and verified. Do not construct
-work packets or worktrees by hand. When target implementation is ready to
-begin, call `winapp-migrate uwp closure work next "<target>"`; use only packets
-and isolated workspace paths returned by the `work` commands. The parent alone
-submits and integrates candidates and performs mechanical verification,
-canonical build/replay, state recording, and final closure. Without workers,
-execute the same product-issued packets serially; never edit the canonical
-target directly or let multiple workers share it.
+or completion verdict. Activate the optional scheduler with
+`winapp-migrate uwp closure work next "<target>"` only when independent work
+items justify isolated or parallel execution. Activation seals the graph and
+canonical target; after activation, use only product-issued workspaces and
+integration commands. Activation is monotonic for that workspace; deleting the
+ledger does not return it to serial mode. For a small serial migration, leave
+the scheduler inactive, edit the canonical target coherently, and rely on the
+same mechanical verification and migration closure. Never mix direct canonical
+edits with an
+active scheduler.
 
 Use the **fast path** when the primary behavior is page-local, dependencies and APIs have direct target mappings, and it crosses no uncertain project, lifetime, activation, window, native-host, or shared asynchronous boundary. Read only startup, capability-bearing manifest entries, relevant pages, and their custom controls or resources. Do not create a semantic finding ledger before a real finding exists.
 
@@ -154,7 +163,7 @@ perform target work between changing the source statuses and this assessment.
 
 Treat report categories as evidence within the active behavior scope, not as an exhaustive worklist or a completion definition.
 
-If the active work is represented by product work items, execute only the
+If the optional scheduler is active, execute only the
 earliest dependency-ready wave returned by
 `winapp-migrate uwp closure work next "<target>"`. For each non-verification
 item, select a strategy whose preconditions are proven, then call
@@ -171,8 +180,9 @@ After every non-verification wave is integrated, run
 `closure work complete-wave --wave <index> "<target>"`. Do not issue the next
 wave until completion succeeds. For a verification wave, do not issue a worker:
 run the canonical closure attestation to produce a fresh build, rerun mechanical
-`verify`, then complete the wave. Only the signed execution ledger can make
-canonical build/replay and final closure reachable.
+`verify`, then complete the wave. The active ledger must settle before canonical
+build/replay resumes. When the scheduler was never activated, canonical
+operations and final closure remain governed by migration evidence alone.
 
 On the fast path, migrate the complete small behavior surface as one coherent patch when practical. On the expanded path, implement the smallest architecture slice that can build and exercise startup plus the active sentinel: its consumed dependency contract, owning projects, shared abstraction, and direct call path.
 
