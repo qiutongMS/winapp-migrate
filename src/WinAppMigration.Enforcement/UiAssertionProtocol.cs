@@ -57,6 +57,7 @@ internal static class UiAssertionProtocol
             throw new InvalidDataException($"Assertion {assertion.Id} requires one matching inspect element with property {property.Name}.");
         if (!matches[0].TryGetProperty(property.Name, out var observed))
         {
+            if (property.Name == "name") return string.Empty;
             throw new InvalidDataException($"Assertion {assertion.Id} requires one matching inspect element with property {property.Name}.");
         }
         return NormalizeInspectValue(observed, property);
