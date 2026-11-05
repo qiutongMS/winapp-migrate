@@ -57,7 +57,6 @@ internal static class UiAssertionProtocol
             throw new InvalidDataException($"Assertion {assertion.Id} requires one matching inspect element with property {property.Name}.");
         if (!matches[0].TryGetProperty(property.Name, out var observed))
         {
-            if (property.Name == "name") return string.Empty;
             throw new InvalidDataException($"Assertion {assertion.Id} requires one matching inspect element with property {property.Name}.");
         }
         return NormalizeInspectValue(observed, property);
@@ -184,7 +183,7 @@ internal static class UiAssertionProtocol
     private static string NormalizeQueryValue(string? value, Property property) => property.Type switch
     {
         ValueType.Text when value is not null => value,
-        ValueType.Text when property.Name == "name" => string.Empty,
+        ValueType.Text => string.Empty,
         ValueType.Boolean when value is "True" or "False" => value == "True" ? "true" : "false",
         ValueType.Expansion => value switch
         {
@@ -199,7 +198,7 @@ internal static class UiAssertionProtocol
     private static string NormalizeInspectValue(JsonElement value, Property property) => property.Type switch
     {
         ValueType.Text when value.ValueKind == JsonValueKind.String => value.GetString()!,
-        ValueType.Text when property.Name == "name" && value.ValueKind == JsonValueKind.Null => string.Empty,
+        ValueType.Text when value.ValueKind == JsonValueKind.Null => string.Empty,
         ValueType.Boolean when value.ValueKind is JsonValueKind.True or JsonValueKind.False => value.GetBoolean() ? "true" : "false",
         ValueType.Expansion when value.ValueKind == JsonValueKind.String && value.GetString() is "expanded" or "collapsed" => value.GetString()!,
         ValueType.Toggle when value.ValueKind == JsonValueKind.String && value.GetString() is "on" or "off" or "indeterminate" => value.GetString()!,

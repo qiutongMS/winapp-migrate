@@ -289,7 +289,8 @@ public static class EnforcementEvaluator
         }
 
         var persistedDisposition = input.PersistedDisposition;
-        if (persistedDisposition is { Kind: "complete", Terminal: true })
+        if (persistedDisposition is { Kind: "complete", Terminal: true } ||
+            WorkflowDispositions.IsRetiredAuthorization(persistedDisposition))
         {
             persistedDisposition = null;
         }
@@ -311,7 +312,10 @@ public static class EnforcementEvaluator
     }
 
     private static string? ArtifactError(EnforcementEvaluationInput input) =>
-        input.ArtifactError ?? WorkflowValidation.DispositionError(input.PersistedDisposition) ??
+        input.ArtifactError ??
+        (WorkflowDispositions.IsRetiredAuthorization(input.PersistedDisposition)
+            ? null
+            : WorkflowValidation.DispositionError(input.PersistedDisposition)) ??
         WorkflowValidation.EvidenceArtifactError(input.Attempts, input.Build, input.Replay) ??
         WorkflowValidation.DiagnosticError(input.Diagnostic) ??
         WorkflowValidation.PolicyError(input.Policy) ??

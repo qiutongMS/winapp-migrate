@@ -158,7 +158,7 @@ public static class WorkflowValidation
             "pause-replan" => (false, true, "not-ready"),
             "continue-with-debt" => (false, true, "debt"),
             "complete" => (true, false, "complete"),
-            "blocked-required" => (true, false, "blocked"),
+            "blocked-required" => (false, true, "blocked"),
             "total-budget-exhausted" => (true, false, "blocked"),
             "infrastructure-failure" => (true, true, "failed"),
             _ => ((bool, bool, string)?)null
@@ -167,7 +167,7 @@ public static class WorkflowValidation
             disposition.Terminal != expected.Value.Item1 || disposition.Retryable != expected.Value.Item2 ||
             disposition.Finalization != expected.Value.Item3 || disposition.AllowedOperations is null ||
             disposition.AllowedOperations.Any(operation => !Enum.IsDefined(operation)) ||
-            (disposition.Terminal || disposition.Kind is "pause-replan" or "continue-with-debt") &&
+            (disposition.Terminal || disposition.Kind == "pause-replan") &&
                 disposition.AllowedOperations.Count > 0 ||
             disposition.AllowedOperations.Distinct().Count() != disposition.AllowedOperations.Count
             ? "Workflow run disposition has invalid kind, reason code, terminal, retryable, operations, or finalization semantics."

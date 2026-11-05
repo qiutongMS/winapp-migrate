@@ -45,11 +45,6 @@ public static class WorkflowOperations
         if (snapshot.Workflow is null ||
             snapshot.Gates.First(gate => gate.Id == "enforcement-artifacts").Status != "passed")
             return false;
-        if (snapshot.Disposition?.Kind == "continue-with-debt")
-        {
-            reason = "Deferred work cannot consume operations; observe again to select independent dependency-ready work.";
-            return false;
-        }
         var prerequisite = snapshot.Gates.FirstOrDefault(gate =>
             gate.Id is "source-oracle" or "mechanical" && gate.Status != "passed");
         if (prerequisite is not null)
@@ -89,12 +84,6 @@ public static class WorkflowOperations
             reason = "Source-first diagnosis is required before correction/build/replay.";
             return false;
         }
-        if (operation == WorkflowOperation.UiAction &&
-            snapshot.Frontier?.Kind is "required-blocked" or "continue-with-debt")
-        {
-            reason = snapshot.Frontier.Reason;
-            return false;
-        }
         var binding = intended ?? StateAttribution.Authorize(input);
         StateAttribution.Validate(input.StatePlan, binding);
         var failureIntent = operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
@@ -104,7 +93,7 @@ public static class WorkflowOperations
         {
             var authorized = StateAttribution.Authorize(input, binding.StateId);
             if (authorized != binding)
-                throw new InvalidDataException("Operation intent does not match the current authorized slice contract.");
+                throw new InvalidDataException("Operation intent does not match the declared state contract.");
         }
         var progress = snapshot.Workflow;
         var now = input.GeneratedAt;

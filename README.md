@@ -264,9 +264,11 @@ State-plan schema `2.0` retains `slice`, `dependencies` (slice IDs),
 and `criticality` (`required` or `optional`) on each state. Defaults are the
 state ID and required work, respectively. States sharing a slice must share
 criticality; their dependencies are combined and must reference existing
-slices without cycles. Only the first dependency-ready semantically unresolved slice is
-active. Required source observations need captured evidence before target work,
-and required blocked/unverified states do not satisfy closure.
+slices without cycles. The first dependency-ready semantically unresolved slice
+is reported as the active recommendation, but callers may explicitly capture
+or record any state in the sealed plan. Required source observations need
+captured evidence before target work, and required blocked/unverified states do
+not satisfy closure.
 
 Snapshots (`state.json`, snapshot schema `1.0`) add `disposition`, also persisted
 in progress, with stable `kind`, `reasonCode`, `terminal`, `retryable`,
@@ -277,12 +279,13 @@ in progress, with stable `kind`, `reasonCode`, `terminal`, `retryable`,
 | continue | no | yes | not-ready |
 | continue-with-debt | no | yes | debt |
 | complete (all closure gates passed) | yes | no | complete |
-| blocked-required (required dependency or evidence is genuinely blocked) | yes | no | blocked |
+| blocked-required (required dependency or evidence is genuinely blocked) | no | yes | blocked |
 | infrastructure-failure (invalid artifacts or process invocation failure) | yes | yes | failed |
 
 `allowedOperations` lists stage-compatible operation kinds; evidence,
-freshness, diagnosis, and frontier prerequisites still apply. Deferred and
-terminal dispositions list none. A `complete` disposition is retained only
+freshness, diagnosis, and provenance prerequisites still apply. Active
+frontiers remain guidance rather than operation authorization. Only terminal
+dispositions list no operations. A `complete` disposition is retained only
 while the entire current-target build/replay freshness chain, state
 attestations, findings, and report closure remain valid. Target changes or
 stale/missing canonical artifacts automatically reopen invalid completion;

@@ -314,10 +314,16 @@ public static class StateClosureProtocol
         IWindowOwnerResolver? windowOwnerResolver = null) =>
         VerifyAttestation(root, state, replay, now, out evidence, out reason, windowOwnerResolver, requireParity: true);
 
+    internal static bool VerifyRecordedLevel(
+        DirectoryInfo root, MigrationState state, ReplayAttestation? replay,
+        DateTimeOffset now, [NotNullWhen(true)] out StateClosureAttestation? evidence, out string reason,
+        IWindowOwnerResolver? windowOwnerResolver = null) =>
+        VerifyAttestation(root, state, replay, now, out evidence, out reason, windowOwnerResolver, requireParity: false);
+
     public static StateVerificationSummary AssessLevel(DirectoryInfo root, MigrationState state, ReplayAttestation? replay,
         DateTimeOffset now, IWindowOwnerResolver? windowOwnerResolver = null)
     {
-        return VerifyAttestation(root, state, replay, now, out var evidence, out var reason, windowOwnerResolver, requireParity: false)
+        return VerifyRecordedLevel(root, state, replay, now, out var evidence, out var reason, windowOwnerResolver)
             ? new StateVerificationSummary(state.Id, evidence.VerificationLevel, string.Join(" ", evidence.Issues))
             : new StateVerificationSummary(state.Id, "unverified", reason);
     }

@@ -195,8 +195,9 @@ Signed operation IDs and artifact digests bind build/replay attestations,
 raw outputs, probe receipts, and state attestations into the local chain.
 Operations seal their intended state/slice before execution. Failure recovery
 and diagnosis preserve that tuple; they never infer the first planned state
-from an ID-less failure. Caller `--state` must match the operation or the
-currently authorized unresolved slice contract, not stale active progress.
+from an ID-less failure. Caller `--state` may select any state in the sealed
+plan; active progress remains a recommendation. Evidence-linked follow-up must
+still match the producing operation and cannot rebind a receipt.
 See [operation intent and failure attribution](state-verification-contracts.md#operation-intent-and-failure-attribution).
 An arbitrary replacement key cannot authorize fabricated evidence.
 Portable embedded-key signature integrity is distinct from locally trusted

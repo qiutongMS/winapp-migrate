@@ -147,19 +147,19 @@ during bootstrap; it is not the intended semantic slice. Completion receipts
 and recovered failures retain the start tuple even if active progress changes
 during the command. Probe receipts also carry their planned `sliceId`.
 
-Authorization uses the same assessed slices as workflow scheduling: dependencies,
-optional debt, mapped open findings and active failures all apply. `--state`
-must identify currently authorized work, or exactly match an evidence-linked
-operation's intent when recording its failure. It cannot select a stale
-`activeStateId` or rebind a receipt. A multi-state slice need not pick an
-arbitrary state: a slice-only tuple is valid; `(null, null)` is explicitly
-unbound. Unknown states/slices, a state without its slice, or mismatched pairs
-are rejected, not repaired.
+The assessed active slice and frontier are recommendations, not runtime
+authorization. `--state` may identify any state in the sealed plan, including a
+state outside the current recommendation or one with explicit debt. The
+gateway still binds every operation to that declared state and slice. It cannot
+rebind an evidence-linked operation or receipt. A multi-state slice need not
+pick an arbitrary state: a slice-only tuple is valid; `(null, null)` is
+explicitly unbound. Unknown states/slices, a state without its declared slice,
+or mismatched pairs are rejected, not repaired.
 
 Interrupted-ledger recovery first uses the authenticated operation tuple.
 Only legacy ID-less evidence may fall back to the persisted
-`activeStateId`/`activeSliceId`, and only when that pair is consistent with the
-current authorized unresolved work. Otherwise it remains unbound; plan order
+`activeStateId`/`activeSliceId`, and only when that pair is internally
+consistent with the sealed plan. Otherwise it remains unbound; plan order
 never supplies a recovery state. Existing recovered tuples are preserved.
 Legacy claimed nonempty attribution without operation provenance is not
 silently promoted into authenticated attribution.

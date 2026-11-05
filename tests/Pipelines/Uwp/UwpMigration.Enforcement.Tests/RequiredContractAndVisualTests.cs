@@ -130,6 +130,47 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreNotEqual("passed", recorded.Status);
         Assert.AreEqual("pending", (await fixture.LoadReportAsync()).Todos.Single().Status);
         Assert.AreEqual("open", (await fixture.LoadAsync<SemanticFindingLedger>(EnforcementStore.FindingLedgerPath)).Findings.Single().Status);
+        var synchronized = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("blocked", synchronized.Status);
+        Assert.AreEqual(
+            "partial",
+            (await fixture.LoadReportAsync()).Validation.TargetReplay.Status);
+    }
+
+    [TestMethod]
+    public async Task RequiredContract_TamperedPartialAttestationFailsBeforeCanonicalMutation()
+    {
+        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
+        var plan = await NewRequiredPlanAsync(fixture);
+        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        await ObserveSourceAsync(fixture, plan);
+        await AddRequiredTodoAndFindingAsync(fixture, ["main-name"]);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        var probe = await ContractProbeAsync(
+            fixture,
+            ["inspect", "-w", "42", "--json"],
+            ClosureTree.Replace("Ready", "Different", StringComparison.Ordinal));
+        await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var attestationPath = plan.States[0].Target.Attestation!;
+        var attestation = await fixture.LoadAsync<StateClosureAttestation>(
+            attestationPath);
+        attestation.Issues.Add("tampered");
+        await EnforcementStore.WriteAtomicAsync(
+            fixture.Root, attestationPath, attestation);
+        const string canonical = ".migration-evidence/target/state-1-ui.json";
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.Path(canonical))!);
+        await File.WriteAllTextAsync(fixture.Path(canonical), "sentinel");
+
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpEnforcementRunner.SynchronizeReportAsync(
+                fixture.Root, TestWindowOwnerResolver.Shared));
+
+        StringAssert.Contains(error.Message, "seal");
+        Assert.AreEqual("sentinel", await File.ReadAllTextAsync(fixture.Path(canonical)));
     }
 
     [TestMethod]

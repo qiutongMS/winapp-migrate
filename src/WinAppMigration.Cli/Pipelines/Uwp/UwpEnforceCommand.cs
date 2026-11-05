@@ -228,7 +228,7 @@ internal sealed class UwpEnforceCommand : Command
                         parseResult.GetValue(target)!,
                         options,
                         cancellationToken);
-                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
+                    return WriteAttestationSnapshot(snapshot, parseResult.GetValue(full));
                 }));
         }
     }
@@ -709,6 +709,15 @@ internal sealed class UwpEnforceCommand : Command
                 output,
                 EnforcementStore.JsonOptions));
         return strict && snapshot.Status != "passed" ? 2 : 0;
+    }
+
+    private static int WriteAttestationSnapshot(EnforcementSnapshot snapshot, bool full)
+    {
+        WriteSnapshot(snapshot, full);
+        return snapshot.Gates.Any(gate => gate.Id == "fresh-build" && gate.Status == "passed") &&
+            snapshot.Gates.Any(gate => gate.Id == "canonical-replay" && gate.Status == "passed")
+            ? 0
+            : 1;
     }
 
     private static async Task WriteRawProbeOutputAsync(

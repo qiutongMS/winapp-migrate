@@ -81,17 +81,42 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task PropertyAssertions_NullValuePropertyRemainsUnsupported()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PropertyAssertions_EmptyValueFromNullAndEmptyQueriesAreEquivalent(bool reverse)
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        await PlanPropertyAsync(fixture, "value", PropertyObservation("Value", ""));
+        var empty = PropertyObservation("Value", "");
+        var nullValue = NullPropertyObservation("Value");
+        await PlanPropertyAsync(fixture, "value", reverse ? nullValue : empty);
         var probe = await CaptureClosureProbeAsync(fixture,
-            new EnforcementProcessResult(0, NullPropertyObservation("Value"), ""),
+            new EnforcementProcessResult(0, reverse ? empty : nullValue, ""),
             arguments: ["get-property", "main", "-p", "Value", "-w", "42", "--json"]);
 
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.RecordStateAsync(
-                fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        Assert.AreEqual("passed", recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PropertyAssertions_EmptyValueFromNullInspectAndEmptyQueryAreEquivalent(bool reverse)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var inspect = InspectObservation("value", "null");
+        var query = PropertyObservation("Value", "");
+        await PlanPropertyAsync(fixture, "value", reverse ? query : inspect);
+        var probe = await CaptureClosureProbeAsync(fixture,
+            new EnforcementProcessResult(0, reverse ? inspect : query, ""),
+            arguments: reverse ? ["inspect", "main", "-w", "42", "--json"] :
+                ["get-property", "main", "-p", "Value", "-w", "42", "--json"]);
+
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        Assert.AreEqual("passed", recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
     }
 
     [TestMethod]

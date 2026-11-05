@@ -67,7 +67,6 @@ public sealed partial class RunnerAcceptanceTests
 
     [TestMethod]
     [DataRow("complete")]
-    [DataRow("blocked-required")]
     [DataRow("infrastructure-failure")]
     public async Task Disposition_PersistedTerminalRejectsAllEntryPointsBeforeFakeProcess(string kind)
     {
@@ -80,15 +79,6 @@ public sealed partial class RunnerAcceptanceTests
             await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
             await fixture.VerifyStateAsync();
             terminal = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        }
-        else if (kind == "blocked-required")
-        {
-            var plan = await fixture.LoadAsync<StatePlanDocument>(
-                ".migration-evidence/state-plan.json");
-            plan.States[0].Target.Status = "blocked";
-            await EnforcementStore.WriteAtomicAsync(
-                fixture.Root, ".migration-evidence/state-plan.json", plan);
-            terminal = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         }
         else
         {
@@ -128,6 +118,75 @@ public sealed partial class RunnerAcceptanceTests
         var saved = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         Assert.AreEqual(expectedStatus, saved.Status);
         Assert.AreEqual(expected, JsonSerializer.Serialize(saved.Disposition, EnforcementStore.JsonOptions));
+    }
+
+    [TestMethod]
+    public async Task Disposition_BlockedRequiredAllowsDeclaredStateCaptureAndRecording()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        var plan = await fixture.LoadAsync<StatePlanDocument>(
+            ".migration-evidence/state-plan.json");
+        plan.States[0].Target.Status = "blocked";
+        await EnforcementStore.WriteAtomicAsync(
+            fixture.Root, ".migration-evidence/state-plan.json", plan);
+
+        var blocked = await UwpEnforcementRunner.AssessAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        var probe = await CaptureClosureProbeAsync(fixture);
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root,
+            TestWindowOwnerResolver.Shared,
+            "state-1",
+            [probe.ArtifactPath]);
+
+        Assert.AreEqual("blocked-required", blocked.Disposition?.Kind);
+        Assert.IsFalse(blocked.Disposition!.Terminal);
+        Assert.AreEqual(
+            "passed",
+            recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
+    }
+
+    [TestMethod]
+    public async Task Disposition_OptionalDebtAllowsDeclaredStateCaptureAndRecording()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var plan = await fixture.LoadAsync<StatePlanDocument>(
+            ".migration-evidence/state-plan.json");
+        plan.States[0].Criticality = StateCriticality.Optional;
+        plan.States[0].Target.Status = "blocked";
+        ContractTestAuthority.Prepare(fixture.Root, plan);
+        await EnforcementStore.WriteAtomicAsync(
+            fixture.Root, ".migration-evidence/state-plan.json", plan);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+
+        var deferred = await UwpEnforcementRunner.AssessAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        const string intent = ".migration-evidence/optional-state-intent.txt";
+        await File.WriteAllTextAsync(
+            fixture.Path(intent),
+            "Observe the declared optional state despite its advisory debt.");
+        var probe = await new UwpEnforcementRunner(
+            new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, "")),
+            windowOwnerResolver: TestWindowOwnerResolver.Shared).InvokeUiAsync(
+                fixture.Root,
+                "winapp",
+                ["inspect", "--json", "-w", "42"],
+                [intent],
+                "state-1");
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root,
+            TestWindowOwnerResolver.Shared,
+            "state-1",
+            [probe.ArtifactPath]);
+
+        Assert.AreEqual("continue-with-debt", deferred.Disposition?.Kind);
+        Assert.IsFalse(deferred.Disposition!.Terminal);
+        Assert.AreEqual(
+            "passed",
+            recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
     }
 
     [TestMethod]

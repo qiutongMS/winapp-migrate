@@ -34,7 +34,13 @@ public static class WorkflowDispositions
 
     public static bool IsRetiredAuthorization(RunDisposition? disposition) =>
         disposition?.ReasonCode is "total-hard-limit" or "unit-hard-limit" or
-            "operation-ceiling" or "stage-soft-limit";
+            "operation-ceiling" or "stage-soft-limit" ||
+        disposition is
+        {
+            Kind: "blocked-required",
+            ReasonCode: "required-work-blocked",
+            Terminal: true
+        };
 
     public static bool RejectTerminal(EnforcementSnapshot snapshot, out string reason)
     {
@@ -54,7 +60,7 @@ public static class WorkflowDispositions
         var (kind, code, terminal, retryable, finalization) = snapshot switch
         {
             { Frontier.Kind: "required-blocked" } =>
-                ("blocked-required", "required-work-blocked", true, false, "blocked"),
+                ("blocked-required", "required-work-blocked", false, true, "blocked"),
             _ when snapshot.Gates.Any(gate => gate.Id == "enforcement-artifacts" && gate.Status != "passed") =>
                 ("infrastructure-failure", "invalid-enforcement-artifacts", true, true, "failed"),
             { Frontier.Kind: "continue-with-debt" } =>
@@ -63,7 +69,7 @@ public static class WorkflowDispositions
                 ("complete", "closure-passed", true, false, "complete"),
             _ => ("continue", "workflow-active", false, true, "not-ready")
         };
-        var allowed = terminal || kind is "pause-replan" or "continue-with-debt" || snapshot.Workflow is null
+        var allowed = terminal || kind == "pause-replan" || snapshot.Workflow is null
             ? [] : Enum.GetValues<WorkflowOperation>().Where(operation =>
                 WorkflowOperations.IsCompatible(snapshot.Stage, operation)).ToList();
         snapshot.Disposition = new RunDisposition
@@ -74,9 +80,8 @@ public static class WorkflowDispositions
         if (snapshot.Workflow is not null)
         {
             snapshot.Workflow.Disposition = snapshot.Disposition;
-            if (terminal || kind == "continue-with-debt")
-                WorkflowController.CloseActiveEpochs(snapshot.Workflow, now,
-                    terminal ? $"terminal:{kind}" : "optional-deferred");
+            if (terminal)
+                WorkflowController.CloseActiveEpochs(snapshot.Workflow, now, $"terminal:{kind}");
         }
     }
 }

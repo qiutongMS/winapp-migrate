@@ -50,6 +50,23 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    public async Task Cli_AttestReturnsFailureWhenCanonicalExecutionFails()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var process = new FakeProcessRunner(
+            new EnforcementProcessResult(0, "not json", ""));
+        var command = new UwpEnforceCommand(process);
+        var parseResult = command.Parse(["attest", fixture.Root.FullName]);
+
+        var exitCode = await parseResult.InvokeAsync(
+            parseResult.InvocationConfiguration,
+            CancellationToken.None);
+
+        Assert.AreEqual(1, exitCode);
+        Assert.AreEqual(1, process.CallCount);
+    }
+
+    [TestMethod]
     public async Task Cli_AssessmentIsAdvisoryUnlessStrictIsRequested()
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -76,6 +93,30 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(2, strictExit);
         Assert.AreEqual(0, advisoryFinalizeExit);
         Assert.AreEqual(2, strictFinalizeExit);
+    }
+
+    [TestMethod]
+    public async Task Cli_StrictAssessmentAndFinalizeSucceedAfterClosurePasses()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+        var command = new UwpEnforceCommand(new FakeProcessRunner());
+        var strictFinalize = command.Parse(
+            ["finalize", fixture.Root.FullName, "--strict"]);
+
+        var finalizeExit = await strictFinalize.InvokeAsync(
+            strictFinalize.InvocationConfiguration,
+            CancellationToken.None);
+        var strictAssess = command.Parse(
+            ["assess", fixture.Root.FullName, "--strict"]);
+        var assessExit = await strictAssess.InvokeAsync(
+            strictAssess.InvocationConfiguration,
+            CancellationToken.None);
+
+        Assert.AreEqual(0, finalizeExit);
+        Assert.AreEqual(0, assessExit);
     }
 
     [TestMethod]

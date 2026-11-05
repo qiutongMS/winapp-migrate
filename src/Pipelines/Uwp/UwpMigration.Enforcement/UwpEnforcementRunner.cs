@@ -1040,11 +1040,25 @@ public sealed class UwpEnforcementRunner
         ValidateCanonicalLayout(sourceRoot, targetRoot, plan);
         var copies = new List<CanonicalEvidenceCopy>();
         var removals = new List<CanonicalEvidenceDestination>();
+        var proofs = new Dictionary<string, StateClosureAttestation?>(StringComparer.Ordinal);
 
         foreach (var state in plan.States)
         {
             ValidateCanonicalStateId(state.Id);
-            var nonvisual = StateClosureProtocol.VerifyEvidence(target, state, replay, now, out var proof, out _, windowOwnerResolver);
+            ValidateDeclaredEvidencePaths(target, state.Id, "source", state.Source.Evidence);
+            ValidateDeclaredEvidencePaths(target, state.Id, "target", state.Target.Evidence);
+            StateClosureAttestation? proof = null;
+            if (!string.IsNullOrWhiteSpace(state.Target.Attestation) &&
+                !StateClosureProtocol.VerifyRecordedLevel(
+                    target, state, replay, now, out proof, out var reason, windowOwnerResolver))
+                throw new InvalidDataException(reason);
+            proofs.Add(state.Id, proof);
+        }
+
+        foreach (var state in plan.States)
+        {
+            var proof = proofs[state.Id];
+            var nonvisual = proof?.VerificationLevel == StateVerificationLevel.ParityVerified;
             if (state.Source.Status == "captured")
             {
                 var sourceEvidence = await SelectCanonicalEvidenceAsync(
@@ -1108,6 +1122,19 @@ public sealed class UwpEnforcementRunner
                 throw new InvalidDataException(error);
             if (File.Exists(path))
                 File.Delete(path);
+        }
+    }
+
+    private static void ValidateDeclaredEvidencePaths(
+        DirectoryInfo target, string stateId, string side, IReadOnlyList<string> evidence)
+    {
+        foreach (var relativePath in evidence)
+        {
+            if (!EnforcementStore.TryResolveContainedPath(target, relativePath, out var path, out var error))
+                throw new InvalidDataException(error);
+            if (!File.Exists(path))
+                throw new InvalidDataException(
+                    $"State {stateId} {side} evidence does not exist: {relativePath}");
         }
     }
 

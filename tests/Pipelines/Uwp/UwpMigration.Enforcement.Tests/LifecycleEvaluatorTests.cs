@@ -221,8 +221,8 @@ public sealed partial class EnforcementEvaluatorTests
         var deferred = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual("continue-with-debt", deferred.Disposition?.Kind);
         Assert.IsFalse(deferred.Disposition!.Terminal);
-        Assert.IsEmpty(deferred.Disposition.AllowedOperations);
-        Assert.IsTrue(deferred.Workflow!.Units.SelectMany(unit => unit.Epochs).All(epoch => epoch.ExitedAt is not null));
+        CollectionAssert.Contains(deferred.Disposition.AllowedOperations, WorkflowOperation.UiAction);
+        Assert.IsTrue(deferred.Workflow!.Units.SelectMany(unit => unit.Epochs).Any(epoch => epoch.ExitedAt is null));
         var closure = EnforcementEvaluator.Evaluate(input with
         {
             Progress = deferred.Workflow, GeneratedAt = LifecycleNow.AddMinutes(1)
@@ -242,16 +242,11 @@ public sealed partial class EnforcementEvaluatorTests
 
     [TestMethod]
     [DataRow("complete")]
-    [DataRow("blocked-required")]
     [DataRow("infrastructure-failure")]
     public void Disposition_TerminalIsImmutableAndRejectsEveryOperation(string kind)
     {
         using var fixture = new EvaluatorFixture();
         var input = LifecycleInput(fixture);
-        if (kind == "blocked-required")
-        {
-            input.StatePlan!.States[0].Target.Status = "blocked";
-        }
         if (kind == "infrastructure-failure") input = input with { ArtifactError = "broken artifact" };
         var terminal = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual(kind, terminal.Disposition?.Kind);
@@ -273,6 +268,60 @@ public sealed partial class EnforcementEvaluatorTests
             StringAssert.Contains(reason, "terminal");
         }
         Assert.IsFalse(WorkflowOperations.TryObserveEvidence(observation, observed, [], out _));
+    }
+
+    [TestMethod]
+    public void Disposition_BlockedRequiredRemainsRetryableForDeclaredStateEvidence()
+    {
+        using var fixture = new EvaluatorFixture();
+        var input = LifecycleInput(fixture);
+        input.StatePlan!.States[0].Target.Status = "blocked";
+
+        var blocked = EnforcementEvaluator.Evaluate(input);
+
+        Assert.AreEqual("blocked-required", blocked.Disposition?.Kind);
+        Assert.IsFalse(blocked.Disposition!.Terminal);
+        Assert.IsTrue(blocked.Disposition.Retryable);
+        CollectionAssert.Contains(blocked.Disposition.AllowedOperations, WorkflowOperation.UiAction);
+        Assert.IsTrue(WorkflowOperations.TryBegin(
+            input,
+            blocked,
+            WorkflowOperation.UiAction,
+            ["evidence.txt"],
+            "declared-state",
+            out _,
+            StateAttribution.Authorize(input, "state-1")));
+    }
+
+    [TestMethod]
+    public void Disposition_LegacyBlockedRequiredTerminalResumesAsAdvisory()
+    {
+        using var fixture = new EvaluatorFixture();
+        var input = LifecycleInput(fixture);
+        input.StatePlan!.States[0].Target.Status = "blocked";
+        var legacy = new RunDisposition
+        {
+            Kind = "blocked-required",
+            ReasonCode = "required-work-blocked",
+            Terminal = true,
+            Retryable = false,
+            AllowedOperations = [],
+            Finalization = "blocked"
+        };
+        var progress = EnforcementEvaluator.Evaluate(input).Workflow!;
+        progress.Disposition = legacy;
+        WorkflowDispositions.ResumeRetiredAuthorization(progress);
+
+        var resumed = EnforcementEvaluator.Evaluate(input with
+        {
+            Progress = progress,
+            PersistedDisposition = legacy,
+            GeneratedAt = LifecycleNow.AddMinutes(1)
+        });
+
+        Assert.AreEqual("blocked-required", resumed.Disposition?.Kind);
+        Assert.IsFalse(resumed.Disposition!.Terminal);
+        Assert.IsTrue(resumed.Disposition.Retryable);
     }
 
     [TestMethod]
