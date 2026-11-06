@@ -78,9 +78,11 @@ ID), `dependencies` (slice IDs, defaults to empty), and `criticality`
 (`required`, the default, or `optional`). States in one slice share criticality;
 their dependencies are combined, must exist, and must be acyclic. Follow only
 the first dependency-ready semantically unresolved slice in the enforcement snapshot.
-Required source states need captured evidence before target work. Required
-blocked/unverified states remain incomplete; optional debt is never verification
-and cannot unlock dependent slices.
+Required source states need captured evidence for parity and strict closure.
+After bounded source recovery, unavailable observations remain explicit debt
+but do not block target implementation, build, replay, diagnosis, or partial
+development target probes. Required blocked/unverified states remain incomplete; optional
+debt is never verification and cannot unlock dependent slices.
 Target changes invalidate evidence freshness without reopening resolved
 implementation work. Closure revalidates stale resolved slices; genuine
 comparison/runtime failures or open findings may reopen semantic work before
@@ -221,9 +223,9 @@ winapp-migrate uwp closure seal-contract "<target>"
 winapp-migrate uwp closure assess "<target>"
 ```
 
-This establishes the source-oracle checklist frontier before any source or
-target work. Elapsed time and operation totals are telemetry only and never
-authorize or stop migration work.
+This establishes the required contract and source-oracle evidence gate before
+source capture or target work. Elapsed time and operation totals are telemetry
+only and never authorize or stop migration work.
 
 For state-changing behavior, plan a transition rather than only a destination. Verify changed values, selection, collections, navigation state, or visible content. Include cancel/back restoration and alternate modifier-key paths when they produce different source behavior.
 
@@ -288,11 +290,12 @@ After source capture, close the exact source HWND through `uwp source capture`
 and confirm it disappears. If it has no UIA Close element, stop only the exact
 source PID returned by `uwp source run`. Never clean up by broad process name.
 
-After persisting the completed required source states, immediately run
-`winapp-migrate uwp closure assess "<target>"` again and require
-`mechanical-stabilization` before target implementation. The assessment closes
-the source unit and activates the target checklist; do not perform target work
-before this transition is persisted.
+After persisting captured or truthfully `unverified` source states, immediately
+run `winapp-migrate uwp closure assess "<target>"` again before target
+implementation. Missing source evidence keeps the source-oracle gate blocked
+and prevents parity/strict closure, but the controller may advance target work
+to mechanical stabilization. Source capture remains available later while that
+gate is incomplete and the workflow is nonterminal.
 
 ## 3. Build/register and replay WinUI 3
 
@@ -443,8 +446,8 @@ they never authorize, cancel, defer, or terminate otherwise valid work.
 Progressive target changes may use as many informative operations as needed.
 The initial build belongs to mechanical stabilization, the initial replay to
 target bootstrap, and later semantic corrective build/replay attestations to
-their active slice. Stage compatibility remains deterministic: source oracle
-has no target operations, mechanical stabilization only builds, and bootstrap
+their active slice. Stage compatibility remains deterministic: mechanical
+stabilization only builds, and bootstrap
 permits no UI automation or diagnosis/hypothesis without a runtime failure.
 Repeated closure replay requires fresh `--discriminating-evidence`; closure UI
 uses one fresh intent per state sequence. Corrections made after semantic

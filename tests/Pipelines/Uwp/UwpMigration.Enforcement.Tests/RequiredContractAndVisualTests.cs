@@ -206,6 +206,20 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    public async Task RequiredContract_TodoMappingsRemainRepairableAfterWorkflowStart()
+    {
+        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
+        var plan = await NewRequiredPlanAsync(fixture);
+        var contract = await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        plan.States[0].TodoIds = ["UWMIG001"];
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+
+        Assert.AreEqual(contract.RequiredContractHash,
+            RequiredStateContracts.Require(fixture.Root, plan.States[0]));
+    }
+
+    [TestMethod]
     public async Task RequiredContract_CliSafelyUpgradesOnlyUnstartedStructuredLegacyPlans()
     {
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);

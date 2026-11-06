@@ -99,6 +99,12 @@ Target execution must still use the gateway `closure attest`, `closure diagnose`
 and `closure capture` operations so process identity and evidence provenance
 remain verifiable.
 
+`todoIds` do not redefine the sealed action/assertion contract. If assessment
+reports that a required TODO is not mapped, add its stable ID to the
+appropriate declared states and reassess before recording target state
+evidence; do not re-seal merely to repair that mapping. Changing a mapping
+after target probes exist invalidates those probes and requires recapture.
+
 If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is available, stop before scaffolding or copying application files. Report that deterministic migration is unavailable. Do not replace the missing tool with hand-written namespace replacement, a second scaffold, or a fabricated report.
 
 ## Ownership
@@ -150,10 +156,12 @@ Before editing, capture startup and the fast-path primary sentinel, or every exp
 If usable source evidence still cannot be obtained, record the affected states as `unverified`; never infer parity from source code or build success. Treat a newly observed source window as a successful launch even when the launch command's output transport remains pending. Complete exact-window cleanup after each source-capture session before editing the target.
 
 Immediately after the required source states are captured and persisted, run
-`winapp-migrate uwp closure assess "<target>"` again. Require the snapshot to
-enter `mechanical-stabilization` before target implementation begins; this
-observation closes the source unit and activates the target checklist. Do not
-perform target work between changing the source statuses and this assessment.
+`winapp-migrate uwp closure assess "<target>"` again. If bounded recovery cannot
+produce usable source evidence, persist the affected states as `unverified` and
+reassess before target implementation. The source-oracle gate remains explicit
+debt and prevents parity/strict closure, but it does not prohibit target edits,
+mechanical verification, canonical build/replay, diagnosis, or partial target
+development probes.
 
 ## 3. Build the first viable slice
 

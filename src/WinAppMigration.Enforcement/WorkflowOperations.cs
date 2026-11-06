@@ -46,7 +46,7 @@ public static class WorkflowOperations
             snapshot.Gates.First(gate => gate.Id == "enforcement-artifacts").Status != "passed")
             return false;
         var prerequisite = snapshot.Gates.FirstOrDefault(gate =>
-            gate.Id is "source-oracle" or "mechanical" && gate.Status != "passed");
+            gate.Id == "mechanical" && gate.Status != "passed");
         if (prerequisite is not null)
         {
             reason = prerequisite.Reason;

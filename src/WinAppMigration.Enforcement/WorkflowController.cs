@@ -77,7 +77,7 @@ public static class WorkflowController
             progress.PolicyFingerprint = WorkflowValidation.PolicyFingerprint(input.Policy);
 
         progress.Stage = NextStage(
-            progress.Stage, sourceReady, buildFresh, replayFresh,
+            progress.Stage, buildFresh, replayFresh,
             input.Replay is { Success: true } && input.Build is { Success: true } &&
                 input.Replay.TargetFingerprint == input.Build.TargetFingerprint,
             slices.Count > 0 && slices.All(slice => slice.Resolved ||
@@ -196,12 +196,11 @@ public static class WorkflowController
             .SelectMany(slice => slice.States.Select(state => state.Id)).ToList();
 
     private static WorkflowStage NextStage(
-        WorkflowStage current, bool sourceReady, bool buildFresh,
+        WorkflowStage current, bool buildFresh,
         bool replayFresh, bool historicalReplay, bool statesComplete)
     {
         if (current >= WorkflowStage.SemanticConvergence || historicalReplay)
             return statesComplete ? WorkflowStage.Closure : WorkflowStage.SemanticConvergence;
-        if (!sourceReady) return current;
         if (!buildFresh) return WorkflowStage.MechanicalStabilization;
         current = WorkflowStage.TargetBootstrap;
         return replayFresh

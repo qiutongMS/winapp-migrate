@@ -1173,7 +1173,9 @@ public sealed class UwpEnforcementRunner
             if (states.Length == 0)
             {
                 return (false,
-                    $"Required TODO {todo.Id} remains {todo.Status} and is not referenced by any state.");
+                    $"Required TODO {todo.Id} remains {todo.Status} and is not referenced by any state. " +
+                    "Before recording target state evidence, map it in a declared state's todoIds and reassess. " +
+                    "TODO mappings do not require re-sealing, but changing them invalidates existing target probes.");
             }
 
             var incomplete = states.Where(state => !StateIsVerified(state))

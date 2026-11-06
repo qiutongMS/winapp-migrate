@@ -41,6 +41,13 @@ TODO/slice metadata is not an alternative verification authority; this protocol
 uses authenticated operation intent for state/slice attribution, not an
 agent-selected progress label.
 
+`todoIds` are closure mapping metadata, not part of the immutable
+action/assertion contract. They may be corrected after assessment without
+re-sealing, provided state IDs and sealed requirements are unchanged. Repair
+the mapping and reassess before recording target probes; changing it after
+target probes exist invalidates those probes and requires recapture.
+`--extend` and `--upgrade-plan` are not needed for this metadata-only correction.
+
 The first assessment (including the assessment performed by source commands)
 freezes the independently anchored contract. Mutation after source capture or
 workflow start is rejected, including attempts to relabel an old probe with a

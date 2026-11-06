@@ -17,6 +17,10 @@ public sealed class SourceGatewayTests
     public async Task Run_UsesRecordedProjectAndAuthorizesOnlyNewWindows()
     {
         using var fixture = await SourceFixture.CreateAsync();
+        var initial = await UwpEnforcementRunner.AssessAsync(
+            fixture.Target, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual(WorkflowStage.MechanicalStabilization, initial.Stage);
+        Assert.AreEqual("blocked", initial.Gates.Single(gate => gate.Id == "source-oracle").Status);
         var process = new FakeProcessRunner(
             Windows((10, 100, "Existing")),
             new EnforcementProcessResult(

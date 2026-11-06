@@ -199,26 +199,37 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Run_SourceOracleMustPrecedeBuild()
+    public async Task Run_SourceDebtDoesNotBlockBuildOrReplay()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var plan = await fixture.LoadAsync<StatePlanDocument>(".migration-evidence/state-plan.json");
         plan.States[0].Source.Status = "unverified";
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ".migration-evidence/state-plan.json", plan);
-        var process = new FakeProcessRunner();
+        var process = new FakeProcessRunner(BuildSuccess(), ReplaySuccess());
         var snapshot = await new UwpEnforcementRunner(process).RunAsync(fixture.Root, new UwpEnforcementOptions());
-        Assert.AreEqual(WorkflowStage.SourceOracle, snapshot.Stage);
-        Assert.AreEqual("source-oracle", snapshot.Frontier?.Kind);
-        Assert.AreEqual(0, process.CallCount);
+        Assert.AreEqual(WorkflowStage.SemanticConvergence, snapshot.Stage);
+        Assert.AreEqual("blocked", snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.AreEqual(2, process.CallCount);
+        Assert.IsTrue(snapshot.Build!.Success);
+        Assert.IsTrue(snapshot.Replay!.Success);
         Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
         Assert.IsNull(snapshot.Budget!.SoftDeadline);
+        CollectionAssert.Contains(snapshot.Disposition!.AllowedOperations, WorkflowOperation.UiAction);
+        var strict = new UwpEnforceCommand(
+            new FakeProcessRunner(), TestWindowOwnerResolver.Shared).Parse(
+                ["assess", fixture.Root.FullName, "--strict"]);
+        Assert.AreEqual(2, await strict.InvokeAsync(
+            strict.InvocationConfiguration, CancellationToken.None));
     }
 
     [TestMethod]
-    public async Task Operations_SourceOracleRegressionBlocksHistoricalTargetReplay()
+    public async Task Operations_SourceOracleRegressionDoesNotBlockTargetProbes()
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var process = SuccessfulLaunch();
+        var process = new FakeProcessRunner(
+            BuildSuccess(),
+            ReplaySuccess(),
+            new EnforcementProcessResult(0, "[]", ""));
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         var plan = await fixture.LoadAsync<StatePlanDocument>(".migration-evidence/state-plan.json");
@@ -228,11 +239,13 @@ public sealed partial class RunnerAcceptanceTests
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root, ".migration-evidence/state-plan.json", plan);
 
-        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            runner.InvokeUiAsync(fixture.Root, "winapp", ["list"]));
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("blocked", snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        CollectionAssert.Contains(snapshot.Disposition!.AllowedOperations, WorkflowOperation.UiAction);
+        var result = await runner.InvokeUiAsync(fixture.Root, "winapp", ["list-windows", "--json"]);
 
-        StringAssert.Contains(exception.Message, "source-oracle evidence");
-        Assert.AreEqual(2, process.CallCount);
+        Assert.AreEqual(0, result.ExitCode);
+        Assert.AreEqual(3, process.CallCount);
     }
 
     [TestMethod]

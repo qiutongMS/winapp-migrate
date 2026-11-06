@@ -897,6 +897,9 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("blocked", gate.Status);
         StringAssert.Contains(gate.Reason, "UWMIG002");
         StringAssert.Contains(gate.Reason, "not referenced by any state");
+        StringAssert.Contains(gate.Reason, "todoIds");
+        StringAssert.Contains(gate.Reason, "do not require re-sealing");
+        StringAssert.Contains(gate.Reason, "invalidates existing target probes");
         Assert.AreEqual(
             "pending",
             (await fixture.LoadReportAsync()).Todos.Single().Status);

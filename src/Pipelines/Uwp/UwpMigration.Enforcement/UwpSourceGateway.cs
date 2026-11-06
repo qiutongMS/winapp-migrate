@@ -445,11 +445,10 @@ public sealed class UwpSourceGateway
             cancellationToken: cancellationToken);
         if (snapshot.Disposition?.Terminal == true)
             throw new InvalidDataException("Source operations are not permitted after a terminal closure disposition.");
-        if (snapshot.Stage != WorkflowStage.SourceOracle ||
-            snapshot.Frontier?.Kind != "source-oracle")
+        if (snapshot.Gates.SingleOrDefault(gate => gate.Id == "source-oracle")?.Status != "blocked")
         {
             throw new InvalidDataException(
-                "Source operations are permitted only while the closure frontier is source-oracle.");
+                "Source operations are permitted only while the source-oracle gate remains incomplete.");
         }
         if (!MigrationPathResolver.TryCanonicalizeRoot(
                 requestedTarget.FullName,
@@ -472,11 +471,10 @@ public sealed class UwpSourceGateway
             if (persistedError is not null)
                 throw new InvalidDataException(persistedError);
             if (persisted?.Disposition?.Terminal == true ||
-                persisted?.Stage != WorkflowStage.SourceOracle ||
-                persisted.Frontier?.Kind != "source-oracle")
+                persisted?.Gates.SingleOrDefault(gate => gate.Id == "source-oracle")?.Status != "blocked")
             {
                 throw new InvalidDataException(
-                    "Source operations are permitted only while the persisted closure frontier is source-oracle.");
+                    "Source operations are permitted only while the persisted source-oracle gate remains incomplete.");
             }
 
             var reportPath = Path.Combine(targetRoot, "migration-report.json");

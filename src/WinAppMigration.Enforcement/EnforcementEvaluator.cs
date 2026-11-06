@@ -220,9 +220,6 @@ public static class EnforcementEvaluator
         if (artifactsValid && planValid && diagnosisFrontier is null &&
             frontier?.Kind != "work-item" && noProgress is not null)
             frontier = noProgress;
-        if (artifactsValid && planValid && diagnosisFrontier is null &&
-            noProgress is null && !sourceReady)
-            frontier = new EnforcementFrontier { Kind = "source-oracle", Reason = sourceReason };
         WorkflowAssessment? workflow = null;
         if (artifactsValid)
         {

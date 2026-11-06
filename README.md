@@ -69,8 +69,8 @@ product artifacts after the migration completes.
 
 `source run` resolves the exact source project from `migration-report.json`,
 captures the desktop window inventory before and after launch, and authorizes
-only newly created HWNDs for `source capture`. Source commands run only while
-the durable controller is at `source-oracle`; they persist launch,
+only newly created HWNDs for `source capture`. Source commands run while the
+source-oracle gate remains incomplete and the workflow is nonterminal; they persist launch,
 diagnostic, UI, stdout, and stderr provenance below the report-declared source
 evidence root. The run capability is bound to a deterministic fingerprint of
 the source tree, so any source code, XAML, project, or resource change rejects
@@ -248,8 +248,8 @@ The gateway still rejects waste deterministically: an unchanged failed target
 cannot rebuild; repeated replay needs fresh discriminating evidence; evidence
 content cannot be reused by touching or renaming it; and diagnosis/hypothesis
 cannot repeat for the same signature and target fingerprint. Stage
-compatibility also remains fixed: source oracle permits no target operation,
-mechanical stabilization permits build only, bootstrap requires a runtime
+compatibility also remains fixed: mechanical stabilization permits build only,
+bootstrap requires a runtime
 failure before diagnosis, and closure replay/UI requires explicit fresh
 evidence.
 
@@ -267,8 +267,10 @@ criticality; their dependencies are combined and must reference existing
 slices without cycles. The first dependency-ready semantically unresolved slice
 is reported as the active recommendation, but callers may explicitly capture
 or record any state in the sealed plan. Required source observations need
-captured evidence before target work, and required blocked/unverified states do
-not satisfy closure.
+captured evidence for parity and strict closure, but unavailable source
+observations remain explicit debt rather than blocking target implementation,
+build, replay, or diagnosis. Required blocked/unverified states do not satisfy
+closure.
 
 Snapshots (`state.json`, snapshot schema `1.0`) add `disposition`, also persisted
 in progress, with stable `kind`, `reasonCode`, `terminal`, `retryable`,
