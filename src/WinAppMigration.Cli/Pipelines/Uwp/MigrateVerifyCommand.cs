@@ -26,7 +26,7 @@ internal sealed class MigrateVerifyCommand : Command
 
     public MigrateVerifyCommand(
         IMsBuildProjectItemEvaluator msBuildProjectItemEvaluator)
-        : base("verify", "Re-run namespace residual, activation declaration, project-item decision, and target-project ownership checks against the recorded migration inventory without modifying application source or behavioral validation.")
+        : base("verify", $"Validate migration-report schema {MigrationReport.CurrentSchemaVersion}, then re-run namespace residual, activation declaration, project-item decision, and target-project ownership checks against the recorded migration inventory without modifying application source or behavioral validation.")
     {
         TargetArgument.AcceptExistingOnly();
         Arguments.Add(TargetArgument);

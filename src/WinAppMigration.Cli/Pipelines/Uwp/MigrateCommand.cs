@@ -1,4 +1,5 @@
 using System.CommandLine;
+using UwpMigration.Contracts;
 using UwpMigration.Mechanical;
 
 namespace WinAppMigration.Cli.Pipelines.Uwp;
@@ -49,7 +50,7 @@ internal sealed class MigrateCommand : Command
     public MigrateCommand(MechanicalMigration.Engine engine)
         : base(
             "create",
-            "Create a new WinUI 3 project from UWP source and apply deterministic mechanical transforms.")
+            $"Create a new WinUI 3 project from UWP source, apply deterministic mechanical transforms, and emit migration-report schema {MigrationReport.CurrentSchemaVersion}.")
     {
         Aliases.Add("migrate");
         SourceArgument.AcceptExistingOnly();

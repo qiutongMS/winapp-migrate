@@ -161,6 +161,19 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         InvokeCapturingConsoleAsync(GetRequiredService<MigrateVerifyCommand>(), target.FullName);
 
     [TestMethod]
+    public void MigrationCommands_AdvertiseCurrentReportSchema()
+    {
+        var expected = $"migration-report schema {MigrationReport.CurrentSchemaVersion}";
+
+        StringAssert.Contains(
+            GetRequiredService<MigrateCommand>().Description,
+            expected);
+        StringAssert.Contains(
+            GetRequiredService<MigrateVerifyCommand>().Description,
+            expected);
+    }
+
+    [TestMethod]
     public async Task MigrateAndVerify_ManifestOnlySourcePreservesNullProject()
     {
         var source = _tempDirectory.CreateSubdirectory("ManifestOnlySource");
