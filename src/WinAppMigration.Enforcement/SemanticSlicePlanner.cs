@@ -97,7 +97,7 @@ public static class SemanticSlicePlanner
             if (state.Source.Status != "captured" ||
                 !EvidenceExists(root, state.Source.Evidence, null, out _))
             {
-                reason = $"Required state {state.Id} needs captured source-oracle evidence before target work.";
+                reason = $"Required state {state.Id} needs captured source-oracle evidence before parity can be verified and strict closure can pass.";
                 return false;
             }
         }

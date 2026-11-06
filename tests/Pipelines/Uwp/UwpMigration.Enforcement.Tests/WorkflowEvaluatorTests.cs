@@ -18,7 +18,9 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, source.Stage);
         Assert.AreEqual("mechanical-stabilization", source.Phase);
         Assert.AreEqual("mechanical", source.Frontier?.Kind);
-        Assert.AreEqual("blocked", source.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        var sourceGate = source.Gates.Single(gate => gate.Id == "source-oracle");
+        Assert.AreEqual("blocked", sourceGate.Status);
+        StringAssert.Contains(sourceGate.Reason, "strict closure");
 
         input.StatePlan.States[0].Source.Status = "captured";
         var mechanical = EnforcementEvaluator.Evaluate(input with { Progress = source.Workflow });

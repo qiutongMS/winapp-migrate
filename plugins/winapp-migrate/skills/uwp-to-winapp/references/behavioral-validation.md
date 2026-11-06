@@ -223,9 +223,11 @@ winapp-migrate uwp closure seal-contract "<target>"
 winapp-migrate uwp closure assess "<target>"
 ```
 
-This establishes the required contract and source-oracle evidence gate before
-source capture or target work. Elapsed time and operation totals are telemetry
-only and never authorize or stop migration work.
+This establishes the required contract and records the source-oracle evidence
+gate before source capture. Missing source evidence blocks parity and strict
+closure, not target implementation, build, replay, diagnosis, or development
+probes. Elapsed time and operation totals are telemetry only and never
+authorize or stop migration work.
 
 For state-changing behavior, plan a transition rather than only a destination. Verify changed values, selection, collections, navigation state, or visible content. Include cancel/back restoration and alternate modifier-key paths when they produce different source behavior.
 
