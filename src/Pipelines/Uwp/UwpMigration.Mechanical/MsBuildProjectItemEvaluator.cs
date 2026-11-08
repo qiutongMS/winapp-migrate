@@ -22,6 +22,7 @@ public sealed class MsBuildProjectItemEvaluator(
     ];
 
     internal const string ProjectAssetsFileProperty = "ProjectAssetsFile";
+    internal const string DuplicatePriItemsTarget = "CheckForDuplicatePriItems";
 
     public async Task<MsBuildProjectItemEvaluation> EvaluateAsync(
         FileInfo project,
@@ -90,6 +91,7 @@ public sealed class MsBuildProjectItemEvaluator(
                 output,
                 [ProjectAssetsFileProperty]);
             var restoredPackageDirectories = new List<string>();
+            var duplicatePriItemsValidated = false;
             if (properties.TryGetValue(
                     ProjectAssetsFileProperty,
                     out var assetsFile)
@@ -109,11 +111,50 @@ public sealed class MsBuildProjectItemEvaluator(
                     return MsBuildProjectItemEvaluation.Failure(
                         $"The evaluated project assets file is invalid: {assetsError}");
                 }
+                if (File.Exists(assetsFile))
+                {
+                    var duplicateArguments = new[]
+                    {
+                        "msbuild",
+                        project.FullName,
+                        $"--target:{DuplicatePriItemsTarget}"
+                    };
+                    var (
+                        duplicateExitCode,
+                        duplicateOutput,
+                        duplicateError) =
+                        await processRunner.RunDotNetAsync(
+                            project.Directory!,
+                            duplicateArguments,
+                            cancellationToken);
+                    if (duplicateExitCode == 0)
+                    {
+                        duplicatePriItemsValidated = true;
+                    }
+                    else
+                    {
+                        var duplicateMessage = string.IsNullOrWhiteSpace(
+                            duplicateError)
+                            ? duplicateOutput.Trim()
+                            : duplicateError.Trim();
+                        if (!duplicateMessage.Contains(
+                                "MSB4057",
+                                StringComparison.OrdinalIgnoreCase)
+                            || !duplicateMessage.Contains(
+                                DuplicatePriItemsTarget,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            return MsBuildProjectItemEvaluation.Failure(
+                                $"Target PRIResource duplicate-item validation failed: {duplicateMessage}");
+                        }
+                    }
+                }
             }
 
             return MsBuildProjectItemEvaluation.Success(
                 items,
-                restoredPackageDirectories);
+                restoredPackageDirectories,
+                duplicatePriItemsValidated);
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)

@@ -522,6 +522,15 @@ public static partial class MechanicalMigration
                     $"Target MSBuild item evaluation failed: {targetEvaluationError}";
                 return verification;
             }
+            if (decision.Strategy == ExplicitTargetItemStrategy
+                && sourceItem.ReviewReason == "default-item-metadata"
+                && evaluation!.RawEvaluation?.DuplicatePriItemsValidated != true)
+            {
+                verification.Status = "invalid";
+                verification.Reason =
+                    "explicit-target-item for default-item-metadata requires a restored target whose CheckForDuplicatePriItems target has passed. Prefer an MSBuild Update with sdk-default-item; an unchecked explicit Include can duplicate the SDK item.";
+                return verification;
+            }
             var matches = evaluation!.Items.Where(item =>
                     item.Kind.Equals(
                         targetItemType,

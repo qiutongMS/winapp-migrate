@@ -60,6 +60,11 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
         {
             RunDotnetArgumentListHandler = arguments =>
             {
+                if (arguments.Contains(
+                        $"--target:{MsBuildProjectItemEvaluator.DuplicatePriItemsTarget}"))
+                {
+                    return (0, string.Empty, string.Empty);
+                }
                 CollectionAssert.IsSubsetOf(
                     MsBuildProjectItemEvaluator.ItemKinds
                         .Select(kind => $"--getItem:{kind}")
@@ -104,6 +109,7 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
             TestContext.CancellationToken);
 
         Assert.IsTrue(result.Succeeded, result.Error);
+        Assert.IsTrue(result.DuplicatePriItemsValidated);
         var item = result.Items.Single();
         Assert.AreEqual("Compile", item.Kind);
         Assert.AreEqual(sourcePath, item.FullPath);
@@ -113,9 +119,87 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
         CollectionAssert.AreEquivalent(
             new[] { packageDirectory },
             result.RestoredPackageDirectories.ToList());
-        Assert.AreEqual(
+        Assert.HasCount(2, dotNet.ArgumentListWorkingDirectories);
+        Assert.IsTrue(dotNet.ArgumentListWorkingDirectories.All(
+            directory => directory.FullName == projectDirectory.FullName));
+    }
+
+    [TestMethod]
+    public async Task EvaluateAsync_DuplicatePriItemsFailClosed()
+    {
+        var projectDirectory =
+            _tempDirectory.CreateSubdirectory("DuplicatePriEvaluator");
+        var assetsFile = Path.Combine(
             projectDirectory.FullName,
-            dotNet.ArgumentListWorkingDirectories.Single().FullName);
+            "project.assets.json");
+        await File.WriteAllTextAsync(
+            assetsFile,
+            """{"packageFolders":{},"libraries":{}}""",
+            TestContext.CancellationToken);
+        var dotNet = new FakeProcessRunner
+        {
+            RunDotnetArgumentListHandler = arguments =>
+                arguments.Contains(
+                    $"--target:{MsBuildProjectItemEvaluator.DuplicatePriItemsTarget}")
+                    ? (
+                        1,
+                        string.Empty,
+                        "error NETSDK1022: Duplicate 'PRIResource' items were included.")
+                    : (
+                        0,
+                        EmptyEvaluation(assetsFile),
+                        string.Empty)
+        };
+        var evaluator = new MsBuildProjectItemEvaluator(dotNet);
+
+        var result = await evaluator.EvaluateAsync(
+            new FileInfo(Path.Combine(
+                projectDirectory.FullName,
+                "App.csproj")),
+            TestContext.CancellationToken);
+
+        Assert.IsFalse(result.Succeeded);
+        StringAssert.Contains(result.Error, "NETSDK1022");
+        Assert.HasCount(2, dotNet.ArgumentListInvocations);
+    }
+
+    [TestMethod]
+    public async Task EvaluateAsync_MissingDuplicatePriTargetRemainsUnvalidated()
+    {
+        var projectDirectory =
+            _tempDirectory.CreateSubdirectory("MissingDuplicatePriTarget");
+        var assetsFile = Path.Combine(
+            projectDirectory.FullName,
+            "project.assets.json");
+        await File.WriteAllTextAsync(
+            assetsFile,
+            """{"packageFolders":{},"libraries":{}}""",
+            TestContext.CancellationToken);
+        var dotNet = new FakeProcessRunner
+        {
+            RunDotnetArgumentListHandler = arguments =>
+                arguments.Contains(
+                    $"--target:{MsBuildProjectItemEvaluator.DuplicatePriItemsTarget}")
+                    ? (
+                        1,
+                        string.Empty,
+                        $"error MSB4057: The target \"{MsBuildProjectItemEvaluator.DuplicatePriItemsTarget}\" does not exist in the project.")
+                    : (
+                        0,
+                        EmptyEvaluation(assetsFile),
+                        string.Empty)
+        };
+        var evaluator = new MsBuildProjectItemEvaluator(dotNet);
+
+        var result = await evaluator.EvaluateAsync(
+            new FileInfo(Path.Combine(
+                projectDirectory.FullName,
+                "App.csproj")),
+            TestContext.CancellationToken);
+
+        Assert.IsTrue(result.Succeeded, result.Error);
+        Assert.IsFalse(result.DuplicatePriItemsValidated);
+        Assert.HasCount(2, dotNet.ArgumentListInvocations);
     }
 
     [TestMethod]
@@ -291,4 +375,22 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
         Assert.IsFalse(result.Succeeded);
         StringAssert.Contains(result.Error, "dotnet was not found");
     }
+
+    private static string EmptyEvaluation(string assetsFile) =>
+        $$"""
+        {
+          "Properties": {
+            "ProjectAssetsFile": "{{assetsFile.Replace("\\", "\\\\", StringComparison.Ordinal)}}"
+          },
+          "Items": {
+            "Compile": [],
+            "EmbeddedResource": [],
+            "Page": [],
+            "ApplicationDefinition": [],
+            "PRIResource": [],
+            "Content": [],
+            "None": []
+          }
+        }
+        """;
 }

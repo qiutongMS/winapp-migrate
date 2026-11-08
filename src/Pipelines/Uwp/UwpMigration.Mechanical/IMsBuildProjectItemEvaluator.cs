@@ -16,10 +16,16 @@ public sealed record MsBuildProjectItemEvaluation(
     IReadOnlyList<string> RestoredPackageDirectories,
     string? Error)
 {
+    public bool DuplicatePriItemsValidated { get; init; }
+
     public static MsBuildProjectItemEvaluation Success(
         IReadOnlyList<MsBuildProjectItem> items,
-        IReadOnlyList<string>? restoredPackageDirectories = null) =>
-        new(true, items, restoredPackageDirectories ?? [], null);
+        IReadOnlyList<string>? restoredPackageDirectories = null,
+        bool duplicatePriItemsValidated = false) =>
+        new(true, items, restoredPackageDirectories ?? [], null)
+        {
+            DuplicatePriItemsValidated = duplicatePriItemsValidated
+        };
 
     public static MsBuildProjectItemEvaluation Failure(string error) =>
         new(false, [], [], error);

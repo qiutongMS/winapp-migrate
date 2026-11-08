@@ -25,7 +25,7 @@ internal sealed class MigrateProjectItemDecisionCommand : Command
 
     public static Argument<string> StrategyArgument { get; } = new("strategy")
     {
-        Description = "Decision strategy: sdk-default-item, explicit-target-item, copied-linked-content, target-owned-replacement, target-not-required, or intentionally-not-migrated.",
+        Description = "Decision strategy: sdk-default-item, explicit-target-item, copied-linked-content, target-owned-replacement, target-not-required, or intentionally-not-migrated. For default-item-metadata, prefer MSBuild Update with sdk-default-item; explicit-target-item requires restored duplicate-item validation.",
         Arity = ArgumentArity.ExactlyOne
     };
 

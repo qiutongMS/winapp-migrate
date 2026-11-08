@@ -196,6 +196,32 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
 
     [TestMethod]
     [TestCategory("MigrationAcceptance")]
+    public async Task DecideProjectItem_DefaultItemMetadataRejectsExplicitTargetItem()
+    {
+        var (_, target) = await CreateDecisionMigrationAsync("DefaultItemMetadataApp");
+        await ArrangeTargetFactsAsync(
+            target,
+            sdkOriginExternal: false,
+            duplicatePriItemsValidated: false);
+        var items = await ReadDecisionItemsAsync(target);
+
+        var duplicate = await InvokeDecisionAsync(
+            target,
+            "--item", ItemId(items, @"Resources\en-us\Resources.resw"),
+            "--strategy", "explicit-target-item",
+            "--target-path", @"Resources\en-us\Resources.resw",
+            "--target-item-type", "PRIResource",
+            "--evidence-file", @"Build\Items.targets",
+            "--rationale", "An explicit Include appears to preserve the metadata.");
+
+        Assert.AreEqual(1, duplicate.ExitCode, duplicate.Output);
+        StringAssert.Contains(duplicate.Output, "CheckForDuplicatePriItems");
+        StringAssert.Contains(duplicate.Output, "sdk-default-item");
+        StringAssert.Contains(duplicate.Output, "duplicate the SDK item");
+    }
+
+    [TestMethod]
+    [TestCategory("MigrationAcceptance")]
     public async Task DecideProjectItem_CopiedContentRequiresMatchingHash()
     {
         var (_, target) = await CreateDecisionMigrationAsync("HashMatchApp");
@@ -857,7 +883,8 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
         DirectoryInfo target,
         bool metadataMatches = true,
         bool sdkOriginExternal = true,
-        bool explicitOriginContained = true)
+        bool explicitOriginContained = true,
+        bool duplicatePriItemsValidated = true)
     {
         var externalSdk = _tempDirectory.Parent!.CreateSubdirectory(
             $"{target.Name}-sdk");
@@ -879,7 +906,8 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
             sdkProps,
             metadataMatches,
             sdkOriginExternal,
-            explicitOriginContained);
+            explicitOriginContained,
+            duplicatePriItemsValidated);
         FakeMsBuildEvaluator.Handler = state.EvaluateAsync;
         return state;
     }
@@ -1058,7 +1086,8 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
         string sdkProps,
         bool metadataMatches,
         bool sdkOriginExternal,
-        bool explicitOriginContained)
+        bool explicitOriginContained,
+        bool duplicatePriItemsValidated)
     {
         private int _evaluationCount;
 
@@ -1124,7 +1153,10 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
                         : sdkProps));
             }
             return Task.FromResult(
-                MsBuildProjectItemEvaluation.Success(items));
+                MsBuildProjectItemEvaluation.Success(
+                    items,
+                    duplicatePriItemsValidated:
+                        duplicatePriItemsValidated));
         }
 
         private MsBuildProjectItem Item(
