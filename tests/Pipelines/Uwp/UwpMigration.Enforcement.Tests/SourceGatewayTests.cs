@@ -29,7 +29,7 @@ public sealed class SourceGatewayTests
                 ""),
             Windows((10, 100, "Existing"), (20, 200, "Source")));
 
-        var attestation = await new UwpSourceGateway(process).RunAsync(
+        var attestation = await CreateGateway(process, fixture).RunAsync(
             fixture.Target,
             TestOptions());
 
@@ -42,13 +42,24 @@ public sealed class SourceGatewayTests
         CollectionAssert.AreEqual(
             new[] { "ui", "list-windows", "--json" },
             process.Calls[0]);
+        Assert.AreEqual("run", process.Calls[1][0]);
+        Assert.AreEqual(fixture.SourceLayout.FullName, process.Calls[1][1]);
+        Assert.AreEqual("--manifest", process.Calls[1][2]);
+        Assert.AreEqual(
+            Path.Combine(fixture.SourceLayout.FullName, "AppxManifest.xml"),
+            process.Calls[1][3]);
+        Assert.AreEqual("--output-appx-directory", process.Calls[1][4]);
+        StringAssert.StartsWith(
+            process.Calls[1][5],
+            Path.Combine(Path.GetTempPath(), "wam-src"));
         CollectionAssert.AreEqual(
-            new[]
-            {
-                "run", fixture.SourceProject, "--arch", "x64",
-                "--detach", "--json"
-            },
-            process.Calls[1]);
+            new[] { "--detach", "--json" },
+            process.Calls[1][6..]);
+        Assert.AreEqual("10.0.22621.0", attestation.TargetPlatformVersion);
+        Assert.AreEqual(
+            fixture.SourceLayout.FullName,
+            attestation.SourceLayout);
+        Assert.HasCount(2, attestation.SourceBuildCommand);
         Assert.IsTrue(File.Exists(
             fixture.Resolve(attestation.WindowInventoryBeforePath!)));
         Assert.IsTrue(File.Exists(
@@ -58,11 +69,35 @@ public sealed class SourceGatewayTests
     }
 
     [TestMethod]
+    public async Task Run_PersistsBuildFailureWithoutInvokingWinApp()
+    {
+        using var fixture = await SourceFixture.CreateAsync();
+        var process = new FakeProcessRunner();
+
+        var attestation = await CreateGateway(
+            process,
+            fixture,
+            buildExitCode: 7).RunAsync(
+                fixture.Target,
+                TestOptions());
+
+        Assert.AreEqual(7, attestation.ExitCode);
+        Assert.AreEqual(7, attestation.SourceBuildExitCode);
+        Assert.HasCount(0, process.Calls);
+        Assert.AreEqual(
+            "build stdout",
+            await File.ReadAllTextAsync(
+                fixture.Resolve(attestation.StandardOutputPath)));
+        Assert.IsTrue(File.Exists(fixture.Resolve(
+            ".migration-evidence/source/gateway/current-run.json")));
+    }
+
+    [TestMethod]
     public async Task Capture_RejectsWindowNotAuthorizedByCurrentSourceRun()
     {
         using var fixture = await SourceFixture.CreateAsync();
         var process = LaunchedProcess();
-        var gateway = new UwpSourceGateway(process);
+        var gateway = CreateGateway(process, fixture);
         await gateway.RunAsync(fixture.Target, TestOptions());
 
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
@@ -84,7 +119,7 @@ public sealed class SourceGatewayTests
                 0,
                 """{"nodes":[{"type":"Window","name":"Source"}]}""",
                 ""));
-        var gateway = new UwpSourceGateway(process);
+        var gateway = CreateGateway(process, fixture);
         var run = await gateway.RunAsync(fixture.Target, TestOptions());
 
         var probe = await gateway.CaptureAsync(
@@ -115,7 +150,7 @@ public sealed class SourceGatewayTests
     {
         using var fixture = await SourceFixture.CreateAsync();
         var process = LaunchedProcess();
-        var gateway = new UwpSourceGateway(process);
+        var gateway = CreateGateway(process, fixture);
         await gateway.RunAsync(fixture.Target, TestOptions());
         await File.WriteAllTextAsync(
             Path.Combine(fixture.Source.FullName, "Changed.xaml"),
@@ -136,7 +171,7 @@ public sealed class SourceGatewayTests
     {
         using var fixture = await SourceFixture.CreateAsync();
         var process = LaunchedProcess();
-        var gateway = new UwpSourceGateway(process);
+        var gateway = CreateGateway(process, fixture);
         await gateway.RunAsync(fixture.Target, TestOptions());
 
         var missing = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
@@ -167,7 +202,7 @@ public sealed class SourceGatewayTests
                 ""),
             Windows((10, 100, "Existing"), (20, 200, "Source")));
 
-        await new UwpSourceGateway(process).RunAsync(
+        await CreateGateway(process, fixture).RunAsync(
             fixture.Target,
             TestOptions());
 
@@ -185,7 +220,7 @@ public sealed class SourceGatewayTests
         var process = new FakeProcessRunner();
 
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            new UwpSourceGateway(process).RunAsync(
+            CreateGateway(process, fixture).RunAsync(
                 fixture.Target,
                 TestOptions()));
 
@@ -220,6 +255,21 @@ public sealed class SourceGatewayTests
             WindowPollAttempts = 1,
             WindowPollInterval = TimeSpan.Zero
         };
+
+    private static UwpSourceGateway CreateGateway(
+        IEnforcementProcessRunner process,
+        SourceFixture fixture,
+        int buildExitCode = 0) =>
+        new(
+            process,
+            new FakeSourceBuilder(
+                new UwpSourceBuildResult(
+                    ["C:\\MSBuild.exe", fixture.SourceProject],
+                    buildExitCode,
+                    "build stdout",
+                    "build stderr",
+                    "10.0.22621.0",
+                    buildExitCode == 0 ? fixture.SourceLayout : null)));
 
     private static FakeProcessRunner LaunchedProcess(
         params EnforcementProcessResult[] additional) =>
@@ -265,6 +315,22 @@ public sealed class SourceGatewayTests
             Calls.Add([.. arguments]);
             return Task.FromResult(_results.Dequeue());
         }
+
+    }
+
+    private sealed class FakeSourceBuilder(UwpSourceBuildResult result)
+        : IUwpSourceBuilder
+    {
+        public Task<UwpSourceBuildResult> BuildAsync(
+            FileInfo sourceProject,
+            string? configuration,
+            string? architecture,
+            CancellationToken cancellationToken)
+        {
+            Assert.AreEqual("x64", architecture);
+            Assert.IsNull(configuration);
+            return Task.FromResult(result);
+        }
     }
 
     private sealed class LockCheckingProcessRunner(
@@ -304,16 +370,19 @@ public sealed class SourceGatewayTests
         private SourceFixture(
             DirectoryInfo target,
             DirectoryInfo source,
-            string sourceProject)
+            string sourceProject,
+            DirectoryInfo sourceLayout)
         {
             Target = target;
             Source = source;
             SourceProject = sourceProject;
+            SourceLayout = sourceLayout;
         }
 
         internal DirectoryInfo Target { get; }
         internal DirectoryInfo Source { get; }
         internal string SourceProject { get; }
+        internal DirectoryInfo SourceLayout { get; }
 
         internal static async Task<SourceFixture> CreateAsync()
         {
@@ -327,6 +396,11 @@ public sealed class SourceGatewayTests
                   <PropertyGroup><TargetFramework>uap10.0</TargetFramework></PropertyGroup>
                 </Project>
                 """);
+            var sourceLayout = Directory.CreateDirectory(
+                Path.Combine(source.FullName, "bin", "x64", "Debug"));
+            await File.WriteAllTextAsync(
+                Path.Combine(sourceLayout.FullName, "AppxManifest.xml"),
+                "<Package />");
             await File.WriteAllTextAsync(
                 Path.Combine(target.FullName, "Target.csproj"),
                 """
@@ -385,7 +459,11 @@ public sealed class SourceGatewayTests
                         }
                     ]
                 });
-            return new SourceFixture(target, source, sourceProject);
+            return new SourceFixture(
+                target,
+                source,
+                sourceProject,
+                sourceLayout);
         }
 
         internal async Task CompleteSourceStateAsync()

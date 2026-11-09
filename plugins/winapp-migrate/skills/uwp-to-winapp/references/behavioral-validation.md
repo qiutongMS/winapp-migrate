@@ -259,10 +259,13 @@ Prefer user-provided baseline evidence when it already covers the plan. Otherwis
    ```
 
    The gateway resolves the source root and project only from
-   `migration-report.json`, records the pre/post launch window inventories,
-   and returns the newly created HWNDs authorized for source capture. Do not
+   `migration-report.json`, selects a compatible installed UAP SDK, builds
+   with Visual Studio MSBuild, prepares restored UWP framework dependencies,
+   and passes the resulting loose AppX layout to released WinApp CLI. It
+   records the build command/output and pre/post launch window inventories,
+   then returns the newly created HWNDs authorized for source capture. Do not
    pass a source path or invoke raw WinApp CLI.
-2. If project mode reports a build failure, use the persisted structured diagnostics. Never edit the source project for baseline capture.
+2. If the source build reports a failure, use the persisted structured diagnostics. Never edit the source project for baseline capture.
 3. Treat a compiled and registered source that fails activation as a runtime failure. Make one gateway-mediated diagnostic launch:
 
    ```powershell
@@ -421,12 +424,11 @@ outputs support `-o path`, `--output path`, `--output=path`, `-o:path`,
 `-o=path`, and `--output:path`. Empty or repeated/ambiguous selectors fail
 closed rather than silently selecting a different output or window.
 
-The installed `0.6.3-isolated-rebased.62` screenshot help and
-`UiScreenshotCommand.Handler.DefaultOutputFileName`/`PublishAsync` establish
-the default: `screenshot.png` in the WinApp process working directory, including
-composite captures. With no explicit output, a state-bound capture runs in
-its own enforcement probe directory and seals that relative
-`workingDirectory`; the native filename/default behavior is unchanged.
+Released WinApp CLI uses `screenshot.png` in the WinApp process working
+directory as the default output, including composite captures. With no
+explicit output, a state-bound capture runs in its own enforcement probe
+directory and seals that relative `workingDirectory`; the native
+filename/default behavior is unchanged.
 Explicit paths still resolve from the target directory; prefer
 `.migration-evidence` paths so output does not change application assets.
 An unbound screenshot retains the target working directory.

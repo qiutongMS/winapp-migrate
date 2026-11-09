@@ -26,7 +26,7 @@ internal sealed class UwpSourceCommand : Command
         internal RunCommand(IEnforcementProcessRunner processRunner)
             : base(
                 "run",
-                "Launch the exact report-recorded source project and authorize only windows created by that launch for source capture.")
+                "Build the exact report-recorded classic UWP source with Visual Studio MSBuild, launch its loose layout through WinApp CLI, and authorize only windows created by that launch.")
         {
             var target = TargetArgument();
             var winApp = WinAppOption();
@@ -65,7 +65,7 @@ internal sealed class UwpSourceCommand : Command
         internal DiagnoseCommand(IEnforcementProcessRunner processRunner)
             : base(
                 "diagnose",
-                "Run one foreground debug-output probe against the exact report-recorded source project and persist its output.")
+                "Build the exact report-recorded classic UWP source and run one foreground WinApp CLI debug-output probe against its loose layout.")
         {
             var target = TargetArgument();
             var winApp = WinAppOption();

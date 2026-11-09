@@ -14,7 +14,7 @@ plugins/winapp-migrate/                    Agent Plugin and migration Skills
 src/WinAppMigration.Cli/                   `winapp-migrate` command line
 src/WinAppMigration.Enforcement/           Shared evidence and closure engine
 src/Pipelines/Uwp/UwpMigration.Contracts/ UWP report schema 1.6 contracts
-src/Pipelines/Uwp/UwpMigration.Enforcement/ UWP report and WinApp CLI adapter
+src/Pipelines/Uwp/UwpMigration.Enforcement/ UWP source builder, report, and WinApp CLI adapter
 src/Pipelines/Uwp/UwpMigration.Mechanical/ Deterministic UWP conversion
 tests/Pipelines/Uwp/                       UWP pipeline tests
 ```
@@ -25,6 +25,30 @@ gates. The UWP adapter binds those shared contracts to schema 1.6 and invokes
 released WinApp CLI commands. UWP-specific activation, package, project-item,
 XAML, and C# behavior stays in the UWP pipeline rather than being prematurely
 generalized.
+
+### Host prerequisites
+
+Running a classic UWP source baseline requires:
+
+- Windows 10 or Windows 11 with an active interactive desktop.
+- Visual Studio with the **Universal Windows Platform development** workload,
+  including Visual Studio MSBuild and the UWP build tools.
+- A Windows 10 SDK compatible with the source project's
+  `TargetPlatformMinVersion`. The source gateway prefers the project's exact
+  `TargetPlatformVersion` when installed, otherwise it selects the newest
+  compatible installed UAP SDK.
+- Developer Mode, or an equivalent policy that permits trusted app
+  sideloading.
+- NuGet connectivity for restore when required framework packages are not
+  already cached.
+- Released WinApp CLI v0.8.0 or later, available through `--winapp`,
+  `WINAPP_MIGRATE_WINAPP_PATH`, or PATH.
+
+`winapp-migrate` owns classic UWP project detection, SDK selection, Visual
+Studio MSBuild restore/build, loose AppX layout resolution, and preparation of
+restored UWP framework dependencies. It then passes the existing loose layout
+to released WinApp CLI for staging, registration, activation, diagnostics, and
+UI automation. WinApp CLI does not need classic UWP `.csproj` build support.
 
 ## UWP pipeline
 
@@ -67,16 +91,19 @@ to record `target.root` as `.`. Together these options let callers stabilize
 the package identity and relocate the target directory without rewriting
 product artifacts after the migration completes.
 
-`source run` resolves the exact source project from `migration-report.json`,
-captures the desktop window inventory before and after launch, and authorizes
-only newly created HWNDs for `source capture`. Source commands run while the
-source-oracle gate remains incomplete and the workflow is nonterminal; they persist launch,
-diagnostic, UI, stdout, and stderr provenance below the report-declared source
-evidence root. The run capability is bound to a deterministic fingerprint of
-the source tree, so any source code, XAML, project, or resource change rejects
-later capture. `source diagnose` provides the bounded foreground
-`--debug-output` fallback. Other source UI actions require `-w` or `--window`
-with an HWND authorized by the current source run.
+`source run` resolves and builds the exact source project from
+`migration-report.json`, records the Visual Studio MSBuild command, selected
+SDK, build output, and resolved loose AppX layout, then delegates that layout
+to WinApp CLI. It captures the desktop window inventory before and after
+launch and authorizes only newly created HWNDs for `source capture`. Source
+commands run while the source-oracle gate remains incomplete and the workflow
+is nonterminal; they persist launch, diagnostic, UI, stdout, and stderr
+provenance below the report-declared source evidence root. The run capability
+is bound to a deterministic fingerprint of the source tree, so any source
+code, XAML, project, or resource change rejects later capture.
+`source diagnose` provides the bounded foreground `--debug-output` fallback.
+Other source UI actions require `-w` or `--window` with an HWND authorized by
+the current source run.
 
 `closure attest` invokes `winapp run` first with `--no-launch --json`, then with
 `--no-build --detach --json` after a successful analyzer-enabled build. It
@@ -320,19 +347,21 @@ microsoft/win-dev-skills
 winapp-migrate
   Skills + pipeline contracts + mechanical transforms + enforcement
        |
-       | invokes released commands; does not copy their implementation
+       | passes built layouts to released runtime/UI commands
        v
 microsoft/winappCli
-  project creation, build, package, registration, launch, diagnostics, and UI
+  general app tooling, package registration, launch, diagnostics, and UI
 ```
 
 - `win-dev-skills` discovers and pins the released `winapp-migrate` Plugin. It
   does not own or copy migration implementation.
 - `winapp-migrate` owns migration-specific state, transforms, verification,
-  evidence, replay, and closure.
-- WinApp CLI owns general Windows application creation, build, deployment,
-  runtime diagnosis, and UI automation. It does not depend on
-  `winapp-migrate`.
+  evidence, replay, closure, and the classic UWP source build adapter needed
+  to establish a migration baseline.
+- WinApp CLI owns general Windows application tooling plus registration,
+  activation, runtime diagnosis, and UI automation for an existing loose AppX
+  layout. It does not contain migration-specific classic UWP project build
+  knowledge and does not depend on `winapp-migrate`.
 - Static WinUI diagnostics remain a separately versioned analyzer package.
   Migration pipelines may require it in target projects, but do not bundle or
   fork its implementation.

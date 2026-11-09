@@ -111,7 +111,7 @@ If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is avai
 
 - `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, canonical closure attestations, evidence freshness, closure gates, and its mechanically owned schema `1.6` report fields.
 - This skill owns semantic decisions, dependency-contract preservation, target implementation, and behavioral validation.
-- WinApp CLI owns the underlying build, registration, launch, crash diagnostics, and UI automation. The source gateway owns the exact source project identity, source launch/window capability, and source evidence provenance. The closure gateway owns every target invocation and its provenance.
+- `winapp-migrate` owns classic UWP source detection, Visual Studio MSBuild/SDK selection, framework-dependency preparation, and source evidence provenance. WinApp CLI owns general target build plus loose-layout registration, launch, crash diagnostics, and UI automation. The source gateway owns source launch/window capability; the closure gateway owns every target invocation and its provenance.
 - The analyzer reports static WinUI risks during ordinary builds. It does not create the migration report and does not replace runtime replay.
 
 Do not duplicate `winapp-migrate uwp` checks with ad hoc extension lists or repository-wide searches when current schema `1.6` evidence already covers them. An empty migration TODO list still does not guarantee a buildable, runnable, or behaviorally equivalent app.

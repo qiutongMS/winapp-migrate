@@ -65,6 +65,24 @@ public sealed class SourceRunAttestation
     [JsonPropertyName("sourceFingerprint")]
     public required string SourceFingerprint { get; set; }
 
+    [JsonPropertyName("sourceBuildCommand")]
+    public List<string> SourceBuildCommand { get; set; } = [];
+
+    [JsonPropertyName("sourceBuildExitCode")]
+    public int SourceBuildExitCode { get; set; }
+
+    [JsonPropertyName("targetPlatformVersion")]
+    public string? TargetPlatformVersion { get; set; }
+
+    [JsonPropertyName("sourceLayout")]
+    public string? SourceLayout { get; set; }
+
+    [JsonPropertyName("sourceBuildStdout")]
+    public string? SourceBuildStandardOutputPath { get; set; }
+
+    [JsonPropertyName("sourceBuildStderr")]
+    public string? SourceBuildStandardErrorPath { get; set; }
+
     [JsonPropertyName("startedAt")]
     public DateTimeOffset StartedAt { get; set; }
 
@@ -152,13 +170,26 @@ public sealed class SourceUiProbe
 public sealed class UwpSourceGateway
 {
     private readonly IEnforcementProcessRunner _processRunner;
+    private readonly IUwpSourceBuilder _sourceBuilder;
     private readonly TimeProvider _timeProvider;
 
     public UwpSourceGateway(
         IEnforcementProcessRunner processRunner,
         TimeProvider? timeProvider = null)
+        : this(
+            processRunner,
+            new UwpSourceBuilder(processRunner),
+            timeProvider)
+    {
+    }
+
+    internal UwpSourceGateway(
+        IEnforcementProcessRunner processRunner,
+        IUwpSourceBuilder sourceBuilder,
+        TimeProvider? timeProvider = null)
     {
         _processRunner = processRunner;
+        _sourceBuilder = sourceBuilder;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -175,9 +206,45 @@ public sealed class UwpSourceGateway
         var directory = $"{workspace.GatewayRoot}/runs/{id}";
         var beforePath = $"{directory}/windows-before.json";
         var afterPath = $"{directory}/windows-after.json";
+        var buildStdoutPath = $"{directory}/source-build.stdout.log";
+        var buildStderrPath = $"{directory}/source-build.stderr.log";
         var stdoutPath = $"{directory}/stdout.log";
         var stderrPath = $"{directory}/stderr.log";
         var startedAt = _timeProvider.GetUtcNow();
+        var build = await _sourceBuilder.BuildAsync(
+            new FileInfo(workspace.SourceProject),
+            options.Configuration,
+            options.Architecture,
+            cancellationToken);
+        await WriteOutputAsync(
+            workspace.Target,
+            buildStdoutPath,
+            buildStderrPath,
+            new EnforcementProcessResult(
+                build.ExitCode,
+                build.StandardOutput,
+                build.StandardError),
+            cancellationToken);
+        if (build.ExitCode != 0 || build.LayoutDirectory is null)
+        {
+            var failed = CreateRunAttestation(
+                workspace,
+                id,
+                "detached",
+                startedAt,
+                _timeProvider.GetUtcNow(),
+                build,
+                build.Command,
+                build.ExitCode,
+                buildStdoutPath,
+                buildStderrPath);
+            await PersistRunAsync(
+                workspace,
+                failed,
+                directory,
+                cancellationToken);
+            return failed;
+        }
 
         var beforeResult = await InvokeAsync(
             workspace,
@@ -193,7 +260,10 @@ public sealed class UwpSourceGateway
             beforeResult,
             cancellationToken);
 
-        var arguments = BuildRunArguments(workspace.SourceProject, options, diagnostic: false);
+        var arguments = BuildRunArguments(
+            build.LayoutDirectory,
+            CreateStagedLayoutPath(id),
+            diagnostic: false);
         var result = await InvokeAsync(
             workspace,
             options.WinAppExecutable,
@@ -246,6 +316,12 @@ public sealed class UwpSourceGateway
             SourceProject = workspace.SourceProject,
             SourceProjectSha256 = workspace.SourceProjectSha256,
             SourceFingerprint = workspace.SourceFingerprint,
+            SourceBuildCommand = [.. build.Command],
+            SourceBuildExitCode = build.ExitCode,
+            TargetPlatformVersion = build.TargetPlatformVersion,
+            SourceLayout = build.LayoutDirectory.FullName,
+            SourceBuildStandardOutputPath = buildStdoutPath,
+            SourceBuildStandardErrorPath = buildStderrPath,
             StartedAt = startedAt,
             CompletedAt = completedAt,
             Command = [options.WinAppExecutable, .. arguments],
@@ -275,10 +351,50 @@ public sealed class UwpSourceGateway
             cancellationToken);
         var id = CreateId("source-diagnostic");
         var directory = $"{workspace.GatewayRoot}/diagnostics/{id}";
+        var buildStdoutPath = $"{directory}/source-build.stdout.log";
+        var buildStderrPath = $"{directory}/source-build.stderr.log";
         var stdoutPath = $"{directory}/stdout.log";
         var stderrPath = $"{directory}/stderr.log";
-        var arguments = BuildRunArguments(workspace.SourceProject, options, diagnostic: true);
         var startedAt = _timeProvider.GetUtcNow();
+        var build = await _sourceBuilder.BuildAsync(
+            new FileInfo(workspace.SourceProject),
+            options.Configuration,
+            options.Architecture,
+            cancellationToken);
+        await WriteOutputAsync(
+            workspace.Target,
+            buildStdoutPath,
+            buildStderrPath,
+            new EnforcementProcessResult(
+                build.ExitCode,
+                build.StandardOutput,
+                build.StandardError),
+            cancellationToken);
+        if (build.ExitCode != 0 || build.LayoutDirectory is null)
+        {
+            var failed = CreateRunAttestation(
+                workspace,
+                id,
+                "diagnostic",
+                startedAt,
+                _timeProvider.GetUtcNow(),
+                build,
+                build.Command,
+                build.ExitCode,
+                buildStdoutPath,
+                buildStderrPath);
+            await EnforcementStore.WriteAtomicAsync(
+                workspace.Target,
+                $"{directory}/attestation.json",
+                failed,
+                cancellationToken);
+            return failed;
+        }
+
+        var arguments = BuildRunArguments(
+            build.LayoutDirectory,
+            CreateStagedLayoutPath(id),
+            diagnostic: true);
         var result = await InvokeAsync(
             workspace,
             options.WinAppExecutable,
@@ -300,6 +416,12 @@ public sealed class UwpSourceGateway
             SourceProject = workspace.SourceProject,
             SourceProjectSha256 = workspace.SourceProjectSha256,
             SourceFingerprint = workspace.SourceFingerprint,
+            SourceBuildCommand = [.. build.Command],
+            SourceBuildExitCode = build.ExitCode,
+            TargetPlatformVersion = build.TargetPlatformVersion,
+            SourceLayout = build.LayoutDirectory.FullName,
+            SourceBuildStandardOutputPath = buildStdoutPath,
+            SourceBuildStandardErrorPath = buildStderrPath,
             StartedAt = startedAt,
             CompletedAt = completedAt,
             Command = [options.WinAppExecutable, .. arguments],
@@ -556,21 +678,19 @@ public sealed class UwpSourceGateway
     }
 
     private static List<string> BuildRunArguments(
-        string sourceProject,
-        UwpSourceRunOptions options,
+        DirectoryInfo sourceLayout,
+        string stagedLayout,
         bool diagnostic)
     {
-        var arguments = new List<string> { "run", sourceProject };
-        if (!string.IsNullOrWhiteSpace(options.Architecture))
+        var arguments = new List<string>
         {
-            arguments.Add("--arch");
-            arguments.Add(options.Architecture);
-        }
-        if (!string.IsNullOrWhiteSpace(options.Configuration))
-        {
-            arguments.Add("--configuration");
-            arguments.Add(options.Configuration);
-        }
+            "run",
+            sourceLayout.FullName,
+            "--manifest",
+            Path.Combine(sourceLayout.FullName, "AppxManifest.xml"),
+            "--output-appx-directory",
+            stagedLayout
+        };
         if (diagnostic)
         {
             arguments.Add("--debug-output");
@@ -582,6 +702,39 @@ public sealed class UwpSourceGateway
         }
         return arguments;
     }
+
+    private static SourceRunAttestation CreateRunAttestation(
+        SourceWorkspace workspace,
+        string id,
+        string mode,
+        DateTimeOffset startedAt,
+        DateTimeOffset completedAt,
+        UwpSourceBuildResult build,
+        IReadOnlyList<string> command,
+        int exitCode,
+        string stdoutPath,
+        string stderrPath) =>
+        new()
+        {
+            Id = id,
+            Mode = mode,
+            SourceRoot = workspace.SourceRoot.FullName,
+            SourceProject = workspace.SourceProject,
+            SourceProjectSha256 = workspace.SourceProjectSha256,
+            SourceFingerprint = workspace.SourceFingerprint,
+            SourceBuildCommand = [.. build.Command],
+            SourceBuildExitCode = build.ExitCode,
+            TargetPlatformVersion = build.TargetPlatformVersion,
+            SourceLayout = build.LayoutDirectory?.FullName,
+            SourceBuildStandardOutputPath = stdoutPath,
+            SourceBuildStandardErrorPath = stderrPath,
+            StartedAt = startedAt,
+            CompletedAt = completedAt,
+            Command = [.. command],
+            ExitCode = exitCode,
+            StandardOutputPath = stdoutPath,
+            StandardErrorPath = stderrPath
+        };
 
     private static void RequireSuccessfulWindowInventory(
         EnforcementProcessResult result,
@@ -761,6 +914,13 @@ public sealed class UwpSourceGateway
 
     private static string CreateId(string prefix) =>
         $"{prefix}-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}";
+
+    private static string CreateStagedLayoutPath(string id)
+    {
+        var separator = id.LastIndexOf('-');
+        var token = separator >= 0 ? id[(separator + 1)..] : id;
+        return Path.Combine(Path.GetTempPath(), "wam-src", token);
+    }
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
