@@ -34,9 +34,7 @@ public partial class MigrateCommandTests
                     global:: Windows.UI.Core.CoreWindow.GetForCurrentThread().GetKeyState(GetKey(key, 2));
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "keyboard-state-output"));
+        var target = NewTarget("keyboard-state-output");
         ArrangeTemplateCreation(target, "KeyboardStateApp");
 
         var (exit, output) = await InvokeAsync(source, target);
@@ -45,12 +43,8 @@ public partial class MigrateCommandTests
         StringAssert.Contains(
             output,
             "Rewrote 4 CoreWindow key-state call(s) in 2 .cs file(s)");
-        var plain = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Plain.cs"),
-            TestContext.CancellationToken);
-        var qualified = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Qualified.cs"),
-            TestContext.CancellationToken);
+        var plain = await ReadAsync(target, "Plain.cs");
+        var qualified = await ReadAsync(target, "Qualified.cs");
         Assert.AreEqual(
             2,
             CountOccurrences(
@@ -73,9 +67,7 @@ public partial class MigrateCommandTests
                 "Windows.UI.Core. Microsoft.UI.Input",
                 StringComparison.Ordinal));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var transform = report.RootElement.GetProperty("transforms")
             .EnumerateArray()
             .Single(item =>
@@ -169,32 +161,18 @@ public partial class MigrateCommandTests
                     Windows.UI.Core.CoreWindow.GetForCurrentThread().Bounds;
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "keyboard-residual-output"));
+        var target = NewTarget("keyboard-residual-output");
         ArrangeTemplateCreation(target, "KeyboardResidualApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var lexical = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Lexical.cs"),
-            TestContext.CancellationToken);
-        var aliases = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Aliases.cs"),
-            TestContext.CancellationToken);
-        var shadowed = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Shadowed.cs"),
-            TestContext.CancellationToken);
-        var unrelated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Unrelated.cs"),
-            TestContext.CancellationToken);
-        var windowsAlias = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "WindowsAlias.cs"),
-            TestContext.CancellationToken);
-        var inlineComment = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "InlineComment.cs"),
-            TestContext.CancellationToken);
+        var lexical = await ReadAsync(target, "Lexical.cs");
+        var aliases = await ReadAsync(target, "Aliases.cs");
+        var shadowed = await ReadAsync(target, "Shadowed.cs");
+        var unrelated = await ReadAsync(target, "Unrelated.cs");
+        var windowsAlias = await ReadAsync(target, "WindowsAlias.cs");
+        var inlineComment = await ReadAsync(target, "InlineComment.cs");
         Assert.AreEqual(7, CountOccurrences(lexical, "GetForCurrentThread().GetKeyState"));
         StringAssert.Contains(
             lexical,
@@ -211,9 +189,7 @@ public partial class MigrateCommandTests
         StringAssert.Contains(inlineComment, "/* preserve receiver comment */");
         Assert.AreEqual(1, CountOccurrences(inlineComment, "GetForCurrentThread().GetKeyState"));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG015");
@@ -286,20 +262,14 @@ public partial class MigrateCommandTests
                     CoreWindow.GetForCurrentThread().GetKeyState(key);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "project-identity-keyboard-output"));
+        var target = NewTarget("project-identity-keyboard-output");
         ArrangeTemplateCreation(target, "ProjectIdentityKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var ambiguous = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "AmbiguousConsumer.cs"),
-            TestContext.CancellationToken);
-        var globalImport = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "GlobalImportConsumer.cs"),
-            TestContext.CancellationToken);
+        var ambiguous = await ReadAsync(target, "AmbiguousConsumer.cs");
+        var globalImport = await ReadAsync(target, "GlobalImportConsumer.cs");
         Assert.AreEqual(
             1,
             CountOccurrences(
@@ -316,9 +286,7 @@ public partial class MigrateCommandTests
                 globalImport,
                 "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread"));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG015");
@@ -366,17 +334,13 @@ public partial class MigrateCommandTests
                     global::Windows.UI.Core.CoreWindow.GetForCurrentThread().GetKeyState(key);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "global-alias-keyboard-output"));
+        var target = NewTarget("global-alias-keyboard-output");
         ArrangeTemplateCreation(target, "GlobalAliasKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var consumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Consumer.cs"),
-            TestContext.CancellationToken);
+        var consumer = await ReadAsync(target, "Consumer.cs");
         Assert.AreEqual(
             3,
             CountOccurrences(
@@ -388,9 +352,7 @@ public partial class MigrateCommandTests
                 consumer,
                 "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread"));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG015");
@@ -417,17 +379,13 @@ public partial class MigrateCommandTests
                     CoreWindow.GetForCurrentThread().GetKeyState(key);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "global-import-keyboard-output"));
+        var target = NewTarget("global-import-keyboard-output");
         ArrangeTemplateCreation(target, "GlobalImportKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var consumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Consumer.cs"),
-            TestContext.CancellationToken);
+        var consumer = await ReadAsync(target, "Consumer.cs");
         StringAssert.Contains(
             consumer,
             "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(key)");
@@ -436,9 +394,7 @@ public partial class MigrateCommandTests
                 "CoreWindow.GetForCurrentThread().GetKeyState",
                 StringComparison.Ordinal));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsFalse(report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Any(item => item.GetProperty("id").GetString() == "UWMIG015"));
@@ -471,17 +427,13 @@ public partial class MigrateCommandTests
                     $"{42:CoreWindow.GetForCurrentThread().GetKeyState(key)}";
             }
             """"");
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "interpolated-keyboard-output"));
+        var target = NewTarget("interpolated-keyboard-output");
         ArrangeTemplateCreation(target, "InterpolatedKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Interpolated.cs"),
-            TestContext.CancellationToken);
+        var migrated = await ReadAsync(target, "Interpolated.cs");
         Assert.AreEqual(
             6,
             CountOccurrences(
@@ -496,9 +448,7 @@ public partial class MigrateCommandTests
             migrated,
             "Echo(\"CoreWindow.GetForCurrentThread().GetKeyState(key)\")");
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsFalse(report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Any(item => item.GetProperty("id").GetString() == "UWMIG015"));
@@ -594,32 +544,24 @@ public partial class MigrateCommandTests
                     CoreWindow.GetForCurrentThread().GetKeyState(key);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "partial-keyboard-output"));
+        var target = NewTarget("partial-keyboard-output");
         ArrangeTemplateCreation(target, "PartialKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var partialConsumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Consumer.Call.cs"),
-            TestContext.CancellationToken);
-        var derivedConsumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "DerivedConsumer.cs"),
-            TestContext.CancellationToken);
-        var genuineConsumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "GenuineConsumer.cs"),
-            TestContext.CancellationToken);
-        var importedBaseConsumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "ImportedBaseConsumer.cs"),
-            TestContext.CancellationToken);
-        var ambiguousBaseConsumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "AmbiguousBaseConsumer.cs"),
-            TestContext.CancellationToken);
-        var unresolvedBaseConsumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "UnresolvedBaseConsumer.cs"),
-            TestContext.CancellationToken);
+        var partialConsumer = await ReadAsync(target, "Consumer.Call.cs");
+        var derivedConsumer = await ReadAsync(target, "DerivedConsumer.cs");
+        var genuineConsumer = await ReadAsync(target, "GenuineConsumer.cs");
+        var importedBaseConsumer = await ReadAsync(
+            target,
+            "ImportedBaseConsumer.cs");
+        var ambiguousBaseConsumer = await ReadAsync(
+            target,
+            "AmbiguousBaseConsumer.cs");
+        var unresolvedBaseConsumer = await ReadAsync(
+            target,
+            "UnresolvedBaseConsumer.cs");
         Assert.AreEqual(
             1,
             CountOccurrences(
@@ -656,9 +598,7 @@ public partial class MigrateCommandTests
                 unresolvedBaseConsumer,
                 "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread"));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG015");
@@ -692,26 +632,20 @@ public partial class MigrateCommandTests
                         .HasFlag(CoreVirtualKeyStates.Down);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "vanarsdel-keyboard-output"));
+        var target = NewTarget("vanarsdel-keyboard-output");
         ArrangeTemplateCreation(target, "VanArsdelKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(
-                target.FullName,
-                "ProductConfigurationViewModel.cs"),
-            TestContext.CancellationToken);
+        var migrated = await ReadAsync(
+            target,
+            "ProductConfigurationViewModel.cs");
         StringAssert.Contains(
             migrated,
             "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)");
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var transform = report.RootElement.GetProperty("transforms")
             .EnumerateArray()
             .Single(item =>
@@ -760,23 +694,15 @@ public partial class MigrateCommandTests
                     Windows.UI.Core.CoreWindow.GetForCurrentThread().GetKeyState(key);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "qualified-binding-keyboard-output"));
+        var target = NewTarget("qualified-binding-keyboard-output");
         ArrangeTemplateCreation(target, "QualifiedBindingKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var contoso = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "ContosoConsumer.cs"),
-            TestContext.CancellationToken);
-        var nested = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "NestedConsumer.cs"),
-            TestContext.CancellationToken);
-        var safe = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "SafeConsumer.cs"),
-            TestContext.CancellationToken);
+        var contoso = await ReadAsync(target, "ContosoConsumer.cs");
+        var nested = await ReadAsync(target, "NestedConsumer.cs");
+        var safe = await ReadAsync(target, "SafeConsumer.cs");
         Assert.AreEqual(
             1,
             CountOccurrences(
@@ -798,9 +724,7 @@ public partial class MigrateCommandTests
                 safe,
                 "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread"));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG015");
@@ -838,17 +762,13 @@ public partial class MigrateCommandTests
                     global::Windows.UI.Core.CoreWindow.GetForCurrentThread().GetKeyState(key);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "root-windows-keyboard-output"));
+        var target = NewTarget("root-windows-keyboard-output");
         ArrangeTemplateCreation(target, "RootWindowsKeyboardApp");
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        var consumer = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Consumer.cs"),
-            TestContext.CancellationToken);
+        var consumer = await ReadAsync(target, "Consumer.cs");
         Assert.AreEqual(
             3,
             CountOccurrences(
@@ -860,9 +780,7 @@ public partial class MigrateCommandTests
                 consumer,
                 "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread"));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG015");
@@ -893,9 +811,7 @@ public partial class MigrateCommandTests
             code,
             new UnicodeEncoding(bigEndian: false, byteOrderMark: true),
             TestContext.CancellationToken);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "utf16-keyboard-state-output"));
+        var target = NewTarget("utf16-keyboard-state-output");
         ArrangeTemplateCreation(target, "Utf16KeyboardStateApp");
 
         var (exit, output) = await InvokeAsync(source, target);
@@ -927,9 +843,7 @@ public partial class MigrateCommandTests
                     UwpCoreWindow.GetForCurrentThread().GetKeyState(key);
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "verify-keyboard-state-output"));
+        var target = NewTarget("verify-keyboard-state-output");
         ArrangeTemplateCreation(target, "VerifyKeyboardStateApp");
         var (migrateExit, migrateOutput) = await InvokeAsync(source, target);
         Assert.AreEqual(0, migrateExit, migrateOutput);
@@ -949,9 +863,7 @@ public partial class MigrateCommandTests
 
         var (firstExit, firstOutput) = await InvokeVerifyAsync(target);
         Assert.AreEqual(0, firstExit, firstOutput);
-        using var firstReport = JsonDocument.Parse(await File.ReadAllTextAsync(
-            reportPath,
-            TestContext.CancellationToken));
+        using var firstReport = await ReadReportAsync(target);
         var firstTodo = firstReport.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(todo => todo.GetProperty("id").GetString() == "UWMIG015");
@@ -960,9 +872,7 @@ public partial class MigrateCommandTests
 
         var (secondExit, secondOutput) = await InvokeVerifyAsync(target);
         Assert.AreEqual(0, secondExit, secondOutput);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            reportPath,
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var matchingTodos = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Where(todo => todo.GetProperty("id").GetString() == "UWMIG015")

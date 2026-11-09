@@ -61,57 +61,46 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task PropertyAssertions_EmptyNameFromOmittedInspectAndNullQueryAreEquivalent(bool reverse)
+    [DataRow("name-inspect-query", false)]
+    [DataRow("name-inspect-query", true)]
+    [DataRow("value-query-query", false)]
+    [DataRow("value-query-query", true)]
+    [DataRow("value-inspect-query", false)]
+    [DataRow("value-inspect-query", true)]
+    public async Task PropertyAssertions_EmptyAndNullRepresentationsAreEquivalent(
+        string scenario,
+        bool reverse)
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var inspect = InspectObservationWithoutName();
-        var query = NullPropertyObservation("Name");
-        await PlanPropertyAsync(fixture, "name", reverse ? query : inspect);
+        var (property, commandProperty, left, right, inspectCommand) = scenario switch
+        {
+            "name-inspect-query" => (
+                "name",
+                "Name",
+                InspectObservationWithoutName(),
+                NullPropertyObservation("Name"),
+                true),
+            "value-query-query" => (
+                "value",
+                "Value",
+                PropertyObservation("Value", ""),
+                NullPropertyObservation("Value"),
+                false),
+            "value-inspect-query" => (
+                "value",
+                "Value",
+                InspectObservation("value", "null"),
+                PropertyObservation("Value", ""),
+                true),
+            _ => throw new AssertFailedException(
+                $"Unknown property assertion scenario '{scenario}'.")
+        };
+        await PlanPropertyAsync(fixture, property, reverse ? right : left);
         var probe = await CaptureClosureProbeAsync(fixture,
-            new EnforcementProcessResult(0, reverse ? inspect : query, ""),
-            arguments: reverse ? ["inspect", "main", "-w", "42", "--json"] :
-                ["get-property", "main", "-p", "Name", "-w", "42", "--json"]);
-
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(
-            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
-
-        Assert.AreEqual("passed", recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
-    }
-
-    [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task PropertyAssertions_EmptyValueFromNullAndEmptyQueriesAreEquivalent(bool reverse)
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var empty = PropertyObservation("Value", "");
-        var nullValue = NullPropertyObservation("Value");
-        await PlanPropertyAsync(fixture, "value", reverse ? nullValue : empty);
-        var probe = await CaptureClosureProbeAsync(fixture,
-            new EnforcementProcessResult(0, reverse ? empty : nullValue, ""),
-            arguments: ["get-property", "main", "-p", "Value", "-w", "42", "--json"]);
-
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(
-            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
-
-        Assert.AreEqual("passed", recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
-    }
-
-    [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task PropertyAssertions_EmptyValueFromNullInspectAndEmptyQueryAreEquivalent(bool reverse)
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var inspect = InspectObservation("value", "null");
-        var query = PropertyObservation("Value", "");
-        await PlanPropertyAsync(fixture, "value", reverse ? query : inspect);
-        var probe = await CaptureClosureProbeAsync(fixture,
-            new EnforcementProcessResult(0, reverse ? inspect : query, ""),
-            arguments: reverse ? ["inspect", "main", "-w", "42", "--json"] :
-                ["get-property", "main", "-p", "Value", "-w", "42", "--json"]);
+            new EnforcementProcessResult(0, reverse ? left : right, ""),
+            arguments: inspectCommand && reverse
+                ? ["inspect", "main", "-w", "42", "--json"]
+                : ["get-property", "main", "-p", commandProperty, "-w", "42", "--json"]);
 
         var recorded = await UwpEnforcementRunner.RecordStateAsync(
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);

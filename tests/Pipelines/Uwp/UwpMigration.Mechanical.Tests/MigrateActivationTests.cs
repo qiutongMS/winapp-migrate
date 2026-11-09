@@ -1074,9 +1074,10 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
         var junctionPath = Path.Combine(
             _tempDirectory.FullName,
             "junction-target-manifest");
-        if (!TryCreateJunction(
+        if (!TryCreateDirectoryJunction(
                 junctionPath,
-                physicalTarget.FullName))
+                physicalTarget.FullName,
+                out _))
         {
             Assert.Inconclusive(
                 "The host cannot create a Windows directory junction.");
@@ -1172,106 +1173,8 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
 
     private void ArrangeTemplateCreation(
         DirectoryInfo target,
-        string projectName)
-    {
-        FakeDotNet.RunDotnetCommandHandler = arguments =>
-        {
-            var templateOutput = GetTemplateOutput(arguments);
-            templateOutput.Create();
-            File.WriteAllText(
-                Path.Combine(templateOutput.FullName, $"{projectName}.csproj"),
-                CleanCsproj);
-            File.WriteAllText(
-                Path.Combine(templateOutput.FullName, "App.xaml"),
-                $"<Application x:Class=\"{projectName}.App\" />");
-            File.WriteAllText(
-                Path.Combine(templateOutput.FullName, "App.xaml.cs"),
-                $"namespace {projectName}; public partial class App {{ }}");
-            File.WriteAllText(
-                Path.Combine(templateOutput.FullName, "MainWindow.xaml"),
-                $"<Window x:Class=\"{projectName}.MainWindow\" />");
-            File.WriteAllText(
-                Path.Combine(templateOutput.FullName, "MainWindow.xaml.cs"),
-                $"namespace {projectName}; public partial class MainWindow {{ }}");
-            File.WriteAllText(
-                Path.Combine(templateOutput.FullName, "Package.appxmanifest"),
-                TargetManifest);
-            return (0, "Template created.", string.Empty);
-        };
-    }
-
-    private async Task<(int ExitCode, string Output)> InvokeMigrateAsync(
-        DirectoryInfo source,
-        DirectoryInfo target)
-        => await InvokeCapturingConsoleAsync(
-            GetRequiredService<MigrateCommand>(),
-            source.FullName,
-            "--output",
-            target.FullName);
-
-    private Task<(int ExitCode, string Output)> InvokeVerifyAsync(
-        DirectoryInfo target) =>
-        InvokeCapturingConsoleAsync(
-            GetRequiredService<MigrateVerifyCommand>(),
-            target.FullName);
-
-    private async Task<JsonDocument> ReadReportAsync(DirectoryInfo target) =>
-        JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
-
-    private DirectoryInfo NewTarget(string name) =>
-        new(Path.Combine(_tempDirectory.FullName, name));
-
-    private async Task WriteAsync(
-        DirectoryInfo directory,
-        string relativePath,
-        string content)
-    {
-        var path = Path.Combine(directory.FullName, relativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(path, content, TestContext.CancellationToken);
-    }
-
-    private static DirectoryInfo GetTemplateOutput(
-        IReadOnlyList<string> arguments)
-    {
-        var outputIndex = arguments.ToList().IndexOf("--output");
-        Assert.IsTrue(
-            outputIndex >= 0 && outputIndex + 1 < arguments.Count);
-        return new DirectoryInfo(arguments[outputIndex + 1]);
-    }
-
-    private static bool TryCreateJunction(
-        string link,
-        string target)
-    {
-        try
-        {
-            var startInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                Arguments = $"/c mklink /J \"{link}\" \"{target}\"",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var process =
-                System.Diagnostics.Process.Start(startInfo);
-            if (process is null)
-            {
-                return false;
-            }
-            process.WaitForExit(5000);
-            return process.ExitCode == 0
-                && Directory.Exists(link);
-        }
-        catch
-        {
-            return false;
-        }
-    }
+        string projectName) =>
+        ArrangeBasicTemplateCreation(projectName, TargetManifest);
 
     private static string SourceManifest(string extensions) =>
         $$"""

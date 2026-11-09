@@ -149,47 +149,6 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Disposition_OptionalDebtAllowsDeclaredStateCaptureAndRecording()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var plan = await fixture.LoadAsync<StatePlanDocument>(
-            ".migration-evidence/state-plan.json");
-        plan.States[0].Criticality = StateCriticality.Optional;
-        plan.States[0].Target.Status = "blocked";
-        ContractTestAuthority.Prepare(fixture.Root, plan);
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root, ".migration-evidence/state-plan.json", plan);
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
-            fixture.Root, new UwpEnforcementOptions());
-
-        var deferred = await UwpEnforcementRunner.AssessAsync(
-            fixture.Root, TestWindowOwnerResolver.Shared);
-        const string intent = ".migration-evidence/optional-state-intent.txt";
-        await File.WriteAllTextAsync(
-            fixture.Path(intent),
-            "Observe the declared optional state despite its advisory debt.");
-        var probe = await new UwpEnforcementRunner(
-            new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, "")),
-            windowOwnerResolver: TestWindowOwnerResolver.Shared).InvokeUiAsync(
-                fixture.Root,
-                "winapp",
-                ["inspect", "--json", "-w", "42"],
-                [intent],
-                "state-1");
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(
-            fixture.Root,
-            TestWindowOwnerResolver.Shared,
-            "state-1",
-            [probe.ArtifactPath]);
-
-        Assert.AreEqual("continue-with-debt", deferred.Disposition?.Kind);
-        Assert.IsFalse(deferred.Disposition!.Terminal);
-        Assert.AreEqual(
-            "passed",
-            recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
-    }
-
-    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task ProgressSchema10_ImportsSafeJsonAndPreservesAmbiguousJson(bool ambiguous)

@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.Json;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using UwpMigration.Mechanical;
 
@@ -59,15 +60,138 @@ public abstract class MigrateCommandTestBase : BaseCommandTests
         string csprojName = "App.csproj")
     {
         var directory = _tempDirectory.CreateSubdirectory(name);
-        await File.WriteAllTextAsync(
-            Path.Combine(directory.FullName, csprojName),
-            CleanCsproj,
-            TestContext.CancellationToken);
-        await File.WriteAllTextAsync(
-            Path.Combine(directory.FullName, "MainWindow.xaml"),
-            "<Window><Grid><Frame x:Name=\"RootFrame\" /></Grid></Window>",
-            TestContext.CancellationToken);
+        await WriteAsync(directory, csprojName, CleanCsproj);
+        await WriteAsync(
+            directory,
+            "MainWindow.xaml",
+            "<Window><Grid><Frame x:Name=\"RootFrame\" /></Grid></Window>");
         return directory;
+    }
+
+    private protected DirectoryInfo NewTarget(string name) =>
+        new(Path.Combine(_tempDirectory.FullName, name));
+
+    private protected async Task WriteAsync(
+        DirectoryInfo directory,
+        string relativePath,
+        string content)
+    {
+        var path = Path.Combine(directory.FullName, relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(
+            path,
+            content,
+            TestContext.CancellationToken);
+    }
+
+    private protected Task<string> ReadAsync(
+        DirectoryInfo directory,
+        params string[] relativePath) =>
+        File.ReadAllTextAsync(
+            Path.Combine([directory.FullName, .. relativePath]),
+            TestContext.CancellationToken);
+
+    private protected async Task<JsonDocument> ReadReportAsync(
+        DirectoryInfo target) =>
+        JsonDocument.Parse(await ReadAsync(target, "migration-report.json"));
+
+    private protected Task<(int ExitCode, string Output)> InvokeMigrateAsync(
+        DirectoryInfo source,
+        DirectoryInfo target,
+        params string[] extraArguments) =>
+        InvokeCapturingConsoleAsync(
+            GetRequiredService<MigrateCommand>(),
+            [
+                source.FullName,
+                "--output",
+                target.FullName,
+                .. extraArguments
+            ]);
+
+    private protected Task<(int ExitCode, string Output)> InvokeVerifyAsync(
+        DirectoryInfo target) =>
+        InvokeCapturingConsoleAsync(
+            GetRequiredService<MigrateVerifyCommand>(),
+            target.FullName);
+
+    private protected void ArrangeBasicTemplateCreation(
+        string projectName,
+        string? packageManifest = null,
+        Action<DirectoryInfo>? customizeTemplate = null)
+    {
+        FakeDotNet.RunDotnetCommandHandler = arguments =>
+        {
+            var output = GetTemplateOutput(arguments);
+            output.Create();
+            File.WriteAllText(
+                Path.Combine(output.FullName, $"{projectName}.csproj"),
+                CleanCsproj);
+            File.WriteAllText(
+                Path.Combine(output.FullName, "App.xaml"),
+                $"<Application x:Class=\"{projectName}.App\" />");
+            File.WriteAllText(
+                Path.Combine(output.FullName, "App.xaml.cs"),
+                $"namespace {projectName}; public partial class App {{ }}");
+            File.WriteAllText(
+                Path.Combine(output.FullName, "MainWindow.xaml"),
+                $"<Window x:Class=\"{projectName}.MainWindow\" />");
+            File.WriteAllText(
+                Path.Combine(output.FullName, "MainWindow.xaml.cs"),
+                $"namespace {projectName}; public partial class MainWindow {{ }}");
+            if (packageManifest is not null)
+            {
+                File.WriteAllText(
+                    Path.Combine(output.FullName, "Package.appxmanifest"),
+                    packageManifest);
+            }
+            customizeTemplate?.Invoke(output);
+            return (0, "Template created.", string.Empty);
+        };
+    }
+
+    private protected static DirectoryInfo GetTemplateOutput(
+        IReadOnlyList<string> arguments)
+    {
+        var outputIndex = arguments.ToList().IndexOf("--output");
+        Assert.IsTrue(
+            outputIndex >= 0 && outputIndex + 1 < arguments.Count,
+            "Template command must specify --output.");
+        return new DirectoryInfo(arguments[outputIndex + 1]);
+    }
+
+    private protected static bool TryCreateDirectoryJunction(
+        string junctionPath,
+        string targetPath,
+        out string error)
+    {
+        try
+        {
+            var startInfo = new System.Diagnostics.ProcessStartInfo(
+                Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                Arguments =
+                    $"/d /c mklink /J \"{junctionPath}\" \"{targetPath}\""
+            };
+
+            using var process = System.Diagnostics.Process.Start(startInfo)!;
+            var standardOutput = process.StandardOutput.ReadToEnd();
+            var standardError = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            error = string.Join(
+                Environment.NewLine,
+                new[] { standardOutput, standardError }
+                    .Where(value => !string.IsNullOrWhiteSpace(value)));
+            return process.ExitCode == 0;
+        }
+        catch (Exception exception)
+        {
+            error = exception.Message;
+            return false;
+        }
     }
 
     private protected const string CleanCsproj = """

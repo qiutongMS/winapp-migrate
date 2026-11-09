@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Xml.Linq;
-using System.Diagnostics;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using UwpMigration.Contracts;
 using UwpMigration.Mechanical;
@@ -16,13 +15,6 @@ namespace UwpMigration.Mechanical.Tests;
 [DoNotParallelize]
 public partial class MigrateCommandTests : MigrateCommandTestBase
 {
-    private async Task WriteAsync(DirectoryInfo dir, string relative, string content)
-    {
-        var path = Path.Combine(dir.FullName, relative);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(path, content, TestContext.CancellationToken);
-    }
-
     private async Task<DirectoryInfo> CreateUwpSourceAsync(string name)
     {
         var dir = _tempDirectory.CreateSubdirectory(name);
@@ -113,52 +105,23 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         };
     }
 
-    private static DirectoryInfo GetTemplateOutput(
-        IReadOnlyList<string> arguments)
+    private Task<(int ExitCode, string Output)> InvokeAsync(
+        DirectoryInfo source,
+        DirectoryInfo target,
+        params string[] extra) =>
+        InvokeMigrateAsync(source, target, extra);
+
+    private async Task<(DirectoryInfo Target, int ExitCode, string Output)>
+        MigrateAsync(
+            DirectoryInfo source,
+            string targetName,
+            string projectName)
     {
-        var outputIndex = arguments.ToList().IndexOf("--output");
-        Assert.IsTrue(
-            outputIndex >= 0 && outputIndex + 1 < arguments.Count,
-            "Template command must specify --output.");
-        return new DirectoryInfo(arguments[outputIndex + 1]);
+        var target = NewTarget(targetName);
+        ArrangeTemplateCreation(target, projectName);
+        var (exitCode, output) = await InvokeAsync(source, target);
+        return (target, exitCode, output);
     }
-
-    private async Task<(int ExitCode, string Output)> InvokeAsync(DirectoryInfo source, DirectoryInfo target, params string[] extra)
-    {
-        var args = new List<string> { source.FullName, "--output", target.FullName };
-        args.AddRange(extra);
-        return await InvokeCapturingConsoleAsync(GetRequiredService<MigrateCommand>(), [.. args]);
-    }
-
-    private static bool TryCreateDirectoryJunction(
-        string junctionPath,
-        string targetPath,
-        out string error)
-    {
-        var startInfo = new ProcessStartInfo(
-            Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            Arguments =
-                $"/d /c mklink /J \"{junctionPath}\" \"{targetPath}\""
-        };
-
-        using var process = Process.Start(startInfo)!;
-        var standardOutput = process.StandardOutput.ReadToEnd();
-        var standardError = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        error = string.Join(
-            Environment.NewLine,
-            new[] { standardOutput, standardError }
-                .Where(value => !string.IsNullOrWhiteSpace(value)));
-        return process.ExitCode == 0;
-    }
-
-    private Task<(int ExitCode, string Output)> InvokeVerifyAsync(DirectoryInfo target) =>
-        InvokeCapturingConsoleAsync(GetRequiredService<MigrateVerifyCommand>(), target.FullName);
 
     [TestMethod]
     public void MigrationCommands_AdvertiseCurrentReportSchema()
@@ -192,9 +155,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               </Applications>
             </Package>
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "manifest-only-output"));
+        var target = NewTarget("manifest-only-output");
         ArrangeTemplateCreation(target, "ManifestOnlySourceApp");
 
         var (migrateExit, migrateOutput) = await InvokeAsync(
@@ -208,9 +169,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             migrateOutput,
             "[WARN] No .csproj found under source");
         Assert.AreEqual(0, verifyExit, verifyOutput);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsFalse(
             report.RootElement
                 .GetProperty("source")
@@ -230,10 +189,8 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         await WriteAsync(source, "MainPage.xaml", "<Page x:Class=\"SDKTemplate.MainPage\" />");
         await WriteAsync(source, "MainPage.xaml.cs",
             "using Windows.UI.Xaml.Controls; namespace SDKTemplate; public partial class MainPage { }");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "output"));
-        ArrangeTemplateCreation(target, "SensorAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "output", "SensorAppApp");
 
         Assert.AreEqual(0, exit, output);
         StringAssert.Contains(output, "=== MECHANICAL MIGRATION COMPLETE ===");
@@ -243,12 +200,10 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             FakeDotNet.CommandCalls[0].Arguments.Take(2).ToArray());
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, "SensorAppApp.csproj")));
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, "migration-report.json")));
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "MainPage.xaml.cs"), TestContext.CancellationToken);
+        var migrated = await ReadAsync(target, "MainPage.xaml.cs");
         StringAssert.Contains(migrated, "Microsoft.UI.Xaml.Controls");
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.AreEqual("1.6", report.RootElement.GetProperty("schemaVersion").GetString());
         Assert.AreEqual("mechanical-migration-complete", report.RootElement.GetProperty("status").GetString());
         Assert.IsTrue(report.RootElement.GetProperty("todos").GetArrayLength() >= 2);
@@ -296,17 +251,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               <Import Project="$(MSBuildExtensionsPath)\Microsoft\WindowsXaml\v$(VisualStudioVersion)\Microsoft.Windows.UI.Xaml.CSharp.targets" />
             </Project>
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "known-imports-output"));
-        ArrangeTemplateCreation(target, "KnownImportsApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "known-imports-output", "KnownImportsApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsFalse(report.RootElement
             .GetProperty("todos")
             .EnumerateArray()
@@ -332,17 +281,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               <Import Project="Build\Custom.targets" />
             </Project>
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "custom-import-output"));
-        ArrangeTemplateCreation(target, "CustomImportApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "custom-import-output", "CustomImportApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsTrue(report.RootElement
             .GetProperty("todos")
             .EnumerateArray()
@@ -364,7 +307,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             source,
             @"Properties\AssemblyInfo.cs",
             """[assembly: System.Reflection.AssemblyCompany("Contoso")]""");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "assembly-info-output"));
+        var target = NewTarget("assembly-info-output");
         ArrangeTemplateCreation(target, "AssemblyInfoAppApp", templateOutput =>
         {
             var nestedDirectory = templateOutput.CreateSubdirectory("NestedLibrary");
@@ -375,13 +318,12 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         Assert.AreEqual(0, exit, output);
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, "Properties", "AssemblyInfo.cs")));
-        var project = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "AssemblyInfoAppApp.csproj"),
-            TestContext.CancellationToken);
+        var project = await ReadAsync(target, "AssemblyInfoAppApp.csproj");
         StringAssert.Contains(project, "<GenerateAssemblyInfo>false</GenerateAssemblyInfo>");
-        var nestedProject = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "NestedLibrary", "NestedLibrary.csproj"),
-            TestContext.CancellationToken);
+        var nestedProject = await ReadAsync(
+            target,
+            "NestedLibrary",
+            "NestedLibrary.csproj");
         Assert.DoesNotContain("<GenerateAssemblyInfo>", nestedProject);
         StringAssert.Contains(output, "preserved Properties\\AssemblyInfo.cs remains authoritative");
     }
@@ -421,15 +363,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               </ItemGroup>
             </Project>
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "dependency-output"));
-        ArrangeTemplateCreation(target, "DependencyAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "dependency-output", "DependencyAppApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var dependencies = report.RootElement.GetProperty("dependencyAnalysis");
         Assert.AreEqual("review-required", dependencies.GetProperty("status").GetString());
         Assert.AreEqual(2, dependencies.GetProperty("projects").GetArrayLength());
@@ -503,17 +441,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             sibling,
             "MalformedDependency.csproj",
             "<Project><PropertyGroup>");
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "unreadable-dependency-output"));
-        ArrangeTemplateCreation(target, "UnreadableDependencyAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "unreadable-dependency-output", "UnreadableDependencyAppApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var dependencies = report.RootElement.GetProperty("dependencyAnalysis");
         Assert.AreEqual("incomplete", dependencies.GetProperty("status").GetString());
         var issue = dependencies.GetProperty("issues").EnumerateArray().Single();
@@ -536,23 +468,21 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               </data>
             </root>
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "localized-output"));
-        ArrangeTemplateCreation(target, "LocalizedAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "localized-output", "LocalizedAppApp");
 
         Assert.AreEqual(0, exit, output);
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Resources", "en-us", "Resources.resw"),
-            TestContext.CancellationToken);
+        var migrated = await ReadAsync(
+            target,
+            "Resources",
+            "en-us",
+            "Resources.resw");
         StringAssert.Contains(
             migrated,
             "[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name");
         Assert.DoesNotContain("Windows.UI.Xaml", migrated);
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var transform = report.RootElement.GetProperty("transforms").EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG-RESW-NS");
         Assert.AreEqual(1, transform.GetProperty("changedFiles").GetInt32());
@@ -581,10 +511,8 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             """);
         await WriteAsync(source, @"Data\Model.json", """{"name":"lamp"}""");
         await WriteAsync(source, @"Resources\en-us\Resources.resw", "<root />");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "project-items-output"));
-        ArrangeTemplateCreation(target, "ProjectItemsAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "project-items-output", "ProjectItemsAppApp");
 
         Assert.AreEqual(0, exit, output);
         var targetProject = XDocument.Load(Path.Combine(target.FullName, "ProjectItemsAppApp.csproj"));
@@ -598,9 +526,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             element.Name.LocalName == "PRIResource"
             && element.Attribute("Include")?.Value == @"Resources\en-us\Resources.resw"));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var projectItems = report.RootElement
             .GetProperty("mechanicalVerification")
             .GetProperty("projectItems");
@@ -621,15 +547,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             </Project>
             """);
         await WriteAsync(source, @"Data\Model.json", """{"name":"lamp"}""");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "conditional-items-output"));
-        ArrangeTemplateCreation(target, "ConditionalItemsAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "conditional-items-output", "ConditionalItemsAppApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var projectItems = report.RootElement
             .GetProperty("mechanicalVerification")
             .GetProperty("projectItems");
@@ -662,17 +584,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             </Project>
             """);
         await WriteAsync(source, @"Data\Model.json", """{"name":"lamp"}""");
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "false-condition-item-output"));
-        ArrangeTemplateCreation(target, "FalseConditionItemAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "false-condition-item-output", "FalseConditionItemAppApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var item = report.RootElement
             .GetProperty("mechanicalVerification")
             .GetProperty("projectItems")
@@ -699,17 +615,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             </Project>
             """);
         await WriteAsync(source, @"Data\Model.json", """{"name":"lamp"}""");
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "choose-item-output"));
-        ArrangeTemplateCreation(target, "ChooseItemAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "choose-item-output", "ChooseItemAppApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var item = report.RootElement
             .GetProperty("mechanicalVerification")
             .GetProperty("projectItems")
@@ -727,16 +637,12 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     {
         var source = await CreateUwpSourceAsync("ResidualApp");
         await WriteAsync(source, "Data.json", """{"type":"Windows.UI.Xaml.Controls.Button"}""");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "residual-output"));
-        ArrangeTemplateCreation(target, "ResidualAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "residual-output", "ResidualAppApp");
 
         Assert.AreEqual(1, exit, output);
         StringAssert.Contains(output, "MECHANICAL MIGRATION VERIFICATION FAILED");
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.AreEqual(
             "mechanical-verification-failed",
             report.RootElement.GetProperty("status").GetString());
@@ -751,7 +657,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     public async Task Migrate_IgnoresNestedMigrationReportsDuringVerification()
     {
         var source = await CreateUwpSourceAsync("NestedReportApp");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "nested-report-output"));
+        var target = NewTarget("nested-report-output");
         ArrangeTemplateCreation(target, "NestedReportAppApp", templateOutput =>
         {
             var nestedDirectory = templateOutput.CreateSubdirectory("NestedLibrary");
@@ -763,9 +669,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.AreEqual(
             0,
             report.RootElement
@@ -781,15 +685,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var source = await CreateUwpSourceAsync("InventoryApp");
         await WriteAsync(source, "MainPage.xaml", "<Page />");
         await WriteAsync(source, "InventoryApp_TemporaryKey.pfx", "not-a-real-certificate");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "inventory-output"));
-        ArrangeTemplateCreation(target, "InventoryAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "inventory-output", "InventoryAppApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var inventory = report.RootElement
             .GetProperty("mechanicalVerification")
             .GetProperty("inventory");
@@ -808,7 +708,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     {
         var source = await CreateUwpSourceAsync("VerifyApp");
         await WriteAsync(source, "MainPage.xaml", "<Page />");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "verify-output"));
+        var target = NewTarget("verify-output");
         ArrangeTemplateCreation(target, "VerifyAppApp");
         var (migrateExit, migrateOutput) = await InvokeAsync(source, target);
         Assert.AreEqual(0, migrateExit, migrateOutput);
@@ -832,9 +732,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         Assert.AreEqual(1, failedExit, failedOutput);
         StringAssert.Contains(failedOutput, "verification failed");
-        using (var failedReport = JsonDocument.Parse(await File.ReadAllTextAsync(
-            reportPath,
-            TestContext.CancellationToken)))
+        using (var failedReport = await ReadReportAsync(target))
         {
             Assert.AreEqual(
                 "captured",
@@ -861,9 +759,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         Assert.AreEqual(0, passedExit, passedOutput);
         StringAssert.Contains(passedOutput, "verification passed");
-        using var passedReport = JsonDocument.Parse(await File.ReadAllTextAsync(
-            reportPath,
-            TestContext.CancellationToken));
+        using var passedReport = await ReadReportAsync(target);
         Assert.IsFalse(passedReport.RootElement.GetProperty("todos").EnumerateArray().Any(todo =>
             todo.GetProperty("id").GetString() == "UWMIG011"));
         Assert.AreEqual(
@@ -906,32 +802,22 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var siblingShared = source.Parent!.CreateSubdirectory("shared");
         await WriteAsync(siblingShared, "SiblingOnly.cs", "namespace External.Shared;");
 
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "boundary-output"));
-        ArrangeTemplateCreation(target, "BoundaryAppApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "boundary-output", "BoundaryAppApp");
 
         Assert.AreEqual(0, exit, output);
         Assert.IsFalse(File.Exists(Path.Combine(target.FullName, "SiblingOnly.cs")));
         Assert.AreEqual(
             navigationHelper,
-            await File.ReadAllTextAsync(
-                Path.Combine(target.FullName, "Common", "NavigationHelper.cs"),
-                TestContext.CancellationToken));
+            await ReadAsync(target, "Common", "NavigationHelper.cs"));
 
-        var targetApp = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "App.xaml"),
-            TestContext.CancellationToken);
+        var targetApp = await ReadAsync(target, "App.xaml");
         Assert.DoesNotContain("Styles.xaml", targetApp);
 
-        var mainWindow = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "MainWindow.xaml"),
-            TestContext.CancellationToken);
+        var mainWindow = await ReadAsync(target, "MainWindow.xaml");
         Assert.DoesNotContain("RootFrame", mainWindow);
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray().Any(todo =>
             todo.GetProperty("category").GetString() == "app-resources"));
     }
@@ -958,14 +844,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               <TextBlock Text="VirtualizingStackPanel" />
             </ResourceDictionary>
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "items-panel-output"));
-        ArrangeTemplateCreation(target, "ItemsPanelApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "items-panel-output", "ItemsPanelApp");
 
         Assert.AreEqual(0, exit, output);
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Styles.xaml"), TestContext.CancellationToken);
+        var migrated = await ReadAsync(target, "Styles.xaml");
         StringAssert.Contains(
             migrated,
             "<ItemsStackPanel Background=\"Transparent\" Orientation=\"Horizontal\" CacheLength=\"2\" AreStickyGroupHeadersEnabled=\"False\" GroupHeaderPlacement=\"Top\" />");
@@ -976,8 +859,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         StringAssert.Contains(migrated, "<ItemsStackPanel Background=\"Blue\" />");
         StringAssert.Contains(migrated, "Text=\"VirtualizingStackPanel\"");
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var transform = report.RootElement.GetProperty("transforms").EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG-XAML-ITEMS-PANEL");
         Assert.AreEqual(1, transform.GetProperty("changedFiles").GetInt32());
@@ -1013,14 +895,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               <!-- <VirtualizingStackPanel /> -->
             </ResourceDictionary>
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "unsafe-items-panel-output"));
-        ArrangeTemplateCreation(target, "UnsafeItemsPanelApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "unsafe-items-panel-output", "UnsafeItemsPanelApp");
 
         Assert.AreEqual(0, exit, output);
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Styles.xaml"), TestContext.CancellationToken);
+        var migrated = await ReadAsync(target, "Styles.xaml");
         StringAssert.Contains(migrated, "<VirtualizingStackPanel Background=\"Transparent\" />");
         StringAssert.Contains(
             migrated,
@@ -1031,8 +910,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         StringAssert.Contains(migrated, "<local:VirtualizingStackPanel />");
         StringAssert.Contains(migrated, "<!-- <VirtualizingStackPanel /> -->");
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(item => item.GetProperty("category").GetString() == "xaml-items-panel");
         Assert.AreEqual("required", todo.GetProperty("priority").GetString());
@@ -1067,10 +945,8 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             styles,
             new UnicodeEncoding(bigEndian: false, byteOrderMark: true),
             TestContext.CancellationToken);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "utf16-items-panel-output"));
-        ArrangeTemplateCreation(target, "Utf16ItemsPanelApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "utf16-items-panel-output", "Utf16ItemsPanelApp");
 
         Assert.AreEqual(0, exit, output);
         var migratedPath = Path.Combine(target.FullName, "Styles.xaml");
@@ -1099,19 +975,13 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
               </ItemsPanelTemplate>
             </ResourceDictionary>
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "global-style-output"));
-        ArrangeTemplateCreation(target, "GlobalStyleItemsPanelApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "global-style-output", "GlobalStyleItemsPanelApp");
 
         Assert.AreEqual(0, exit, output);
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "PageResources.xaml"),
-            TestContext.CancellationToken);
+        var migrated = await ReadAsync(target, "PageResources.xaml");
         StringAssert.Contains(migrated, "<VirtualizingStackPanel />");
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
             .Any(todo => todo.GetProperty("category").GetString() == "xaml-items-panel"));
     }
@@ -1135,10 +1005,8 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             stylesPath,
             originalBytes,
             TestContext.CancellationToken);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "legacy-encoding-output"));
-        ArrangeTemplateCreation(target, "LegacyEncodingItemsPanelApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "legacy-encoding-output", "LegacyEncodingItemsPanelApp");
 
         Assert.AreEqual(0, exit, output);
         CollectionAssert.AreEqual(
@@ -1146,9 +1014,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             await File.ReadAllBytesAsync(
                 Path.Combine(target.FullName, "Styles.xaml"),
                 TestContext.CancellationToken));
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
             .Any(todo => todo.GetProperty("category").GetString() == "xaml-items-panel"));
     }
@@ -1166,19 +1032,14 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             </ResourceDictionary>
             """;
         await WriteAsync(source, "Styles.xaml", styles);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "current-items-panel-output"));
-        ArrangeTemplateCreation(target, "CurrentItemsPanelApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "current-items-panel-output", "CurrentItemsPanelApp");
 
         Assert.AreEqual(0, exit, output);
         Assert.AreEqual(
             styles,
-            await File.ReadAllTextAsync(
-                Path.Combine(target.FullName, "Styles.xaml"),
-                TestContext.CancellationToken));
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+            await ReadAsync(target, "Styles.xaml"));
+        using var report = await ReadReportAsync(target);
         var transform = report.RootElement.GetProperty("transforms").EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG-XAML-ITEMS-PANEL");
         Assert.AreEqual(0, transform.GetProperty("changedFiles").GetInt32());
@@ -1201,19 +1062,15 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                 }
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "dispatcher-output"));
-        ArrangeTemplateCreation(target, "DispatcherApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "dispatcher-output", "DispatcherApp");
 
         Assert.AreEqual(0, exit, output);
-        var migrated = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "MainPage.xaml.cs"), TestContext.CancellationToken);
+        var migrated = await ReadAsync(target, "MainPage.xaml.cs");
         StringAssert.Contains(migrated, "DispatcherQueue.HasThreadAccess");
         Assert.IsFalse(migrated.Contains("Dispatcher.HasThreadAccess", StringComparison.Ordinal));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todos = report.RootElement.GetProperty("todos").EnumerateArray();
         Assert.IsFalse(todos.Any(todo => todo.GetProperty("category").GetString() == "dispatcher"));
     }
@@ -1231,14 +1088,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                     await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => { });
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "async-dispatcher-output"));
-        ArrangeTemplateCreation(target, "AsyncDispatcherApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "async-dispatcher-output", "AsyncDispatcherApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var dispatcherTodo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(todo => todo.GetProperty("category").GetString() == "dispatcher");
         Assert.AreEqual("required", dispatcherTodo.GetProperty("priority").GetString());
@@ -1264,17 +1118,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             "NullSelectorApp",
             "return null;",
             useNavigationView: true);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "null-selector-output"));
-        ArrangeTemplateCreation(target, "NullSelectorApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "null-selector-output", "NullSelectorApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG014");
         Assert.AreEqual("required", todo.GetProperty("priority").GetString());
@@ -1334,47 +1182,42 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     }
 
     [TestMethod]
-    public async Task Migrate_NavigationViewSelectorWithNonNullFallbackDoesNotReportTodo()
+    [DataRow(
+        "DefaultSelectorApp",
+        "return DefaultTemplate;",
+        true,
+        false)]
+    [DataRow(
+        "BaseFallbackSelectorApp",
+        "return DefaultTemplate ?? base.SelectTemplateCore(item);",
+        true,
+        true)]
+    [DataRow(
+        "ListSelectorApp",
+        "return null;",
+        false,
+        false)]
+    public async Task Migrate_TemplateSelectorFallbackReportsTodoOnlyWhenConsumedByNavigationView(
+        string appName,
+        string fallbackStatement,
+        bool useNavigationView,
+        bool expectedTodo)
     {
         var source = await CreateTemplateSelectorSourceAsync(
-            "DefaultSelectorApp",
-            "return DefaultTemplate;",
-            useNavigationView: true);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "default-selector-output"));
-        ArrangeTemplateCreation(target, "DefaultSelectorApp");
+            appName,
+            fallbackStatement,
+            useNavigationView);
+        var target = NewTarget($"{appName}-output");
+        ArrangeTemplateCreation(target, appName);
 
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
-        Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
-            .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
-    }
-
-    [TestMethod]
-    public async Task Migrate_ReportsNavigationViewSelectorNullCoalescingBaseFallback()
-    {
-        var source = await CreateTemplateSelectorSourceAsync(
-            "BaseFallbackSelectorApp",
-            "return DefaultTemplate ?? base.SelectTemplateCore(item);",
-            useNavigationView: true);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "base-fallback-selector-output"));
-        ArrangeTemplateCreation(target, "BaseFallbackSelectorApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
-
-        Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
-        Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
-            .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
+        using var report = await ReadReportAsync(target);
+        Assert.AreEqual(
+            expectedTodo,
+            report.RootElement.GetProperty("todos").EnumerateArray()
+                .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
     }
 
     [TestMethod]
@@ -1413,17 +1256,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                     };
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "inline-selector-output"));
-        ArrangeTemplateCreation(target, "InlineSelectorApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "inline-selector-output", "InlineSelectorApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG014");
         CollectionAssert.AreEquivalent(
@@ -1468,39 +1305,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                 }
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "selector-helper-output"));
-        ArrangeTemplateCreation(target, "SelectorHelperApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "selector-helper-output", "SelectorHelperApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
-        Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
-            .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
-    }
-
-    [TestMethod]
-    public async Task Migrate_UnconsumedNullSelectorDoesNotReportTodo()
-    {
-        var source = await CreateTemplateSelectorSourceAsync(
-            "ListSelectorApp",
-            "return null;",
-            useNavigationView: false);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "list-selector-output"));
-        ArrangeTemplateCreation(target, "ListSelectorApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
-
-        Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
             .Any(item => item.GetProperty("id").GetString() == "UWMIG014"));
     }
@@ -1512,18 +1321,14 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             "RepeatSelectorApp",
             "return base.SelectTemplateCore(item);",
             useNavigationView: true);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "repeat-selector-output"));
+        var target = NewTarget("repeat-selector-output");
         ArrangeTemplateCreation(target, "RepeatSelectorApp");
         var (migrateExit, migrateOutput) = await InvokeAsync(source, target);
         Assert.AreEqual(0, migrateExit, migrateOutput);
 
         var (firstExit, firstOutput) = await InvokeVerifyAsync(target);
         Assert.AreEqual(0, firstExit, firstOutput);
-        using var firstReport = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var firstReport = await ReadReportAsync(target);
         var firstTodo = firstReport.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "UWMIG014");
@@ -1558,9 +1363,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         var (secondExit, secondOutput) = await InvokeVerifyAsync(target);
         Assert.AreEqual(0, secondExit, secondOutput);
-        using var secondReport = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var secondReport = await ReadReportAsync(target);
         var matchingTodos = secondReport.RootElement.GetProperty("todos")
             .EnumerateArray()
             .Where(item => item.GetProperty("id").GetString() == "UWMIG014")
@@ -1588,14 +1391,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                 double Width() => Window.Current.Bounds.Width;
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "window-output"));
-        ArrangeTemplateCreation(target, "WindowApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "window-output", "WindowApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var windowSizingTodo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(todo => todo.GetProperty("category").GetString() == "window-sizing");
         Assert.AreEqual("required", windowSizingTodo.GetProperty("priority").GetString());
@@ -1617,14 +1417,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                 object? Content() => Window.Current.Content;
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "window-content-output"));
-        ArrangeTemplateCreation(target, "WindowContentApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "window-content-output", "WindowContentApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var windowTodo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(todo => todo.GetProperty("category").GetString() == "windowing");
         Assert.AreEqual(
@@ -1649,14 +1446,11 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                 DisplayInformation Current() => DisplayInformation.GetForCurrentView();
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "display-information-output"));
-        ArrangeTemplateCreation(target, "DisplayInformationApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "display-information-output", "DisplayInformationApp");
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(item => item.GetProperty("category").GetString() == "display-information");
         StringAssert.Contains(todo.GetProperty("reason").GetString(), "Do not invent IDisplayInformationStaticsInterop");
@@ -1685,23 +1479,18 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
                 bool Access() => Dispatcher.HasThreadAccess;
             }
             """);
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "ambiguous-dispatcher-output"));
-        ArrangeTemplateCreation(target, "AmbiguousDispatcherApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "ambiguous-dispatcher-output", "AmbiguousDispatcherApp");
 
         Assert.AreEqual(0, exit, output);
-        var page = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "MainPage.xaml.cs"), TestContext.CancellationToken);
+        var page = await ReadAsync(target, "MainPage.xaml.cs");
         StringAssert.Contains(page, "\"Dispatcher.HasThreadAccess\"");
         StringAssert.Contains(page, "// Dispatcher.HasThreadAccess must not be changed");
         StringAssert.Contains(page, "DispatcherQueue.HasThreadAccess");
-        var worker = await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "Worker.cs"), TestContext.CancellationToken);
+        var worker = await ReadAsync(target, "Worker.cs");
         StringAssert.Contains(worker, "Dispatcher.HasThreadAccess");
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         var dispatcherTodo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(todo => todo.GetProperty("category").GetString() == "dispatcher");
         Assert.IsTrue(dispatcherTodo.GetProperty("locations").EnumerateArray()
@@ -1715,16 +1504,13 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         await WriteAsync(source, "App.xaml", "<Application><Application.Resources><Color x:Key=\"Accent\">Red</Color></Application.Resources></Application>");
         await WriteAsync(source, "App.xaml.cs", "class UwpApp { }");
         await WriteAsync(source, "MainPage.xaml", "<Page x:Class=\"SDKTemplate.MainPage\" />");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "resources-output"));
-        ArrangeTemplateCreation(target, "ResourcesApp");
-
-        var (exit, output) = await InvokeAsync(source, target);
+        var (target, exit, output) = await MigrateAsync(
+            source, "resources-output", "ResourcesApp");
 
         Assert.AreEqual(0, exit, output);
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, ".uwp-source", "App.xaml.reference")));
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, ".uwp-source", "App.xaml.cs.reference")));
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()
             .Any(todo => todo.GetProperty("category").GetString() == "app-resources"));
     }
@@ -1734,7 +1520,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     public async Task Migrate_TemplateFailureRemovesNewPartialOutput()
     {
         var source = await CreateUwpSourceAsync("FailedTemplateApp");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "failed-output"));
+        var target = NewTarget("failed-output");
         FakeDotNet.RunDotnetCommandHandler = arguments =>
         {
             var templateOutput = GetTemplateOutput(arguments);
@@ -1776,7 +1562,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     {
         var source = await CreateUwpSourceAsync("QuietApp");
         await WriteAsync(source, "MainPage.xaml", "<Page x:Class=\"SDKTemplate.MainPage\" />");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "quiet-output"));
+        var target = NewTarget("quiet-output");
         FakeDotNet.RunDotnetCommandAsyncHandler = async arguments =>
         {
             await Task.Yield();
@@ -1804,9 +1590,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     {
         var source = _tempDirectory.CreateSubdirectory("quiet-invalid-source");
         await WriteAsync(source, "MainPage.xaml", "<Page />");
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "quiet-invalid-output"));
+        var target = NewTarget("quiet-invalid-output");
 
         var (exit, output) = await InvokeAsync(
             source,
@@ -1826,9 +1610,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     {
         var source = await CreateUwpSourceAsync("FrozenInventoryApp");
         await WriteAsync(source, "Before.txt", "before");
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "frozen-inventory-output"));
+        var target = NewTarget("frozen-inventory-output");
         ArrangeTemplateCreation(
             target,
             "FrozenInventoryApp",
@@ -1944,9 +1726,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         try
         {
-            var target = new DirectoryInfo(Path.Combine(
-                _tempDirectory.FullName,
-                "junction-traversal-output"));
+            var target = NewTarget("junction-traversal-output");
             ArrangeTemplateCreation(target, "JunctionTraversalApp");
 
             var (exit, output) = await InvokeAsync(source, target);
@@ -1993,9 +1773,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         try
         {
-            var target = new DirectoryInfo(Path.Combine(
-                _tempDirectory.FullName,
-                "file-symlink-output"));
+            var target = NewTarget("file-symlink-output");
             ArrangeTemplateCreation(target, "FileSymlinkApp");
 
             var (exit, output) = await InvokeAsync(source, target);
@@ -2046,16 +1824,17 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var (exit, output) = await InvokeAsync(source, target);
 
         Assert.AreEqual(0, exit, output);
-        Assert.AreEqual("ref: refs/heads/main\n", await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, ".git", "HEAD"), TestContext.CancellationToken));
-        Assert.AreEqual("existing instructions", await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, ".github", "instructions", "existing.md"), TestContext.CancellationToken));
+        Assert.AreEqual(
+            "ref: refs/heads/main\n",
+            await ReadAsync(target, ".git", "HEAD"));
+        Assert.AreEqual(
+            "existing instructions",
+            await ReadAsync(target, ".github", "instructions", "existing.md"));
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, ".github", "instructions", "template.md")));
         Assert.IsFalse(Directory.Exists(Path.Combine(target.FullName, ".github", ".github")));
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, "MetadataOutputApp.csproj")));
 
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.AreEqual(
             target.FullName.Replace('\\', '/'),
             report.RootElement.GetProperty("target").GetProperty("root").GetString());
@@ -2065,9 +1844,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     public async Task Migrate_PortableReportAndPackageIdentityProduceRelocatableDeterministicOutput()
     {
         var source = await CreateUwpSourceAsync("PortableOutputApp");
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "portable-output"));
+        var target = NewTarget("portable-output");
         ArrangeTemplateCreation(target, "PortableOutputApp", template =>
         {
             File.WriteAllText(
@@ -2090,9 +1867,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             packageIdentity);
 
         Assert.AreEqual(0, exit, output);
-        using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
+        using var report = await ReadReportAsync(target);
         Assert.AreEqual(
             ".",
             report.RootElement.GetProperty("target").GetProperty("root").GetString());
@@ -2126,10 +1901,12 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         Assert.AreEqual(1, exit);
         StringAssert.Contains(output, "conflicts with an existing metadata file");
-        Assert.AreEqual("original head", await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, ".git", "HEAD"), TestContext.CancellationToken));
-        Assert.AreEqual("original instructions", await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, ".github", "instructions", "conflict.md"), TestContext.CancellationToken));
+        Assert.AreEqual(
+            "original head",
+            await ReadAsync(target, ".git", "HEAD"));
+        Assert.AreEqual(
+            "original instructions",
+            await ReadAsync(target, ".github", "instructions", "conflict.md"));
         Assert.AreEqual(2, target.EnumerateFileSystemInfos().Count());
     }
 
@@ -2152,10 +1929,12 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         Assert.AreEqual(1, exit);
         StringAssert.Contains(output, "Template failed.");
-        Assert.AreEqual("original head", await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, ".git", "HEAD"), TestContext.CancellationToken));
-        Assert.AreEqual("original instructions", await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, ".github", "instructions", "existing.md"), TestContext.CancellationToken));
+        Assert.AreEqual(
+            "original head",
+            await ReadAsync(target, ".git", "HEAD"));
+        Assert.AreEqual(
+            "original instructions",
+            await ReadAsync(target, ".github", "instructions", "existing.md"));
         Assert.AreEqual(2, target.EnumerateFileSystemInfos().Count());
     }
 
@@ -2165,7 +1944,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     {
         var source = _tempDirectory.CreateSubdirectory("not-uwp");
         await WriteAsync(source, "MainPage.xaml", "<Page />");
-        var target = new DirectoryInfo(Path.Combine(_tempDirectory.FullName, "invalid-source-output"));
+        var target = NewTarget("invalid-source-output");
 
         var (exit, output) = await InvokeAsync(source, target);
 

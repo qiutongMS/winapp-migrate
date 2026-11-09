@@ -25,49 +25,12 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
     private static readonly string[] ExpectedExternalItemKinds =
         ["Content"];
 
-    private async Task WriteAsync(
-        DirectoryInfo directory,
-        string relativePath,
-        string content)
-    {
-        var path = Path.Combine(directory.FullName, relativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(
-            path,
-            content,
-            TestContext.CancellationToken);
-    }
-
     private void ArrangeTemplateCreation(
         string projectName,
-        Action<DirectoryInfo>? customizeTemplate = null)
-    {
-        FakeDotNet.RunDotnetCommandHandler = arguments =>
-        {
-            var outputIndex = arguments.ToList().IndexOf("--output");
-            Assert.IsTrue(
-                outputIndex >= 0 && outputIndex + 1 < arguments.Count);
-            var output = new DirectoryInfo(arguments[outputIndex + 1]);
-            output.Create();
-            File.WriteAllText(
-                Path.Combine(output.FullName, $"{projectName}.csproj"),
-                CleanCsproj);
-            File.WriteAllText(
-                Path.Combine(output.FullName, "App.xaml"),
-                $"<Application x:Class=\"{projectName}.App\" />");
-            File.WriteAllText(
-                Path.Combine(output.FullName, "App.xaml.cs"),
-                $"namespace {projectName}; public partial class App {{ }}");
-            File.WriteAllText(
-                Path.Combine(output.FullName, "MainWindow.xaml"),
-                $"<Window x:Class=\"{projectName}.MainWindow\" />");
-            File.WriteAllText(
-                Path.Combine(output.FullName, "MainWindow.xaml.cs"),
-                $"namespace {projectName}; public partial class MainWindow {{ }}");
-            customizeTemplate?.Invoke(output);
-            return (0, "Template created.", string.Empty);
-        };
-    }
+        Action<DirectoryInfo>? customizeTemplate = null) =>
+        ArrangeBasicTemplateCreation(
+            projectName,
+            customizeTemplate: customizeTemplate);
 
     private async Task<(DirectoryInfo Target, string EntryProject)>
         CreateMigrationAsync(string name)
@@ -107,9 +70,7 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
 
     private Task<(int ExitCode, string Output)> VerifyAsync(
         DirectoryInfo target) =>
-        InvokeCapturingConsoleAsync(
-            GetRequiredService<MigrateVerifyCommand>(),
-            target.FullName);
+        InvokeVerifyAsync(target);
 
     private async Task AddNestedProjectAsync(
         DirectoryInfo target,
@@ -140,12 +101,6 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
                     StringComparer.OrdinalIgnoreCase)))
             .ToList());
 
-    private async Task<JsonDocument> ReadReportAsync(
-        DirectoryInfo target) =>
-        JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
-
     [TestMethod]
     [TestCategory("MigrationAcceptance")]
     public async Task Migrate_DetectsNestedProjectCollisionBeforeBuild()
@@ -162,9 +117,7 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
               </PropertyGroup>
             </Project>
             """);
-        var target = new DirectoryInfo(Path.Combine(
-            _tempDirectory.FullName,
-            "GraphInitial-target"));
+        var target = NewTarget("GraphInitial-target");
         ArrangeTemplateCreation(
             "GraphInitialApp",
             output =>
@@ -698,7 +651,10 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
         var junction = Path.Combine(
             target.FullName,
             "LinkedProject");
-        if (!TryCreateJunction(junction, external.FullName))
+        if (!TryCreateDirectoryJunction(
+                junction,
+                external.FullName,
+                out _))
         {
             Assert.Inconclusive(
                 "The host cannot create a Windows directory junction.");
@@ -722,36 +678,4 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
     private static string NormalizePath(string path) =>
         path.Replace('\\', '/');
 
-    private static bool TryCreateJunction(
-        string link,
-        string target)
-    {
-        try
-        {
-            var startInfo =
-                new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments =
-                        $"/c mklink /J \"{link}\" \"{target}\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-            using var process =
-                System.Diagnostics.Process.Start(startInfo);
-            if (process is null)
-            {
-                return false;
-            }
-            process.WaitForExit(5000);
-            return process.ExitCode == 0
-                && Directory.Exists(link);
-        }
-        catch
-        {
-            return false;
-        }
-    }
 }

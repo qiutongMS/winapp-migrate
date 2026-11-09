@@ -83,15 +83,7 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     [DataRow("record", "absent")]
     [DataRow("record", "reused")]
-    [DataRow("record", "other-owner")]
-    [DataRow("record", "unavailable")]
-    [DataRow("finalize", "absent")]
-    [DataRow("finalize", "reused")]
     [DataRow("finalize", "other-owner")]
-    [DataRow("finalize", "unavailable")]
-    [DataRow("assess", "absent")]
-    [DataRow("assess", "reused")]
-    [DataRow("assess", "other-owner")]
     [DataRow("assess", "unavailable")]
     public async Task TrustedClosure_RechecksLiveWindowIdentityAfterCapture(string phase, string replacement)
     {

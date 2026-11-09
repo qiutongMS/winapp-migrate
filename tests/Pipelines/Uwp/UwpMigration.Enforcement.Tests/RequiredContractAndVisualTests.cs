@@ -19,10 +19,10 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow("outcome")]
     public async Task RequiredContract_SourceCaptureFreezesRequirementsAgainstMutation(string mutation)
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        var contract = await UwpEnforcementRunner.SealContractAsync(fixture.Root);
-        await ObserveSourceAsync(fixture, plan);
+        using var fixture = await RunnerFixture.CreateRequiredAsync(
+            observeSource: true);
+        var plan = fixture.RequiredPlan;
+        var contract = fixture.RequiredContract;
         switch (mutation)
         {
             case "action": plan.States[0].Verification!.RequiredActions.Clear(); break;
@@ -43,9 +43,9 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_AppendOnlyExtensionIsExplicitAndRollbackResistant()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        var initial = await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        using var fixture = await RunnerFixture.CreateRequiredAsync();
+        var plan = fixture.RequiredPlan;
+        var initial = fixture.RequiredContract;
         var state = plan.States[0];
         state.Actions.Add("Observe the state again.");
         state.Verification!.RequiredActions.Add(new RequiredStateAction("observe-again", ["inspect"]));
@@ -70,9 +70,8 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow("order")]
     public async Task RequiredContract_EvenPreSourceExtensionCannotRemoveOrRewriteRequirements(string weakening)
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        using var fixture = await RunnerFixture.CreateRequiredAsync();
+        var plan = fixture.RequiredPlan;
         if (weakening == "action")
             plan.States[0].Verification!.RequiredActions[0] = plan.States[0].Verification!.RequiredActions[0] with
                 { Command = ["invoke", "A different action"] };
@@ -86,9 +85,7 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_DeletingJsonDoesNotResetTheIndependentAnchor()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        await NewRequiredPlanAsync(fixture);
-        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        using var fixture = await RunnerFixture.CreateRequiredAsync();
         File.Delete(fixture.Path(RequiredStateContracts.Path));
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() => UwpEnforcementRunner.SealContractAsync(fixture.Root));
@@ -97,11 +94,10 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_CopyingAnotherWorkspacesSignedContractCannotBlessCapturedLegacyEvidence()
     {
-        using var clean = await RunnerFixture.CreateAsync(unstarted: true);
-        await NewRequiredPlanAsync(clean);
-        var foreign = await UwpEnforcementRunner.SealContractAsync(clean.Root);
-        using var legacy = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(legacy);
+        using var clean = await RunnerFixture.CreateRequiredAsync();
+        var foreign = clean.RequiredContract;
+        using var legacy = await RunnerFixture.CreateRequiredAsync();
+        var plan = legacy.RequiredPlan;
         await ObserveSourceAsync(legacy, plan);
         await EnforcementStore.WriteAtomicAsync(legacy.Root, RequiredStateContracts.Path, foreign);
 
@@ -115,12 +111,10 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_ValidNonvisualDifferencesAreContractSatisfiedButNotParity()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
-        await ObserveSourceAsync(fixture, plan);
+        using var fixture = await RunnerFixture.CreateRequiredAsync(
+            observeSource: true);
         await AddRequiredTodoAndFindingAsync(fixture, ["main-name"]);
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await fixture.RunTargetAsync();
         var probe = await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"],
             ClosureTree.Replace("Ready", "Different", StringComparison.Ordinal));
 
@@ -141,20 +135,17 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_TamperedPartialAttestationFailsBeforeCanonicalMutation()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
-        await ObserveSourceAsync(fixture, plan);
+        using var fixture = await RunnerFixture.CreateRequiredAsync(
+            observeSource: true);
         await AddRequiredTodoAndFindingAsync(fixture, ["main-name"]);
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
-            fixture.Root, new UwpEnforcementOptions());
+        await fixture.RunTargetAsync();
         var probe = await ContractProbeAsync(
             fixture,
             ["inspect", "-w", "42", "--json"],
             ClosureTree.Replace("Ready", "Different", StringComparison.Ordinal));
         await UwpEnforcementRunner.RecordStateAsync(
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
-        plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         var attestationPath = plan.States[0].Target.Attestation!;
         var attestation = await fixture.LoadAsync<StateClosureAttestation>(
             attestationPath);
@@ -176,11 +167,9 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_EstablishmentTimeCannotFollowTheReplayItAuthorizes()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
-        await ObserveSourceAsync(fixture, plan);
-        var replayed = await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        using var fixture = await RunnerFixture.CreateRequiredAsync(
+            observeSource: true);
+        var replayed = await fixture.RunTargetAsync();
         var probe = await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"], ClosureTree);
         var contract = await fixture.LoadAsync<RequiredStateContractDocument>(RequiredStateContracts.Path);
         contract.EstablishedAt = replayed.Replay!.StartedAt.AddTicks(1);
@@ -194,9 +183,8 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_WorkflowStartLocksEvenSourceUnattemptedPlans()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        using var fixture = await RunnerFixture.CreateRequiredAsync();
+        var plan = fixture.RequiredPlan;
         await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         plan.States[0].Assertions[0].Property = "value";
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
@@ -208,9 +196,9 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_TodoMappingsRemainRepairableAfterWorkflowStart()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        var contract = await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        using var fixture = await RunnerFixture.CreateRequiredAsync();
+        var plan = fixture.RequiredPlan;
+        var contract = fixture.RequiredContract;
         await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         plan.States[0].TodoIds = ["UWMIG001"];
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
@@ -414,11 +402,9 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     public async Task RequiredContract_ManuallySignedStepAndLevelClaimsAreStillRederived()
     {
-        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
-        var plan = await NewRequiredPlanAsync(fixture);
-        await UwpEnforcementRunner.SealContractAsync(fixture.Root);
-        await ObserveSourceAsync(fixture, plan);
-        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        using var fixture = await RunnerFixture.CreateRequiredAsync(
+            observeSource: true);
+        await fixture.RunTargetAsync();
         var probe = await ContractProbeAsync(fixture, ["inspect", "-w", "42", "--json"], ClosureTree);
         await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         var proofPath = StateClosureProtocol.AttestationPath("state-1");

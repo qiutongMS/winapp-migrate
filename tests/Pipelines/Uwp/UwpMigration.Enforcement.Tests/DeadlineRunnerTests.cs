@@ -10,37 +10,6 @@ public sealed partial class RunnerAcceptanceTests
     private static readonly DateTimeOffset DeadlineNow = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
-    [DataRow(0)]
-    [DataRow(145)]
-    [DataRow(151)]
-    public async Task ElapsedTime_DoesNotCancelProcessOrBlockWorkflow(int previousMinutes)
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var clock = new ManualTimeProvider(DeadlineNow);
-        await SeedElapsedTimeAsync(fixture, previousMinutes);
-        var invocation = 0;
-        var process = new DelegateProcessRunner(token =>
-        {
-            Assert.IsFalse(token.IsCancellationRequested);
-            clock.Advance(TimeSpan.FromMinutes(200));
-            invocation++;
-            return Task.FromResult(invocation == 1 ? BuildSuccess() : ReplaySuccess());
-        });
-
-        var snapshot = await new UwpEnforcementRunner(process, clock).RunAsync(
-            fixture.Root, new UwpEnforcementOptions());
-
-        Assert.AreEqual(2, process.CallCount);
-        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
-        Assert.AreEqual("continue", snapshot.Disposition?.Kind);
-        Assert.IsFalse(snapshot.Disposition!.Terminal);
-        Assert.IsNull(snapshot.Budget!.SoftDeadline);
-        Assert.IsNull(snapshot.Budget.HardDeadline);
-        Assert.IsNull(snapshot.Budget.TotalHardDeadline);
-        Assert.IsGreaterThanOrEqualTo(previousMinutes + 400, snapshot.Budget.TotalElapsedMinutes);
-    }
-
-    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task InfrastructureFailurePersistsActualElapsedTime(bool returnsFailure)

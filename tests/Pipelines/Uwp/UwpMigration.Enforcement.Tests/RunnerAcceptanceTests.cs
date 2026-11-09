@@ -697,7 +697,11 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(process);
 
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
-        await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await runner.RunAsync(fixture.Root, new UwpEnforcementOptions
+        {
+            ForceReplay = true,
+            MaximumSignatureAttempts = 10
+        });
         var snapshot = await runner.RunAsync(
             fixture.Root,
             new UwpEnforcementOptions());
@@ -705,6 +709,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(1, process.CallCount);
         Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
         Assert.AreEqual(0, snapshot.Frontier!.AttemptsRemaining);
+        Assert.AreEqual(1, snapshot.Budget!.TotalOperations.Builds);
     }
 
     [TestMethod]
@@ -1202,6 +1207,8 @@ public sealed partial class RunnerAcceptanceTests
 
         internal DirectoryInfo Root { get; }
         internal string ProjectPath { get; }
+        internal StatePlanDocument RequiredPlan { get; private set; } = null!;
+        internal RequiredStateContractDocument RequiredContract { get; private set; } = null!;
 
         internal static async Task<RunnerFixture> CreateAsync(
             bool analyzer = true, bool unstarted = false)
@@ -1316,6 +1323,32 @@ public sealed partial class RunnerAcceptanceTests
             await EnforcementStore.WriteAtomicAsync(root, report.Validation.StatePlan, initialPlan);
             return new RunnerFixture(root, projectPath);
         }
+
+        internal static async Task<RunnerFixture> CreateRequiredAsync(
+            bool observeSource = false)
+        {
+            var fixture = await CreateAsync(unstarted: true);
+            try
+            {
+                fixture.RequiredPlan = await NewRequiredPlanAsync(fixture);
+                fixture.RequiredContract =
+                    await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+                if (observeSource)
+                {
+                    await ObserveSourceAsync(fixture, fixture.RequiredPlan);
+                }
+                return fixture;
+            }
+            catch
+            {
+                fixture.Dispose();
+                throw;
+            }
+        }
+
+        internal Task<EnforcementSnapshot> RunTargetAsync() =>
+            new UwpEnforcementRunner(SuccessfulLaunch())
+                .RunAsync(Root, new UwpEnforcementOptions());
 
         internal async Task VerifyStateAsync()
         {

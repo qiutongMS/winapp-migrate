@@ -941,19 +941,6 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
         Assert.AreEqual(0, copied.ExitCode, copied.Output);
     }
 
-    private async Task WriteAsync(
-        DirectoryInfo directory,
-        string relativePath,
-        string content)
-    {
-        var path = Path.Combine(directory.FullName, relativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(
-            path,
-            content,
-            TestContext.CancellationToken);
-    }
-
     private async Task<JsonArray> ReadDecisionItemsAsync(DirectoryInfo target)
     {
         var report = JsonNode.Parse(await File.ReadAllTextAsync(
@@ -991,12 +978,6 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
             "*.csproj",
             SearchOption.TopDirectoryOnly).Single());
 
-    private Task<(int ExitCode, string Output)> InvokeVerifyAsync(
-        DirectoryInfo target) =>
-        InvokeCapturingConsoleAsync(
-            GetRequiredService<MigrateVerifyCommand>(),
-            target.FullName);
-
     private Task<(int ExitCode, string Output)> InvokeDecisionAsync(
         DirectoryInfo target,
         params string[] arguments)
@@ -1016,15 +997,6 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
             ]);
     }
 
-    private async Task<(int ExitCode, string Output)> InvokeMigrateAsync(
-        DirectoryInfo source,
-        DirectoryInfo target) =>
-        await InvokeCapturingConsoleAsync(
-            GetRequiredService<MigrateCommand>(),
-            source.FullName,
-            "--output",
-            target.FullName);
-
     private static string ExtractRequiredTestArgument(
         List<string> arguments,
         string name)
@@ -1036,50 +1008,10 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
         return value;
     }
 
-    private async Task<JsonDocument> ReadReportAsync(
-        DirectoryInfo target) =>
-        JsonDocument.Parse(await File.ReadAllTextAsync(
-            Path.Combine(target.FullName, "migration-report.json"),
-            TestContext.CancellationToken));
-
     private void ArrangeTemplateCreation(
         DirectoryInfo target,
-        string projectName)
-    {
-        FakeDotNet.RunDotnetCommandHandler = arguments =>
-        {
-            var output = GetTemplateOutput(arguments);
-            output.Create();
-            File.WriteAllText(
-                Path.Combine(output.FullName, $"{projectName}.csproj"),
-                CleanCsproj);
-            File.WriteAllText(
-                Path.Combine(output.FullName, "App.xaml"),
-                $"<Application x:Class=\"{projectName}.App\" />");
-            File.WriteAllText(
-                Path.Combine(output.FullName, "App.xaml.cs"),
-                $"namespace {projectName}; public partial class App {{ }}");
-            File.WriteAllText(
-                Path.Combine(output.FullName, "MainWindow.xaml"),
-                $"<Window x:Class=\"{projectName}.MainWindow\" />");
-            File.WriteAllText(
-                Path.Combine(output.FullName, "MainWindow.xaml.cs"),
-                $"namespace {projectName}; public partial class MainWindow {{ }}");
-            File.WriteAllText(
-                Path.Combine(output.FullName, "Package.appxmanifest"),
-                TargetManifest);
-            return (0, "Template created.", string.Empty);
-        };
-    }
-
-    private static DirectoryInfo GetTemplateOutput(
-        IReadOnlyList<string> arguments)
-    {
-        var outputIndex = arguments.ToList().IndexOf("--output");
-        Assert.IsTrue(
-            outputIndex >= 0 && outputIndex + 1 < arguments.Count);
-        return new DirectoryInfo(arguments[outputIndex + 1]);
-    }
+        string projectName) =>
+        ArrangeBasicTemplateCreation(projectName, TargetManifest);
 
     private sealed class EvaluationState(
         DirectoryInfo target,

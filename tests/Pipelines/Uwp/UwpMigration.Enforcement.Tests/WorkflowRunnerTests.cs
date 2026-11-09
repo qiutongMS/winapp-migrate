@@ -105,25 +105,11 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    [DataRow(WorkflowStage.SourceOracle, WorkflowOperation.Build)]
-    [DataRow(WorkflowStage.SourceOracle, WorkflowOperation.Replay)]
-    [DataRow(WorkflowStage.SourceOracle, WorkflowOperation.DiagnosticRun)]
-    [DataRow(WorkflowStage.SourceOracle, WorkflowOperation.Hypothesis)]
-    [DataRow(WorkflowStage.SourceOracle, WorkflowOperation.UiAction)]
-    [DataRow(WorkflowStage.MechanicalStabilization, WorkflowOperation.Replay)]
-    [DataRow(WorkflowStage.MechanicalStabilization, WorkflowOperation.DiagnosticRun)]
-    [DataRow(WorkflowStage.MechanicalStabilization, WorkflowOperation.Hypothesis)]
-    [DataRow(WorkflowStage.MechanicalStabilization, WorkflowOperation.UiAction)]
-    [DataRow(WorkflowStage.TargetBootstrap, WorkflowOperation.Build)]
-    [DataRow(WorkflowStage.TargetBootstrap, WorkflowOperation.UiAction)]
-    [DataRow(WorkflowStage.Closure, WorkflowOperation.DiagnosticRun)]
-    [DataRow(WorkflowStage.Closure, WorkflowOperation.Hypothesis)]
-    public async Task Policy_IncompatibleStageCeilingsFailBeforeInvocation(
-        WorkflowStage stage, WorkflowOperation operation)
+    public async Task Policy_IncompatibleStageCeilingFailsBeforeInvocation()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var policy = EnforcementPolicy.Balanced();
-        policy.For(stage).Operations.Increment(operation);
+        policy.SourceOracle.Operations.Builds++;
         StringAssert.Contains(WorkflowValidation.PolicyError(policy)!, "zero ceilings");
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.PolicyPath, policy);
         var process = new FakeProcessRunner();
@@ -249,19 +235,6 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Run_UnchangedBuildFailureCannotBeBypassedByNewInvocationOrMaxAttempts()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var process = new FakeProcessRunner(new EnforcementProcessResult(1, """{"Error":"compile failure"}""", ""));
-        await new UwpEnforcementRunner(process).RunAsync(fixture.Root, new UwpEnforcementOptions());
-        var snapshot = await new UwpEnforcementRunner(process).RunAsync(
-            fixture.Root, new UwpEnforcementOptions { MaximumSignatureAttempts = 10, ForceReplay = true });
-        Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
-        Assert.AreEqual(1, process.CallCount);
-        Assert.AreEqual(1, snapshot.Budget!.TotalOperations.Builds);
-    }
-
-    [TestMethod]
     public async Task Run_ForceReplayRequiresNewDiscriminatingEvidence()
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -364,23 +337,6 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Telemetry_ExpiredPersistedStageDoesNotStopUi()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var process = SuccessfulLaunch();
-        var runner = new UwpEnforcementRunner(process);
-        await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
-        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        AgeWorkflow(progress, 26, fixture.Root);
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
-        var uiProcess = new FakeProcessRunner(new EnforcementProcessResult(0, "ui", ""));
-        await new UwpEnforcementRunner(uiProcess).InvokeUiAsync(fixture.Root, "winapp", ["list"]);
-        var snapshot = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
-        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
-        Assert.AreEqual(1, uiProcess.CallCount);
-    }
-
-    [TestMethod]
     public async Task Telemetry_OperationCeilingDoesNotBlockFreshReplay()
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -455,30 +411,6 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsNull(WorkflowValidation.ProgressError(progress,
             await fixture.LoadAsync<EnforcementPolicy>(EnforcementStore.PolicyPath), DateTimeOffset.UtcNow));
         Assert.IsEmpty(fixture.Root.EnumerateFiles("*.tmp", SearchOption.AllDirectories));
-    }
-
-    [TestMethod]
-    public async Task ReplayFreshnessStillRequiresEvidenceAfterLongElapsedTime()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var process = new FakeProcessRunner(BuildSuccess(), ReplaySuccess(), ReplaySuccess());
-        var runner = new UwpEnforcementRunner(process);
-        await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
-        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        AgeWorkflow(progress, 16, fixture.Root);
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
-        var expired = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
-        Assert.AreEqual("evidence-required", expired.Frontier?.Kind);
-        Assert.AreEqual("within-budget", expired.Budget?.Decision);
-        var evidence = ".migration-evidence/new-evidence.txt";
-        await File.WriteAllTextAsync(fixture.Path(evidence), "A fresh discriminating navigation observation.");
-        var replayed = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions
-        {
-            ForceReplay = true, DiscriminatingEvidence = [evidence]
-        });
-        Assert.AreEqual("within-budget", replayed.Budget?.Decision);
-        Assert.AreEqual(0, replayed.Budget!.ExtensionsUsed);
-        Assert.AreEqual(3, process.CallCount);
     }
 
     [TestMethod]

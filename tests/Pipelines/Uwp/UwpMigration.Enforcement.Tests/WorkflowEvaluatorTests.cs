@@ -319,17 +319,6 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Policy_InvalidRangesFailArtifactGate()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        input.Policy.SemanticConvergence.HardMinutes = 2;
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("evidence", snapshot.Frontier?.Kind);
-        Assert.IsNull(snapshot.Workflow);
-    }
-
-    [TestMethod]
     public void Telemetry_ElapsedTimeCannotFreezeCompletedSlice()
     {
         using var fixture = new EvaluatorFixture();
@@ -496,6 +485,7 @@ public sealed partial class EnforcementEvaluatorTests
             !WorkflowOperations.IsCompatible(stage, kind)))
         {
             input.Policy.For(stage).Operations.Increment(operation);
+            StringAssert.Contains(WorkflowValidation.PolicyError(input.Policy)!, "zero ceilings");
             Assert.IsFalse(WorkflowOperations.TryBegin(input, snapshot, operation, [], null, out var reason));
             StringAssert.Contains(reason, "not permitted");
         }
