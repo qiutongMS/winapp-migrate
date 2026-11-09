@@ -1112,6 +1112,51 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     }
 
     [TestMethod]
+    public async Task Migrate_ReportsSystemPickerFlowBeforeContractSealing()
+    {
+        var source = await CreateUwpSourceAsync("PickerApp");
+        await WriteAsync(source, "MainPage.xaml.cs", """
+            using Windows.Storage.Pickers;
+            namespace SDKTemplate;
+            public partial class MainPage
+            {
+                // FileSavePicker in a comment must not add another location.
+                async void Open() =>
+                    await new FileOpenPicker().PickSingleFileAsync();
+            }
+            """);
+        var (target, exit, output) = await MigrateAsync(
+            source,
+            "picker-output",
+            "PickerApp");
+
+        Assert.AreEqual(0, exit, output);
+        using var report = await ReadReportAsync(target);
+        var todo = report.RootElement.GetProperty("todos")
+            .EnumerateArray()
+            .Single(item =>
+                item.GetProperty("id").GetString() == "UWMIG016");
+        Assert.AreEqual(
+            "system-picker",
+            todo.GetProperty("category").GetString());
+        Assert.AreEqual(
+            2,
+            todo.GetProperty("locations").GetArrayLength());
+        Assert.AreEqual(
+            "system-picker-requires-delegated-window-evidence",
+            todo.GetProperty("guidance")
+                .GetProperty("reasonCode")
+                .GetString());
+        Assert.IsTrue(todo.GetProperty("guidance")
+            .GetProperty("completionConditions")
+            .EnumerateArray()
+            .Any(condition => condition.GetString()!
+                .Contains(
+                    "before seal-contract",
+                    StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public async Task Migrate_ReportsNavigationViewSelectorNullFallbackWithStableGuidance()
     {
         var source = await CreateTemplateSelectorSourceAsync(

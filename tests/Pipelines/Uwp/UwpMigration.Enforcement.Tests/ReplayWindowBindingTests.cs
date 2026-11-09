@@ -174,6 +174,102 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    public async Task ReplayWindow_TrustedPickerHostOwnedByReplayCanSupplyTargetEvidence()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        var owner = new PickerWindowOwnerResolver();
+        var runner = new UwpEnforcementRunner(
+            new FakeProcessRunner(
+                new EnforcementProcessResult(0, ClosureTree, "")),
+            windowOwnerResolver: owner);
+
+        var probe = await runner.InvokeUiAsync(
+            fixture.Root,
+            "winapp",
+            ["inspect", "-w", "84", "--json"],
+            [],
+            "state-1");
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root,
+            owner,
+            "state-1",
+            [probe.ArtifactPath]);
+
+        Assert.AreEqual("system-picker", probe.WindowBindingKind);
+        Assert.AreEqual("PickerHost", probe.WindowProcessName);
+        Assert.AreEqual(42, probe.ReplayOwnerWindowHandle);
+        Assert.AreEqual(
+            "passed",
+            recorded.Gates.Single(
+                gate => gate.Id == "state-closure").Status);
+    }
+
+    [TestMethod]
+    public async Task ReplayWindow_PickerHostMayCloseAfterSelectOrCancel()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        var owner = new PickerWindowOwnerResolver(closeAfterBinding: true);
+        var runner = new UwpEnforcementRunner(
+            new FakeProcessRunner(
+                new EnforcementProcessResult(0, ClosureTree, "")),
+            windowOwnerResolver: owner);
+
+        var probe = await runner.InvokeUiAsync(
+            fixture.Root,
+            "winapp",
+            ["inspect", "-w", "84", "--json"],
+            [],
+            "state-1");
+        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+            fixture.Root,
+            TestWindowOwnerResolver.Shared,
+            "state-1",
+            [probe.ArtifactPath]);
+
+        Assert.IsFalse(probe.WindowPresentAfter);
+        Assert.AreEqual(
+            "passed",
+            recorded.Gates.Single(
+                gate => gate.Id == "state-closure").Status);
+    }
+
+    [TestMethod]
+    [DataRow("untrusted-path")]
+    [DataRow("unowned")]
+    public async Task ReplayWindow_UntrustedOrUnownedPickerHostIsRejected(
+        string invalid)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        var process = new FakeProcessRunner();
+        var owner = new PickerWindowOwnerResolver(
+            trustedPath: invalid != "untrusted-path",
+            replayOwned: invalid != "unowned");
+        var runner = new UwpEnforcementRunner(
+            process,
+            windowOwnerResolver: owner);
+
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => runner.InvokeUiAsync(
+                fixture.Root,
+                "winapp",
+                ["inspect", "-w", "84", "--json"],
+                [],
+                "state-1"));
+
+        StringAssert.Contains(error.Message, "trusted PickerHost");
+        Assert.AreEqual(0, process.CallCount);
+    }
+
+    [TestMethod]
     [DataRow("handle")]
     [DataRow("owner")]
     [DataRow("missing-handle")]
@@ -301,6 +397,90 @@ public sealed partial class RunnerAcceptanceTests
         {
             processId = ++_calls == 1 ? 4242 : 1111;
             return true;
+        }
+    }
+
+    private sealed class PickerWindowOwnerResolver(
+        bool trustedPath = true,
+        bool replayOwned = true,
+        bool closeAfterBinding = false)
+        : IWindowOwnerResolver, IWindowRelationshipResolver
+    {
+        private bool _bindingResolved;
+        private static readonly ProcessIdentity Replay =
+            new(4242, TestWindowOwnerResolver.ProcessStartedAt);
+        private static readonly ProcessIdentity Picker =
+            new(
+                5050,
+                TestWindowOwnerResolver.ProcessStartedAt.AddSeconds(1));
+
+        public bool TryGetProcessId(
+            long windowHandle,
+            out int processId)
+        {
+            processId = windowHandle switch
+            {
+                42 => Replay.ProcessId,
+                84 when !closeAfterBinding || !_bindingResolved =>
+                    Picker.ProcessId,
+                99 => 9999,
+                _ => 0
+            };
+            return processId > 0;
+        }
+
+        public bool TryGetProcessIdentity(
+            int processId,
+            out ProcessIdentity identity)
+        {
+            identity = processId switch
+            {
+                4242 => Replay,
+                5050 => Picker,
+                _ => new ProcessIdentity(
+                    processId,
+                    TestWindowOwnerResolver.ProcessStartedAt)
+            };
+            return processId > 0;
+        }
+
+        public bool TryGetWindowRelationship(
+            long windowHandle,
+            out WindowRelationship relationship)
+        {
+            relationship = windowHandle switch
+            {
+                84 => new WindowRelationship(
+                    Picker,
+                    replayOwned ? 42 : 99,
+                    "PickerHost",
+                    trustedPath
+                        ? Path.Combine(
+                            Environment.GetFolderPath(
+                                Environment.SpecialFolder.Windows),
+                            "SystemApps",
+                            "MicrosoftWindows.Client.CBS_cw5n1h2txyewy",
+                            "PickerHost.exe")
+                        : Path.Combine(
+                            Path.GetTempPath(),
+                            "PickerHost.exe")),
+                42 => new WindowRelationship(
+                    Replay,
+                    0,
+                    "Target",
+                    null),
+                99 => new WindowRelationship(
+                    new ProcessIdentity(
+                        9999,
+                        TestWindowOwnerResolver.ProcessStartedAt),
+                    0,
+                    "Other",
+                    null),
+                _ => default
+            };
+            if (windowHandle == 84)
+                _bindingResolved = true;
+            return windowHandle is 42 or 84 or 99;
         }
     }
 }

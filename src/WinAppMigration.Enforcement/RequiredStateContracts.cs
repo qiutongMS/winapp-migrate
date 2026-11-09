@@ -39,7 +39,8 @@ public static class RequiredStateContracts
         if (plan.States.Any(state => state.Source.Status != "not-run" || state.Source.Evidence.Count != 0 ||
                 state.Assertions.Any(assertion => Exists(root, assertion.SourceEvidence))) ||
             Exists(root, EnforcementStore.ProgressPath) || Exists(root, EnforcementStore.BuildAttestationPath) ||
-            Directory.Exists(System.IO.Path.Combine(root.FullName, ".migration-evidence", "source", "gateway")))
+            Directory.Exists(System.IO.Path.Combine(root.FullName, ".migration-evidence", "source", "gateway")) ||
+            SelectorBindingAmendments.HasHistory(root))
             throw new InvalidDataException("Establish/extend requirements before source capture and the first workflow assessment. Captured legacy plans cannot be retroactively blessed.");
         var (existing, error) = await EnforcementStore.TryLoadAsync<RequiredStateContractDocument>(root, Path, cancellationToken);
         if (error is not null) throw new InvalidDataException(error);
@@ -111,14 +112,17 @@ public static class RequiredStateContracts
             assertion.Sufficiency ??= new VisualSufficiency();
         return new MigrationState
         {
-        Id = state.Id, Criticality = state.Criticality,
-        Preconditions = [.. state.Preconditions], Actions = [.. state.Actions], ExpectedOutcome = state.ExpectedOutcome,
-        Assertions = assertions,
-        Verification = state.Verification is null ? null :
+            Id = state.Id,
+            Criticality = state.Criticality,
+            Preconditions = [.. state.Preconditions],
+            Actions = [.. state.Actions],
+            ExpectedOutcome = state.ExpectedOutcome,
+            Assertions = assertions,
+            Verification = state.Verification is null ? null :
             JsonSerializer.Deserialize<StateVerificationContract>(Serialize(state.Verification), EnforcementStore.JsonOptions),
-        Source = new StateObservation { Status = "not-run" },
-        Target = new StateObservation { Status = "not-run" },
-        Comparison = new StateComparison { Status = "not-run" }
+            Source = new StateObservation { Status = "not-run" },
+            Target = new StateObservation { Status = "not-run" },
+            Comparison = new StateComparison { Status = "not-run" }
         };
     }
 

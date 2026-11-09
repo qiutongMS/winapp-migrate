@@ -404,6 +404,7 @@ public static partial class MechanicalMigration
             AddDispatcherResidualTodo(targetRoot, report);
             AddWindowingResidualTodo(targetRoot, report);
             AddDisplayInformationResidualTodo(targetRoot, report);
+            AddPickerResidualTodo(targetRoot, report);
             report.MechanicalVerification = await VerifyMechanicalMigrationAsync(
                 sourceRoot,
                 sourceFiles,

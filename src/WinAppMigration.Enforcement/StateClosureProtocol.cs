@@ -17,6 +17,8 @@ public sealed class StateClosureAttestation
 {
     [JsonPropertyName("requiredContractHash")]
     public string RequiredContractHash { get; set; } = string.Empty;
+    [JsonPropertyName("selectorBindingHash")]
+    public string? SelectorBindingHash { get; set; }
     [JsonPropertyName("verificationLevel")]
     public string VerificationLevel { get; set; } = StateVerificationLevel.EvidenceValid;
     [JsonPropertyName("requiredActionIds")]
@@ -73,6 +75,7 @@ public static class StateClosureProtocol
             var proof = Read<StateClosureAttestation>(root, state.Target.Attestation);
             return StateClosureSeal.Verify(proof) && proof.VerificationLevel == StateVerificationLevel.ParityVerified &&
                 proof.StateId == state.Id && proof.RequiredContractHash == RequiredStateContracts.Require(root, state, proof.RecordedAt) &&
+                proof.SelectorBindingHash == SelectorBindingAmendments.StateHash(root, state) &&
                 proof.StateContractFingerprint == ContractFingerprint(root, state) &&
                 proof.RequiredActionIds.SequenceEqual(state.Verification!.RequiredActions.Select(action => action.Id)) &&
                 proof.AssertionIds.SequenceEqual(state.Assertions.Select(assertion => assertion.Id)) &&
@@ -100,10 +103,17 @@ public static class StateClosureProtocol
     {
         var contract = new MigrationState
         {
-            Id = state.Id, Slice = state.Slice, Dependencies = state.Dependencies,
-            Criticality = state.Criticality, FeaturePaths = state.FeaturePaths, TodoIds = state.TodoIds,
-            Preconditions = state.Preconditions, Actions = state.Actions, ExpectedOutcome = state.ExpectedOutcome,
-            Assertions = state.Assertions, Source = state.Source,
+            Id = state.Id,
+            Slice = state.Slice,
+            Dependencies = state.Dependencies,
+            Criticality = state.Criticality,
+            FeaturePaths = state.FeaturePaths,
+            TodoIds = state.TodoIds,
+            Preconditions = state.Preconditions,
+            Actions = state.Actions,
+            ExpectedOutcome = state.ExpectedOutcome,
+            Assertions = state.Assertions,
+            Source = state.Source,
             Verification = state.Verification,
             Target = new StateObservation { Status = "not-run" },
             Comparison = new StateComparison { Status = "not-run" }
@@ -179,6 +189,12 @@ public static class StateClosureProtocol
                 throw new InvalidDataException("Probe receipt integrity seal is missing or invalid.");
             if (probe.StateId != state.Id || probe.StateContractFingerprint != fingerprint || probe.RequiredContractHash != requiredHash)
                 throw new InvalidDataException($"Probe does not match the current planned state identity/contract: {state.Id}.");
+            if (probe.SelectorBindingHash !=
+                SelectorBindingAmendments.StateHash(root, state))
+            {
+                throw new InvalidDataException(
+                    $"Probe selector binding does not match the current audited binding generation for state {state.Id}.");
+            }
             StateAttribution.Validate(new StatePlanDocument { States = [state] },
                 new StateSliceBinding(probe.StateId, probe.SliceId));
             if (probe.ExitCode != 0 || probe.InfrastructureFailure)
@@ -191,12 +207,17 @@ public static class StateClosureProtocol
                 throw new InvalidDataException("Probe command signature is invalid.");
             var uiArguments = probe.Command.Skip(2).ToArray();
             var window = ReplayWindowBinding.RequireWindow(uiArguments);
-            if (probe.WindowHandle != window || probe.WindowProcessId is not > 0 ||
-                probe.WindowProcessId != replay.ProcessId || probe.WindowProcessStartedAt != replay.ProcessStartedAt)
+            if (probe.WindowHandle != window ||
+                probe.WindowProcessId is not > 0 ||
+                probe.WindowProcessStartedAt is null)
+            {
                 throw new InvalidDataException("Probe window/process binding does not match the canonical replay and command.");
-            if (!windowOwnerResolver.TryGetOwnerIdentity(window, out var owner) ||
-                owner != new ProcessIdentity(replay.ProcessId!.Value, replay.ProcessStartedAt!.Value))
-                throw new InvalidDataException("The original replay window/process identity is absent or reused during state verification.");
+            }
+            ValidateProbeWindowBinding(
+                probe,
+                replay,
+                windowOwnerResolver,
+                window);
             var operations = progress.Operations.Where(operation => operation.Kind == WorkflowOperation.UiAction &&
                 !string.IsNullOrWhiteSpace(probe.OperationId) && operation.Id == probe.OperationId &&
                 StateClosureSeal.Verify(operation) &&
@@ -233,7 +254,11 @@ public static class StateClosureProtocol
             previous = probe.CompletedAt;
         }
         var issues = new List<string>();
-        var steps = RequiredActionProtocol.Derive(state, probes, issues);
+        var steps = RequiredActionProtocol.Derive(
+            root,
+            state,
+            probes,
+            issues);
         var coverage = issues.Count == 0;
         var targetSufficient = true;
         var parity = true;
@@ -289,18 +314,87 @@ public static class StateClosureProtocol
         }
         return new StateClosureAttestation
         {
-            StateId = state.Id, StateContractFingerprint = fingerprint,
+            StateId = state.Id,
+            StateContractFingerprint = fingerprint,
             RequiredContractHash = requiredHash,
+            SelectorBindingHash =
+                SelectorBindingAmendments.StateHash(root, state),
             VerificationLevel = !coverage || !targetSufficient ? StateVerificationLevel.EvidenceValid :
                 parity ? StateVerificationLevel.ParityVerified : StateVerificationLevel.ContractSatisfied,
             RequiredActionIds = state.Verification.RequiredActions.Select(action => action.Id).ToList(),
-            VerifiedSteps = steps, Issues = issues,
-            TargetFingerprint = replay.TargetFingerprint, ReplayAttestationId = replay.Id,
-            RecordedAt = now, Probes = [.. probePaths], Evidence = evidence,
+            VerifiedSteps = steps,
+            Issues = issues,
+            TargetFingerprint = replay.TargetFingerprint,
+            ReplayAttestationId = replay.Id,
+            RecordedAt = now,
+            Probes = [.. probePaths],
+            Evidence = evidence,
             SourceEvidenceHashes = state.Source.Evidence.Select(path => new StateEvidenceHash(path, FileHash(root, path))).ToList(),
             TargetEvidenceHashes = evidence.Select(path => new StateEvidenceHash(path, FileHash(root, path))).ToList(),
             AssertionIds = state.Assertions.Select(assertion => assertion.Id).ToList()
         };
+    }
+
+    private static void ValidateProbeWindowBinding(
+        UiDevelopmentProbe probe,
+        ReplayAttestation replay,
+        IWindowOwnerResolver windowOwnerResolver,
+        long window)
+    {
+        var replayIdentity = new ProcessIdentity(
+            replay.ProcessId!.Value,
+            replay.ProcessStartedAt!.Value);
+        if (probe.WindowBindingKind is null or
+            WindowBindingResolver.ReplayKind)
+        {
+            if (probe.WindowProcessId != replayIdentity.ProcessId ||
+                probe.WindowProcessStartedAt != replayIdentity.StartedAt ||
+                !windowOwnerResolver.TryGetOwnerIdentity(
+                    window,
+                    out var owner) ||
+                owner != replayIdentity)
+            {
+                throw new InvalidDataException(
+                    "Probe window/process binding does not match the canonical replay and command; the original window is absent, belongs to another process, or has a reused-PID identity.");
+            }
+            return;
+        }
+
+        if (probe.WindowBindingKind !=
+                WindowBindingResolver.PickerHostKind ||
+            probe.WindowProcessId == replayIdentity.ProcessId ||
+            probe.WindowProcessStartedAt <= DateTimeOffset.MinValue ||
+            probe.WindowOwnerHandle is not > 0 ||
+            probe.ReplayOwnerWindowHandle is not > 0 ||
+            probe.WindowPresentAfter is null ||
+            !WindowBindingResolver.IsTrustedPickerHost(
+                probe.WindowProcessName,
+                probe.WindowExecutablePath))
+        {
+            throw new InvalidDataException(
+                "Delegated system-window evidence is missing a trusted PickerHost process and replay-owner binding.");
+        }
+        if (probe.WindowPresentAfter == true)
+        {
+            var expected = new WindowBindingEvidence(
+                WindowBindingResolver.PickerHostKind,
+                new ProcessIdentity(
+                    probe.WindowProcessId.GetValueOrDefault(),
+                    probe.WindowProcessStartedAt.GetValueOrDefault()),
+                probe.WindowProcessName!,
+                probe.WindowExecutablePath,
+                probe.WindowOwnerHandle.Value,
+                probe.ReplayOwnerWindowHandle.Value);
+            if (!WindowBindingResolver.MatchesLiveBinding(
+                    windowOwnerResolver,
+                    window,
+                    replayIdentity,
+                    expected))
+            {
+                throw new InvalidDataException(
+                    "The delegated PickerHost window no longer has its sealed process and replay-owner binding.");
+            }
+        }
     }
 
     public static bool Verify(

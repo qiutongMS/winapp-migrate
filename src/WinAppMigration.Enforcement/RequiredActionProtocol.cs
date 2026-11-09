@@ -13,7 +13,11 @@ public sealed record StateStepReceipt(
 
 internal static class RequiredActionProtocol
 {
-    internal static List<StateStepReceipt> Derive(MigrationState state, IReadOnlyList<UiDevelopmentProbe> probes, List<string> issues)
+    internal static List<StateStepReceipt> Derive(
+        DirectoryInfo root,
+        MigrationState state,
+        IReadOnlyList<UiDevelopmentProbe> probes,
+        List<string> issues)
     {
         var result = new List<StateStepReceipt>();
         var previous = -1;
@@ -22,9 +26,16 @@ internal static class RequiredActionProtocol
             if (step.Kind == "action")
             {
                 var action = state.Verification.RequiredActions.Single(item => item.Id == step.Id);
+                var command = SelectorBindingAmendments.ResolveCommand(
+                    root,
+                    state,
+                    action);
                 var index = -1;
                 for (var candidate = previous + 1; candidate < probes.Count; candidate++)
-                    if (Normalize(probes[candidate].Command.Skip(2).ToArray()).SequenceEqual(Normalize(action.Command), StringComparer.Ordinal))
+                    if (Normalize(probes[candidate].Command.Skip(2).ToArray())
+                        .SequenceEqual(
+                            Normalize(command),
+                            StringComparer.Ordinal))
                     { index = candidate; break; }
                 if (index < 0)
                 {

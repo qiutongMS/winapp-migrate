@@ -20,6 +20,7 @@ internal sealed class UwpEnforceCommand : Command
         Aliases.Add("enforce");
         Subcommands.Add(new AssessCommand(windowOwnerResolver));
         Subcommands.Add(new SealContractCommand());
+        Subcommands.Add(new RebindSelectorCommand());
         Subcommands.Add(new WaitCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new RunCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new DiagnoseCommand(processRunner, windowOwnerResolver));
@@ -29,6 +30,57 @@ internal sealed class UwpEnforceCommand : Command
         Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
         Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
         Subcommands.Add(new ConfigureCommand());
+    }
+
+    private sealed class RebindSelectorCommand : Command
+    {
+        internal RebindSelectorCommand()
+            : base(
+                "rebind-selector",
+                "Audit a selector-only repair for one frozen required action. The semantic command and required contract remain unchanged; prior target evidence for the state becomes stale.")
+        {
+            var target = TargetArgument();
+            var state = new Option<string>("--state")
+            {
+                Required = true,
+                Description = "Exact planned state ID."
+            };
+            var action = new Option<string>("--action")
+            {
+                Required = true,
+                Description = "Exact frozen required-action ID."
+            };
+            var reason = new Option<string>("--reason")
+            {
+                Required = true,
+                Description = "Why the frozen locator no longer uniquely identifies the intended control."
+            };
+            var command = new Argument<string[]>("command")
+            {
+                Arity = ArgumentArity.OneOrMore,
+                Description = "Replacement WinApp CLI ui command beginning with the same verb. Pass it after --; runtime window/app/output options are forbidden."
+            };
+            Arguments.Add(target);
+            Arguments.Add(command);
+            Options.Add(state);
+            Options.Add(action);
+            Options.Add(reason);
+            SetAction((result, token) => InvokeGuardedAsync(async () =>
+            {
+                var document =
+                    await UwpEnforcementRunner.RebindSelectorAsync(
+                        result.GetValue(target)!,
+                        result.GetValue(state)!,
+                        result.GetValue(action)!,
+                        result.GetValue(command) ?? [],
+                        result.GetValue(reason)!,
+                        token);
+                Console.Out.WriteLine(JsonSerializer.Serialize(
+                    document,
+                    EnforcementStore.JsonOptions));
+                return 0;
+            }));
+        }
     }
 
     private sealed class SealContractCommand : Command
@@ -299,7 +351,7 @@ internal sealed class UwpEnforceCommand : Command
         internal UiCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver? windowOwnerResolver)
             : base(
                 "capture",
-                "Capture a target development probe. --state binds a planned contract and requires a replay-owned -w/--window. Use unbound list-windows for discovery. Closure requires --discriminating-evidence. Place UI arguments after --.")
+                "Capture a target development probe. --state binds a planned contract and requires an explicit replay-owned window or trusted PickerHost delegated through its owner chain. Use unbound list-windows for discovery. Closure requires --discriminating-evidence. Place UI arguments after --.")
         {
             Aliases.Add("ui");
             var target = TargetArgument();
@@ -307,7 +359,7 @@ internal sealed class UwpEnforceCommand : Command
             var discriminatingEvidence = DiscriminatingEvidenceOption();
             var state = new Option<string?>("--state")
             {
-                Description = "Bind this probe to a planned state/contract and an explicit HWND owned by the canonical replay process."
+                Description = "Bind this probe to a planned state/contract and an explicit replay-owned HWND or trusted owner-bound PickerHost HWND."
             };
             var rawOutput = new Option<bool>("--raw-output")
             {

@@ -75,6 +75,7 @@ winapp-migrate uwp source diagnose <target>
 winapp-migrate uwp source capture <target> -- <winapp-ui-arguments>
 winapp-migrate uwp closure assess <target>
 winapp-migrate uwp closure seal-contract <target> [--extend] [--upgrade-plan]
+winapp-migrate uwp closure rebind-selector <target> --state <state-id> --action <action-id> --reason <text> -- <replacement-ui-command>
 winapp-migrate uwp closure attest <target>
 winapp-migrate uwp closure diagnose <target>
 winapp-migrate uwp closure capture <target> -- <winapp-ui-arguments>
@@ -134,7 +135,12 @@ Before source capture or the first assessment, establish a schema `2.0`
 required contract with `closure seal-contract`. The independently anchored
 required hash freezes action/assertion IDs, definitions and order; only
 append-only pre-start extensions are allowed. Mutable captured legacy plans
-are provisional, not verified. See [required contracts and ROI verification](plugins/winapp-migrate/skills/uwp-to-winapp/references/state-verification-contracts.md).
+are provisional, not verified. `UWMIG016` identifies storage-picker flows that
+must model picker open, select/cancel, and app-state restoration before sealing.
+After sealing, `closure rebind-selector` may repair only a required action's
+locator while preserving its verb, payload, order, assertions, outcome, and
+required hash. The signed, rollback-resistant amendment invalidates earlier
+target probes for that state. See [required contracts and ROI verification](plugins/winapp-migrate/skills/uwp-to-winapp/references/state-verification-contracts.md).
 
 To close a state, declare its machine-checkable `assertions` and ordered
 required action witnesses before capture,
@@ -143,9 +149,13 @@ the canonical target-relative receipt paths to `record-state`. State-bound
 inspect, screenshot, and action commands require exactly one explicit
 `-w/--window`. Windows checks that HWND's owner against the canonical replay
 process identity (**PID plus process start time**) before and after the command.
-Source, other-process, and reused-PID HWNDs are rejected. Replay identity comes
-from the OS through the resolver, never a caller-provided timestamp; legacy
-PID-only replay/probe receipts must be re-attested/recaptured.
+The only delegated exception is Windows `PickerHost`: its executable must be
+under `SystemApps` and its live owner chain must reach an authorized source or
+canonical replay window. Selection or cancellation may close the picker after
+the command; the signed receipt preserves that ephemeral binding. Source,
+unrelated-process, untrusted lookalike, and reused-PID HWNDs are rejected.
+Replay identity comes from the OS through the resolver, never a caller-provided
+timestamp; legacy PID-only replay/probe receipts must be re-attested/recaptured.
 Use **unbound** `capture -- list-windows --json` for discovery. The product
 checks receipt seals, workflow membership, raw-output hashes, state/source
 contract identity, the recorded HWND/process/command binding, success, and
@@ -165,11 +175,14 @@ Portable checks against an embedded key establish signature integrity only,
 not locally trusted provenance or closure success. A required contract must
 also have been established for the current workspace before source/workflow
 activity; copying a signed contract or bundle does not create that association.
-Another user/machine does not inherit the local trust anchor. Closure verification also re-resolves every
-bound HWND and process start time: `record-state`, `finalize`, and assessments
-fail closed when the original window/process is gone or reused. Historical
-signature integrity is not a substitute for that live verification. Legacy
-unsigned/unbound operation chains require re-attestation/recapture.
+Another user/machine does not inherit the local trust anchor. Closure
+verification re-resolves every app-owned HWND and process start time:
+`record-state`, `finalize`, and assessments fail closed when that window/process
+is gone or reused. A delegated PickerHost that closes during select/cancel is
+verified from its signed pre/post owner-chain receipt instead. Historical
+signature integrity is not a substitute for required live app-window
+verification. Legacy unsigned/unbound operation chains require
+re-attestation/recapture.
 
 Window and output options accept WinApp's separated, `=`, and `:` forms
 with either alias (for example `-w 42`, `--window=42`, `-w:42`,

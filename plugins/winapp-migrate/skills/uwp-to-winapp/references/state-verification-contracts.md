@@ -48,6 +48,32 @@ the mapping and reassess before recording target probes; changing it after
 target probes exist invalidates those probes and requires recapture.
 `--extend` and `--upgrade-plan` are not needed for this metadata-only correction.
 
+## Audited selector rebinding
+
+A frozen action's locator can become ambiguous even when the required
+behavior is unchanged. Do not edit the state-plan command or extend the
+contract to disguise that repair. Record a selector-only amendment:
+
+```powershell
+winapp-migrate uwp closure rebind-selector "<target>" `
+  --state "<state-id>" `
+  --action "<required-action-id>" `
+  --reason "<why the old locator is no longer unique>" `
+  -- invoke "<replacement-selector>" --type "<optional-control-type>"
+```
+
+The replacement must keep the same UI verb and all non-locator payload and
+property arguments. Only the primary selector and locator refinements such as
+`--root`, `--type`, and `--class-name` may change; runtime window, app, output,
+and JSON options are forbidden in the amendment. Action ID, step order,
+assertions, expected outcome, and `requiredContractHash` remain frozen.
+
+Amendments are cumulative, locally signed, generation-linked, and independently
+anchored against rollback. Every new target probe and state attestation carries
+the current per-state selector-binding hash. Rebinding clears the state's
+target result; all earlier target probes and attestations for that state become
+stale and must not be relabeled or reused.
+
 The first assessment (including the assessment performed by source commands)
 freezes the independently anchored contract. Mutation after source capture or
 workflow start is rejected, including attempts to relabel an old probe with a

@@ -53,6 +53,63 @@ public sealed class UwpEnforcementRunner
         return document;
     }
 
+    public static async Task<SelectorBindingAmendmentDocument>
+        RebindSelectorAsync(
+            DirectoryInfo target,
+            string stateId,
+            string actionId,
+            IReadOnlyList<string> replacementCommand,
+            string reason,
+            CancellationToken cancellationToken = default)
+    {
+        await using var enforcementLock =
+            await EnforcementStore.AcquireLockAsync(
+                ResolveLockTarget(target),
+                cancellationToken);
+        var workspace = await LoadWorkspaceAsync(
+            target,
+            2,
+            cancellationToken);
+        await RequireNonterminalAsync(
+            workspace.Target,
+            EnforcementEvaluator.Evaluate(workspace.Input),
+            cancellationToken);
+        var plan = workspace.Input.StatePlan ??
+            throw new InvalidDataException(
+                workspace.Input.StatePlanError ??
+                "A valid state plan is required.");
+        var state = plan.States.SingleOrDefault(
+                candidate => candidate.Id == stateId) ??
+            throw new InvalidDataException(
+                $"Unknown planned state: {stateId}.");
+        var document = await SelectorBindingAmendments.RebindAsync(
+            workspace.Target,
+            state,
+            actionId,
+            replacementCommand,
+            reason,
+            cancellationToken);
+
+        state.Target.Status = "unverified";
+        state.Target.VerificationLevel = null;
+        state.Target.Reason =
+            "Target evidence must be recaptured after selector rebinding.";
+        state.Target.Attestation = null;
+        state.Target.Evidence = [];
+        state.Comparison.Status = "unverified";
+        state.Comparison.Reason =
+            "Target parity must be reverified after selector rebinding.";
+        var report = await MigrationReportStore.LoadAsync(
+            workspace.ReportPath,
+            cancellationToken);
+        await EnforcementStore.WriteAtomicAsync(
+            workspace.Target,
+            report.Validation.StatePlan,
+            plan,
+            cancellationToken);
+        return document;
+    }
+
     public static async Task<EnforcementSnapshot> AssessAsync(
         DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver,
         int maximumSignatureAttempts = 2, CancellationToken cancellationToken = default)
@@ -694,16 +751,28 @@ public sealed class UwpEnforcementRunner
         var stateContractFingerprint = plannedState is null
             ? null : StateClosureProtocol.ContractFingerprint(workspace.Target, plannedState);
         var requiredHash = plannedState is null ? null : RequiredStateContracts.Require(workspace.Target, plannedState, _timeProvider.GetUtcNow());
+        var selectorBindingHash = plannedState is null
+            ? null
+            : SelectorBindingAmendments.StateHash(
+                workspace.Target,
+                plannedState);
         var captureIntent = StateAttribution.Authorize(workspace.Input, stateId);
         long? windowHandle = null;
         int? windowProcessId = null;
         DateTimeOffset? windowProcessStartedAt = null;
+        WindowBindingEvidence? windowBinding = null;
         if (plannedState is not null)
         {
             windowHandle = ReplayWindowBinding.RequireWindow(arguments);
-            windowProcessId = snapshot.Replay!.ProcessId!.Value;
-            windowProcessStartedAt = snapshot.Replay.ProcessStartedAt!.Value;
-            RequireWindowOwner(windowHandle.Value, new ProcessIdentity(windowProcessId.Value, windowProcessStartedAt.Value));
+            var replayIdentity = new ProcessIdentity(
+                snapshot.Replay!.ProcessId!.Value,
+                snapshot.Replay.ProcessStartedAt!.Value);
+            windowBinding = WindowBindingResolver.ResolveForReplay(
+                _windowOwnerResolver,
+                windowHandle.Value,
+                replayIdentity);
+            windowProcessId = windowBinding.Process.ProcessId;
+            windowProcessStartedAt = windowBinding.Process.StartedAt;
         }
         var id = CreateId("ui-probe");
         var directory = $"{EnforcementStore.EnforcementDirectory}/probes/{id}";
@@ -755,8 +824,16 @@ public sealed class UwpEnforcementRunner
             workingDirectory,
             cancellationToken);
         var completedAt = _timeProvider.GetUtcNow();
-        if (windowHandle is not null)
-            RequireWindowOwner(windowHandle.Value, new ProcessIdentity(windowProcessId!.Value, windowProcessStartedAt!.Value));
+        bool? windowPresentAfter = null;
+        if (windowHandle is not null && windowBinding is not null)
+        {
+            windowPresentAfter = ValidateWindowAfter(
+                windowHandle.Value,
+                new ProcessIdentity(
+                    snapshot.Replay!.ProcessId!.Value,
+                    snapshot.Replay.ProcessStartedAt!.Value),
+                windowBinding);
+        }
         await WriteProcessOutputAsync(
             workspace.Target,
             stdout,
@@ -769,6 +846,7 @@ public sealed class UwpEnforcementRunner
         var probe = new UiDevelopmentProbe
         {
             RequiredContractHash = requiredHash,
+            SelectorBindingHash = selectorBindingHash,
             OperationId = snapshot.Workflow!.Operations[^1].Id,
             Id = id,
             TargetFingerprint = workspace.Fingerprint,
@@ -780,6 +858,12 @@ public sealed class UwpEnforcementRunner
             WindowHandle = windowHandle,
             WindowProcessId = windowProcessId,
             WindowProcessStartedAt = windowProcessStartedAt,
+            WindowBindingKind = windowBinding?.Kind,
+            WindowProcessName = windowBinding?.ProcessName,
+            WindowExecutablePath = windowBinding?.ExecutablePath,
+            WindowOwnerHandle = windowBinding?.OwnerWindowHandle,
+            ReplayOwnerWindowHandle = windowBinding?.ReplayOwnerWindowHandle,
+            WindowPresentAfter = windowPresentAfter,
             WorkingDirectory = probeWorkingDirectory,
             StartedAt = startedAt,
             CompletedAt = completedAt,
@@ -833,11 +917,47 @@ public sealed class UwpEnforcementRunner
         return probe;
     }
 
-    private void RequireWindowOwner(long windowHandle, ProcessIdentity expected)
+    private bool ValidateWindowAfter(
+        long windowHandle,
+        ProcessIdentity replay,
+        WindowBindingEvidence expected)
     {
-        if (!_windowOwnerResolver.TryGetOwnerIdentity(windowHandle, out var owner) || owner != expected)
+        if (expected.Kind == WindowBindingResolver.ReplayKind)
+        {
+            if (!_windowOwnerResolver.TryGetOwnerIdentity(
+                    windowHandle,
+                    out var owner) ||
+                owner != replay)
+            {
+                throw new InvalidDataException(
+                    $"Window {windowHandle} no longer belongs to canonical replay process {replay.ProcessId} started at {replay.StartedAt:O}; a missing, other-process, or reused-PID HWND cannot supply target evidence.");
+            }
+            return true;
+        }
+
+        if (!_windowOwnerResolver.TryGetProcessId(
+                windowHandle,
+                out _))
+        {
+            return false;
+        }
+        if (!_windowOwnerResolver.TryGetOwnerIdentity(
+                windowHandle,
+                out _))
+        {
             throw new InvalidDataException(
-                $"Window {windowHandle} does not belong to canonical replay process {expected.ProcessId} started at {expected.StartedAt:O}; source, other-process, and reused-PID HWNDs cannot supply target evidence.");
+                $"Delegated system window {windowHandle} still exists but its process identity is unavailable.");
+        }
+        if (!WindowBindingResolver.MatchesLiveBinding(
+                _windowOwnerResolver,
+                windowHandle,
+                replay,
+                expected))
+        {
+            throw new InvalidDataException(
+                $"Delegated system window {windowHandle} changed its process or owner-chain binding while the UI command executed.");
+        }
+        return true;
     }
 
     public static Task<EnforcementSnapshot> RecordStateAsync(
@@ -1614,7 +1734,8 @@ public sealed class UwpEnforcementRunner
                 FirstNonEmpty(parsed.Error, result.Error, result.Output));
         var attestation = new BuildAttestation
         {
-            StateId = intended.StateId, SliceId = intended.IntendedSliceId,
+            StateId = intended.StateId,
+            SliceId = intended.IntendedSliceId,
             RequiredContractHash = workspace.Input.RequiredContractHash,
             StandardOutputSha256 = StateClosureProtocol.FileHash(workspace.Target, stdout),
             StandardErrorSha256 = StateClosureProtocol.FileHash(workspace.Target, stderr),

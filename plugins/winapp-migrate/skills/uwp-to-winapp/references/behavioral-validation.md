@@ -273,7 +273,7 @@ Prefer user-provided baseline evidence when it already covers the plan. Otherwis
    ```
 
 4. If a Debug-only startup failure is plausible, make at most one Release attempt. After bounded recovery, record affected states as `unverified`.
-5. Use only an HWND in the run receipt's `authorizedWindows`. The gateway derives this capability from the before/after inventory because a UWP top-level window can belong to `ApplicationFrameHost`. Never stop `ApplicationFrameHost`.
+5. Use only an HWND in the run receipt's `authorizedWindows`. The gateway derives this capability from the before/after inventory because a UWP top-level window can belong to `ApplicationFrameHost`. A later `PickerHost` HWND is accepted only when its executable is under Windows `SystemApps` and its live owner chain reaches an authorized source HWND; the gateway then records that delegated binding in the current run receipt. Never stop `ApplicationFrameHost`.
 
 Capture states with the resolved HWND:
 
@@ -389,24 +389,27 @@ winapp-migrate uwp closure capture "<target>" --state "<state-id>" -- screenshot
 ```
 
 The target UI command refuses to run without a fresh canonical replay. Its
-state-bound commands require exactly one explicit `-w/--window`, whose
-Windows owner PID must match the canonical replay's `ProcessId` before and
-after capture, and its OS process start time must match replay
-`processStartedAt`. The receipt seals the HWND, PID, and
-`windowProcessStartedAt`; `record-state` rechecks their agreement with both
-the command and replay. A numerically reused PID is a different process and
-cannot reuse the old replay capability. Failed/unavailable identity resolution
-fails closed; legacy PID-only receipts require re-attestation/recapture.
-Identity lookup is resolver-injected for deterministic tests, while production
-uses the native window owner and OS process creation time. It never accepts a
-source HWND, another process's window, or implicit/focused-window selection
-as target proof. Discovery via unbound `list-windows` stays possible but
-cannot itself satisfy a state assertion. Record-state and every closure
-reassessment/final verification resolve the HWND owner and process creation
-time again through the resolver. Missing windows, exited/reused processes,
-and inaccessible identity fail closed. Keep the original bound window/process
-alive through final verification; portable historical signature checks cannot
-replace a live identity check. Its
+state-bound commands require exactly one explicit `-w/--window`. An app-owned
+window must match the canonical replay's PID and process start time before and
+after capture. A system picker is the only delegated exception: the process
+must be `PickerHost`, its executable must be under Windows `SystemApps`, and
+its live `GW_OWNER` chain must reach a replay-owned window. The receipt seals
+the delegated process identity, executable, immediate owner, replay-owner
+HWND, and whether the picker remained present after the command. Selection or
+cancellation may legitimately close PickerHost; a closed delegated picker can
+still satisfy the action from its signed pre/post receipt. App-owned evidence
+still requires live identity through final verification.
+
+A numerically reused PID is a different process and cannot reuse the old replay
+capability. Failed/unavailable identity resolution fails closed; legacy
+PID-only receipts require re-attestation/recapture. Identity lookup is
+resolver-injected for deterministic tests, while production uses native
+window/process and owner-chain data. Source HWNDs, unrelated processes,
+untrusted lookalike PickerHost executables, and implicit/focused-window
+selection are rejected. Discovery via unbound `list-windows` stays possible
+but cannot itself satisfy a state assertion. Portable historical signature
+checks cannot replace the required live app-window identity or the signed
+ephemeral picker binding. Its
 default output is a bounded receipt; raw stdout/stderr and a per-probe
 `probe.json` remain under `.migration-evidence/enforcement/probes`. Read only
 the relevant persisted payload instead of repeatedly emitting the full UI tree;

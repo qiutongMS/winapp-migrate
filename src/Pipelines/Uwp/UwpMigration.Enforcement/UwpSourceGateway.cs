@@ -32,6 +32,24 @@ public sealed class SourceWindow
 
     [JsonPropertyName("className")]
     public string? ClassName { get; set; }
+
+    [JsonPropertyName("processName")]
+    public string? ProcessName { get; set; }
+
+    [JsonPropertyName("processStartedAt")]
+    public DateTimeOffset? ProcessStartedAt { get; set; }
+
+    [JsonPropertyName("executablePath")]
+    public string? ExecutablePath { get; set; }
+
+    [JsonPropertyName("ownerHwnd")]
+    public long OwnerHwnd { get; set; }
+
+    [JsonPropertyName("bindingKind")]
+    public string? BindingKind { get; set; }
+
+    [JsonPropertyName("authorizedOwnerHwnd")]
+    public long? AuthorizedOwnerHwnd { get; set; }
 }
 
 public sealed class SourceRunAttestation
@@ -171,25 +189,31 @@ public sealed class UwpSourceGateway
 {
     private readonly IEnforcementProcessRunner _processRunner;
     private readonly IUwpSourceBuilder _sourceBuilder;
+    private readonly IWindowOwnerResolver _windowOwnerResolver;
     private readonly TimeProvider _timeProvider;
 
     public UwpSourceGateway(
         IEnforcementProcessRunner processRunner,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IWindowOwnerResolver? windowOwnerResolver = null)
         : this(
             processRunner,
             new UwpSourceBuilder(processRunner),
-            timeProvider)
+            timeProvider,
+            windowOwnerResolver)
     {
     }
 
     internal UwpSourceGateway(
         IEnforcementProcessRunner processRunner,
         IUwpSourceBuilder sourceBuilder,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IWindowOwnerResolver? windowOwnerResolver = null)
     {
         _processRunner = processRunner;
         _sourceBuilder = sourceBuilder;
+        _windowOwnerResolver =
+            windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -472,10 +496,61 @@ public sealed class UwpSourceGateway
                 throw new InvalidDataException(
                     "A successful current source run for the unchanged recorded source project is required.");
             }
-            if (!launch.AuthorizedWindows.Any(window => window.Hwnd == windowHandle.Value))
+            var authorized = launch.AuthorizedWindows.SingleOrDefault(
+                window => window.Hwnd == windowHandle.Value);
+            if (authorized is null ||
+                authorized.BindingKind ==
+                    WindowBindingResolver.PickerHostKind)
             {
-                throw new InvalidDataException(
-                    $"Window {windowHandle.Value} was not created by the current source run.");
+                var binding =
+                    WindowBindingResolver.ResolveForAuthorizedWindows(
+                        _windowOwnerResolver,
+                        windowHandle.Value,
+                        launch.AuthorizedWindows
+                            .Where(window =>
+                                window.BindingKind !=
+                                    WindowBindingResolver.PickerHostKind)
+                            .Select(window => window.Hwnd)
+                            .ToHashSet());
+                if (authorized is not null)
+                {
+                    if (authorized.ProcessId !=
+                            binding.Process.ProcessId ||
+                        authorized.ProcessStartedAt !=
+                            binding.Process.StartedAt ||
+                        authorized.ProcessName !=
+                            binding.ProcessName ||
+                        authorized.ExecutablePath !=
+                            binding.ExecutablePath ||
+                        authorized.OwnerHwnd !=
+                            binding.OwnerWindowHandle ||
+                        authorized.AuthorizedOwnerHwnd !=
+                            binding.ReplayOwnerWindowHandle)
+                    {
+                        throw new InvalidDataException(
+                            $"Delegated source window {windowHandle.Value} no longer has its recorded PickerHost process and owner-chain binding.");
+                    }
+                }
+                else
+                {
+                    launch.AuthorizedWindows.Add(new SourceWindow
+                    {
+                        Hwnd = windowHandle.Value,
+                        ProcessId = binding.Process.ProcessId,
+                        ProcessName = binding.ProcessName,
+                        ProcessStartedAt = binding.Process.StartedAt,
+                        ExecutablePath = binding.ExecutablePath,
+                        OwnerHwnd = binding.OwnerWindowHandle,
+                        BindingKind = binding.Kind,
+                        AuthorizedOwnerHwnd =
+                            binding.ReplayOwnerWindowHandle
+                    });
+                    await PersistRunAsync(
+                        workspace,
+                        launch,
+                        $"{workspace.GatewayRoot}/runs/{launch.Id}",
+                        cancellationToken);
+                }
             }
         }
         ValidateSourceOutputPath(workspace, arguments);

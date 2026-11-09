@@ -146,6 +146,41 @@ public sealed class SourceGatewayTests
     }
 
     [TestMethod]
+    public async Task Capture_AuthorizesOwnerBoundSystemPickerWindow()
+    {
+        using var fixture = await SourceFixture.CreateAsync();
+        var process = LaunchedProcess(
+            new EnforcementProcessResult(
+                0,
+                """{"nodes":[{"type":"Window","name":"Open"}]}""",
+                ""));
+        var gateway = CreateGateway(
+            process,
+            fixture,
+            windowOwnerResolver:
+                new SourcePickerWindowOwnerResolver());
+        var run = await gateway.RunAsync(
+            fixture.Target,
+            TestOptions());
+
+        var probe = await gateway.CaptureAsync(
+            fixture.Target,
+            "winapp",
+            ["inspect", "-w", "84", "--json"]);
+        var persisted = JsonSerializer.Deserialize<SourceRunAttestation>(
+            await File.ReadAllTextAsync(fixture.Resolve(
+                ".migration-evidence/source/gateway/current-run.json")),
+            EnforcementStore.JsonOptions)!;
+        var picker = persisted.AuthorizedWindows.Single(
+            window => window.Hwnd == 84);
+
+        Assert.AreEqual(run.Id, probe.SourceRunAttestationId);
+        Assert.AreEqual("system-picker", picker.BindingKind);
+        Assert.AreEqual("PickerHost", picker.ProcessName);
+        Assert.AreEqual(20, picker.AuthorizedOwnerHwnd);
+    }
+
+    [TestMethod]
     public async Task Capture_RejectsChangedSourceTree()
     {
         using var fixture = await SourceFixture.CreateAsync();
@@ -259,7 +294,8 @@ public sealed class SourceGatewayTests
     private static UwpSourceGateway CreateGateway(
         IEnforcementProcessRunner process,
         SourceFixture fixture,
-        int buildExitCode = 0) =>
+        int buildExitCode = 0,
+        IWindowOwnerResolver? windowOwnerResolver = null) =>
         new(
             process,
             new FakeSourceBuilder(
@@ -269,7 +305,8 @@ public sealed class SourceGatewayTests
                     "build stdout",
                     "build stderr",
                     "10.0.22621.0",
-                    buildExitCode == 0 ? fixture.SourceLayout : null)));
+                    buildExitCode == 0 ? fixture.SourceLayout : null)),
+            windowOwnerResolver: windowOwnerResolver);
 
     private static FakeProcessRunner LaunchedProcess(
         params EnforcementProcessResult[] additional) =>
@@ -296,6 +333,66 @@ public sealed class SourceGatewayTests
                 className = "ApplicationFrameWindow"
             })),
             "");
+
+    private sealed class SourcePickerWindowOwnerResolver
+        : IWindowOwnerResolver, IWindowRelationshipResolver
+    {
+        private static readonly ProcessIdentity Source =
+            new(200, TestWindowOwnerResolver.ProcessStartedAt);
+        private static readonly ProcessIdentity Picker =
+            new(
+                5050,
+                TestWindowOwnerResolver.ProcessStartedAt.AddSeconds(1));
+
+        public bool TryGetProcessId(
+            long windowHandle,
+            out int processId)
+        {
+            processId = windowHandle switch
+            {
+                20 => Source.ProcessId,
+                84 => Picker.ProcessId,
+                _ => 0
+            };
+            return processId > 0;
+        }
+
+        public bool TryGetProcessIdentity(
+            int processId,
+            out ProcessIdentity identity)
+        {
+            identity = processId == Picker.ProcessId
+                ? Picker
+                : Source;
+            return processId is 200 or 5050;
+        }
+
+        public bool TryGetWindowRelationship(
+            long windowHandle,
+            out WindowRelationship relationship)
+        {
+            relationship = windowHandle switch
+            {
+                84 => new WindowRelationship(
+                    Picker,
+                    20,
+                    "PickerHost",
+                    Path.Combine(
+                        Environment.GetFolderPath(
+                            Environment.SpecialFolder.Windows),
+                        "SystemApps",
+                        "MicrosoftWindows.Client.CBS_cw5n1h2txyewy",
+                        "PickerHost.exe")),
+                20 => new WindowRelationship(
+                    Source,
+                    0,
+                    "ApplicationFrameHost",
+                    null),
+                _ => default
+            };
+            return windowHandle is 20 or 84;
+        }
+    }
 
     private sealed class FakeProcessRunner(
         params EnforcementProcessResult[] results)

@@ -43,7 +43,7 @@ Verify from the actual output that:
 
 1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, `source`, and `closure`;
 2. `winapp-migrate uwp source --help` exposes `run`, `capture`, and `diagnose`;
-3. `winapp-migrate uwp closure --help` exposes `seal-contract`, `assess`, `attest`, `capture`, `record-state`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
+3. `winapp-migrate uwp closure --help` exposes `seal-contract`, `rebind-selector`, `assess`, `attest`, `capture`, `record-state`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
 4. the configured WinApp CLI satisfies the gateway contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
 
 Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.6`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
@@ -79,6 +79,12 @@ winapp-migrate uwp closure seal-contract "<target>"
 winapp-migrate uwp closure assess "<target>"
 ```
 
+Treat `UWMIG016` as a pre-seal planning requirement. If the source uses
+`FileOpenPicker`, `FileSavePicker`, or `FolderPicker`, declare ordered source
+and target actions for opening the system picker, selecting and cancelling,
+and returning to the app-owned state. The picker is a trusted delegated
+Windows window, not permission to accept arbitrary external-process UI.
+
 For an already sealed workflow, resume with `assess`, never re-seal changed
 requirements. `--extend` is append-only before source/workflow start; it cannot
 remove actions/assertions or rewrite order. Run the initial assessment after
@@ -98,6 +104,12 @@ points to the durable full state; use `--full` only for focused workflow repair.
 Target execution must still use the gateway `closure attest`, `closure diagnose`,
 and `closure capture` operations so process identity and evidence provenance
 remain verifiable.
+
+If a frozen action's selector becomes ambiguous while its verb, payload,
+ordering, assertions, and intended behavior remain valid, use the audited
+`closure rebind-selector` recovery described in the required-contract
+reference. Never edit the frozen plan command directly. Rebinding invalidates
+that state's earlier target probes and requires recapture.
 
 `todoIds` do not redefine the sealed action/assertion contract. If assessment
 reports that a required TODO is not mapped, add its stable ID to the

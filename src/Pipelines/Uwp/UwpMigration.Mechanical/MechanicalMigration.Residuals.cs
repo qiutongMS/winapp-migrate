@@ -875,6 +875,94 @@ public static partial class MechanicalMigration
             });
         }
 
+        private static void AddPickerResidualTodo(
+            string targetRoot,
+            MigrationReport report)
+        {
+            var locations = FindSourceLocations(
+                targetRoot,
+                line =>
+                    line.Contains(
+                        "Windows.Storage.Pickers",
+                        StringComparison.Ordinal) ||
+                    line.Contains(
+                        "FileOpenPicker",
+                        StringComparison.Ordinal) ||
+                    line.Contains(
+                        "FileSavePicker",
+                        StringComparison.Ordinal) ||
+                    line.Contains(
+                        "FolderPicker",
+                        StringComparison.Ordinal));
+            if (locations.Count == 0)
+            {
+                return;
+            }
+
+            report.Todos.Add(new MigrationTodo
+            {
+                Id = "UWMIG016",
+                Category = "system-picker",
+                Priority = "required",
+                Summary =
+                    "Plan file and folder picker behavior before sealing the migration contract",
+                Reason =
+                    "FileOpenPicker, FileSavePicker, and FolderPicker run in a delegated Windows PickerHost window. Migration closure must cover opening the picker, selecting and cancelling, and restoring the app-owned state rather than treating the brokered UI as an unrelated process.",
+                Locations = locations,
+                Guidance = new MigrationRepairGuidance
+                {
+                    ReasonCode =
+                        "system-picker-requires-delegated-window-evidence",
+                    Facts =
+                    [
+                        new()
+                        {
+                            Id = "picker-api-detected",
+                            Summary =
+                                "Target C# contains a Windows storage picker API whose observable flow crosses into a system-owned PickerHost window.",
+                            Locations = locations
+                        }
+                    ],
+                    CandidateStrategies =
+                    [
+                        new()
+                        {
+                            Id = "preserve-picker-with-explicit-owner",
+                            Summary =
+                                "Initialize the picker with the HWND of the WinUI window that owns the flow and preserve select/cancel semantics.",
+                            Actions =
+                            [
+                                "Resolve the HWND from the WinUI Window that initiated the picker.",
+                                "Initialize and invoke the picker without substituting an arbitrary active window.",
+                                "Model picker open, selection, cancellation, and return to the app as ordered required actions."
+                            ],
+                            Preconditions =
+                            [
+                                "The owning application Window is known at the picker call site."
+                            ],
+                            Risks =
+                            [
+                                "Using the wrong HWND can attach the system picker to another window or break modality.",
+                                "Validating only the returned file omits cancellation and app-state restoration behavior."
+                            ]
+                        }
+                    ],
+                    ForbiddenShortcuts =
+                    [
+                        "Do not remove the picker flow from the state plan because PickerHost runs in another process.",
+                        "Do not authorize arbitrary external-process windows as migration evidence.",
+                        "Do not seal the required contract before the picker open, select/cancel, and return states are represented."
+                    ],
+                    CompletionConditions =
+                    [
+                        "The state plan is updated before seal-contract with picker open, selection, cancellation, and app restoration steps.",
+                        "Source and target evidence includes the trusted owner-bound system picker window where it is observable.",
+                        "Target evidence verifies both successful selection and cancellation without weakening app-window identity checks."
+                    ]
+                }
+            });
+        }
+
         private static List<MigrationLocation> FindSourceLocations(
             string targetRoot,
             Func<string, bool> matches)

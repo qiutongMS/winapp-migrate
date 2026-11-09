@@ -582,6 +582,27 @@ public sealed class UiDevelopmentProbe
     [JsonPropertyName("windowProcessStartedAt")]
     public DateTimeOffset? WindowProcessStartedAt { get; set; }
 
+    [JsonPropertyName("windowBindingKind")]
+    public string? WindowBindingKind { get; set; }
+
+    [JsonPropertyName("windowProcessName")]
+    public string? WindowProcessName { get; set; }
+
+    [JsonPropertyName("windowExecutablePath")]
+    public string? WindowExecutablePath { get; set; }
+
+    [JsonPropertyName("windowOwnerHandle")]
+    public long? WindowOwnerHandle { get; set; }
+
+    [JsonPropertyName("replayOwnerWindowHandle")]
+    public long? ReplayOwnerWindowHandle { get; set; }
+
+    [JsonPropertyName("windowPresentAfter")]
+    public bool? WindowPresentAfter { get; set; }
+
+    [JsonPropertyName("selectorBindingHash")]
+    public string? SelectorBindingHash { get; set; }
+
     [JsonPropertyName("workingDirectory")]
     public string? WorkingDirectory { get; set; }
 
