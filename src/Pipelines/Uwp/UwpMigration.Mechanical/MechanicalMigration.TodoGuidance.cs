@@ -50,8 +50,6 @@ public static partial class MechanicalMigration
                         "startup-bootstrap"
                     ]
                 },
-                WorkSlices =
-                    MigrationTodoWorkPlanFactory.AppResources(locations),
                 Guidance = new MigrationRepairGuidance
                 {
                     ReasonCode = "preserved-uwp-app-contract-requires-merge",
@@ -301,8 +299,6 @@ public static partial class MechanicalMigration
                         "target-project-graph"
                     ]
                 },
-                WorkSlices =
-                    MigrationTodoWorkPlanFactory.Dependencies(locations),
                 Guidance = new MigrationRepairGuidance
                 {
                     ReasonCode = "source-dependency-contract-requires-decision",
@@ -471,8 +467,6 @@ public static partial class MechanicalMigration
                         "startup-bootstrap"
                     ]
                 },
-                WorkSlices =
-                    MigrationTodoWorkPlanFactory.Manifest(locations),
                 Guidance = new MigrationRepairGuidance
                 {
                     ReasonCode = "manifest-contract-requires-desktop-review",

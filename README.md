@@ -33,13 +33,13 @@ activation declarations, safe filesystem handling, deterministic XAML and C#
 transforms, residual findings, target-project graph verification, MSBuild item
 evaluation, and the six explicit project-item decision strategies.
 
-Schema 1.6 also emits structured TODO guidance and `todoGraph`: authoritative
-detection facts remain separate from provisional classification, strategies
-are non-exhaustive, completion checks and touch/conflict sets are typed, and
-typed preparation/integration/verification work items produce deterministic,
-conflict-free execution waves. Invalid nodes, edges, classifications, or cycles
-are surfaced with no flattened wave plan. See
-[Migration TODO guidance and graph](plugins/winapp-migrate/skills/uwp-to-winapp/references/migration-todo-graph.md).
+Schema 1.6 also emits structured TODO guidance: authoritative detection facts
+remain separate from provisional classification, strategies are
+non-exhaustive, completion checks and touch/conflict sets are typed, and
+`dependsOn` records stable TODO-level prerequisites without prescribing an
+execution schedule. Invalid TODO IDs, dependencies, classifications, or cycles
+fail closed. See
+[Migration TODO execution contract](plugins/winapp-migrate/skills/uwp-to-winapp/references/migration-todo-contract.md).
 
 ```text
 winapp-migrate uwp create <source> --output <target>

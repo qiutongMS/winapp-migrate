@@ -443,7 +443,7 @@ public static partial class MechanicalMigration
             {
                 Console.Out.WriteLine($"  [{todo.Priority}] {todo.Category}: {todo.Summary}");
             }
-            WriteTodoExecutionPlan(report);
+            WriteTodoSummary(report);
             Console.Out.WriteLine("Details: migration-report.json");
             Console.Out.WriteLine("This result is not guaranteed to build or run.");
             Console.Out.WriteLine("=====================================");
@@ -580,33 +580,13 @@ public static partial class MechanicalMigration
             }
         }
 
-        private static void WriteTodoExecutionPlan(MigrationReport report)
+        private static void WriteTodoSummary(MigrationReport report)
         {
             Console.Out.WriteLine(
-                $"TODO graph: {report.TodoGraph.Status}; " +
-                $"{report.TodoGraph.ExecutionWaves.Count} execution wave(s); " +
-                $"{report.TodoGraph.Issues.Count} issue(s)");
-            foreach (var wave in report.TodoGraph.ExecutionWaves)
-            {
-                Console.Out.WriteLine(
-                    $"  {FormatWorkStage(wave.Stage)} wave {wave.Index}: " +
-                    $"{string.Join(", ", wave.WorkItemIds)}");
-            }
-            foreach (var issue in report.TodoGraph.Issues)
-            {
-                Console.Out.WriteLine(
-                    $"  [TODO graph:{issue.Code}] {issue.Message}");
-            }
+                $"TODO contract: {report.Todos.Count} item(s); " +
+                $"{report.Todos.Count(todo => todo.Priority.Equals("required", StringComparison.OrdinalIgnoreCase))} required; " +
+                $"{report.Todos.Sum(todo => todo.DependsOn.Count)} dependency reference(s)");
         }
-
-        private static string FormatWorkStage(string stage) =>
-            stage switch
-            {
-                "preparation" => "Preparation",
-                "integration" => "Integration",
-                "verification" => "Verification",
-                _ => stage
-            };
 
         // ───────────────────────────── 2b ──────────────────────────────────────
         private static int PatchProjectSettings(string targetRoot)

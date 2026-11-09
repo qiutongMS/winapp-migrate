@@ -129,17 +129,16 @@ Before semantic edits:
 7. Read startup, the feature registry or navigation shell, `dependencyAnalysis`, `activationAnalysis`, and enough source to classify the migration as fast or expanded.
 8. Identify the source behavior that proves the app's primary purpose and any user-critical flow.
 
-Require `todoGraph.status` to be `valid` before activating parallel scheduling.
 Read
-[Migration TODO guidance and graph](references/migration-todo-graph.md) and
+[Migration TODO execution contract](references/migration-todo-contract.md) and
 [Parallel migration work orchestration](references/parallel-work-orchestration.md).
-The graph determines safe dependency/touch-set waves, not the repair strategy
-or completion verdict. Select work items whose `dependsOn` blockers are complete.
-Run items serially unless their touch sets are disjoint and their acceptance
-conditions are independently verifiable. For independent items, use Copilot CLI
-parallel subagents and reconcile their results in the canonical target before
-verification. Parallel execution is an optimization, never a completion
-requirement.
+Select required, non-terminal TODOs whose `dependsOn` TODOs are terminal. The
+TODO supplies dependency and touch-set facts, not a fixed schedule, repair
+strategy, or completion verdict. Run TODOs serially unless their touch sets are
+disjoint and their acceptance conditions are independently verifiable. For
+independent items, use Copilot CLI parallel subagents and reconcile their
+results in the canonical target before verification. Parallel execution is an
+optimization, never a completion requirement.
 
 Use the **fast path** when the primary behavior is page-local, dependencies and APIs have direct target mappings, and it crosses no uncertain project, lifetime, activation, window, native-host, or shared asynchronous boundary. Read only startup, capability-bearing manifest entries, relevant pages, and their custom controls or resources. Do not create a semantic finding ledger before a real finding exists.
 

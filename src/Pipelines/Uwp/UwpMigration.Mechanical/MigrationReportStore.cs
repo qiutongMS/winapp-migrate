@@ -268,58 +268,7 @@ internal static class MigrationReportStore
         report.SchemaVersion = MigrationReport.CurrentSchemaVersion;
         report.Summary ??= new MigrationSummary();
         report.Transforms ??= [];
-        var rawTodoGraph = MigrationTodoGraphBuilder.ValidateRaw(report.Todos);
-        if (rawTodoGraph.Issues.Count == 0)
-        {
-            foreach (var todo in report.Todos)
-            {
-                todo.Locations ??= [];
-                todo.AffectedStates ??= [];
-                todo.AffectedFeatures ??= [];
-                todo.TouchSet ??= new MigrationTodoTouchSet();
-                todo.TouchSet.Paths ??= [];
-                todo.TouchSet.ProjectItems ??= [];
-                todo.TouchSet.ConflictKeys ??= [];
-                foreach (var workSlice in todo.WorkSlices)
-                {
-                    workSlice.Locations ??= [];
-                    workSlice.TouchSet ??= new MigrationTodoTouchSet();
-                    workSlice.TouchSet.Paths ??= [];
-                    workSlice.TouchSet.ProjectItems ??= [];
-                    workSlice.TouchSet.ConflictKeys ??= [];
-                }
-                if (todo.Guidance is null)
-                {
-                    continue;
-                }
-                todo.Guidance.Facts ??= [];
-                todo.Guidance.MechanicallyAppliedTransforms ??= [];
-                todo.Guidance.CandidateStrategies ??= [];
-                todo.Guidance.ForbiddenShortcuts ??= [];
-                todo.Guidance.CompletionConditions ??= [];
-                todo.Guidance.CompletionChecks ??= [];
-                foreach (var fact in todo.Guidance.Facts)
-                {
-                    fact.Locations ??= [];
-                }
-                if (todo.Guidance.Classification is not null)
-                {
-                    todo.Guidance.Classification.Candidates ??= [];
-                    todo.Guidance.Classification.DiscriminatingTests ??= [];
-                }
-                foreach (var strategy in todo.Guidance.CandidateStrategies)
-                {
-                    strategy.Actions ??= [];
-                    strategy.Preconditions ??= [];
-                    strategy.Risks ??= [];
-                }
-            }
-            report.TodoGraph = MigrationTodoGraphBuilder.Build(report.Todos);
-        }
-        else
-        {
-            report.TodoGraph = rawTodoGraph;
-        }
+        MigrationTodoValidator.ValidateAndNormalize(report.Todos);
         report.DependencyAnalysis ??= new MigrationDependencyAnalysis();
         report.ActivationAnalysis ??= new MigrationActivationAnalysis();
         report.ProjectItemDecisions ??= [];

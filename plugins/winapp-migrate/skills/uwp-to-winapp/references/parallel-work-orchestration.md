@@ -1,14 +1,12 @@
 # Parallel migration work orchestration
 
-Parallel work is an optional efficiency technique for schema `1.6`
-`todoGraph` items. It does not determine migration correctness and is never
-required for closure.
+Parallel work is an optional efficiency technique for schema `1.6` TODOs. It
+does not determine migration correctness and is never required for closure.
 
-The mechanical report supplies dependencies, touch sets, conflict keys,
-acceptance checks, and suggested waves. The parent agent uses that metadata to
-choose work:
+The mechanical report supplies dependencies, touch sets, conflict keys, and
+acceptance checks. The parent agent uses that metadata to choose work:
 
-1. List incomplete TODOs whose `dependsOn` blockers are complete.
+1. List required, non-terminal TODOs whose `dependsOn` TODOs are terminal.
 2. Prefer the smallest coherent set that advances observable behavior.
 3. Run serially when independence is uncertain.
 4. Parallelize only ready items with disjoint touch sets and independent
@@ -23,7 +21,7 @@ those responsibilities.
 
 ## Delegate bounded work
 
-Give each worker one TODO or compatible work slice with:
+Give each worker one ready TODO with:
 
 - its stable ID and completed dependencies;
 - authoritative facts and source invariants;

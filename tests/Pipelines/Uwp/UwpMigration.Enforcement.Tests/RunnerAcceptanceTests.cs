@@ -811,7 +811,6 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsFalse(
             legacyTodo.Guidance.CandidateStrategiesExhaustive);
         Assert.IsNotEmpty(legacyTodo.Guidance.Facts);
-        Assert.AreEqual("valid", finalized.TodoGraph.Status);
     }
 
     [TestMethod]

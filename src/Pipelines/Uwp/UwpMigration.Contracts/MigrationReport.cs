@@ -31,9 +31,6 @@ public sealed class MigrationReport
     [JsonPropertyName("todos")]
     public List<MigrationTodo> Todos { get; set; } = [];
 
-    [JsonPropertyName("todoGraph")]
-    public MigrationTodoGraph TodoGraph { get; set; } = new();
-
     [JsonPropertyName("dependencyAnalysis")]
     public MigrationDependencyAnalysis DependencyAnalysis { get; set; } = new();
 
@@ -750,9 +747,6 @@ public sealed class MigrationTodo
     [JsonPropertyName("touchSet")]
     public MigrationTodoTouchSet TouchSet { get; set; } = new();
 
-    [JsonPropertyName("workSlices")]
-    public List<MigrationTodoWorkSlice> WorkSlices { get; set; } = [];
-
     [JsonPropertyName("guidance")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MigrationRepairGuidance? Guidance { get; set; }
@@ -886,117 +880,6 @@ public sealed class MigrationTodoTouchSet
 
     [JsonPropertyName("conflictKeys")]
     public List<string> ConflictKeys { get; set; } = [];
-}
-
-public sealed class MigrationTodoWorkSlice
-{
-    [JsonPropertyName("id")]
-    public required string Id { get; set; }
-
-    [JsonPropertyName("summary")]
-    public required string Summary { get; set; }
-
-    [JsonPropertyName("stage")]
-    public string Stage { get; set; } = "preparation";
-
-    [JsonPropertyName("dependencies")]
-    public List<MigrationTodoWorkItemDependency> Dependencies { get; set; } = [];
-
-    [JsonPropertyName("locations")]
-    public List<MigrationLocation> Locations { get; set; } = [];
-
-    [JsonPropertyName("touchSet")]
-    public MigrationTodoTouchSet TouchSet { get; set; } = new();
-}
-
-public sealed class MigrationTodoWorkItemDependency
-{
-    [JsonPropertyName("workItemId")]
-    public required string WorkItemId { get; set; }
-
-    [JsonPropertyName("kind")]
-    public string Kind { get; set; } = "preparation";
-}
-
-public sealed class MigrationTodoGraph
-{
-    [JsonPropertyName("status")]
-    public string Status { get; set; } = "not-generated";
-
-    [JsonPropertyName("workItems")]
-    public List<MigrationTodoWorkItem> WorkItems { get; set; } = [];
-
-    [JsonPropertyName("edges")]
-    public List<MigrationTodoDependencyEdge> Edges { get; set; } = [];
-
-    [JsonPropertyName("executionWaves")]
-    public List<MigrationTodoExecutionWave> ExecutionWaves { get; set; } = [];
-
-    [JsonPropertyName("issues")]
-    public List<MigrationTodoGraphIssue> Issues { get; set; } = [];
-}
-
-public sealed class MigrationTodoDependencyEdge
-{
-    [JsonPropertyName("prerequisiteId")]
-    public required string PrerequisiteId { get; set; }
-
-    [JsonPropertyName("dependentId")]
-    public required string DependentId { get; set; }
-
-    [JsonPropertyName("kind")]
-    public string Kind { get; set; } = "preparation";
-}
-
-public sealed class MigrationTodoWorkItem
-{
-    [JsonPropertyName("id")]
-    public required string Id { get; set; }
-
-    [JsonPropertyName("todoId")]
-    public required string TodoId { get; set; }
-
-    [JsonPropertyName("stage")]
-    public string Stage { get; set; } = "preparation";
-
-    [JsonPropertyName("summary")]
-    public required string Summary { get; set; }
-
-    [JsonPropertyName("touchSet")]
-    public MigrationTodoTouchSet TouchSet { get; set; } = new();
-}
-
-public sealed class MigrationTodoExecutionWave
-{
-    [JsonPropertyName("index")]
-    public int Index { get; set; }
-
-    [JsonPropertyName("stage")]
-    public string Stage { get; set; } = "preparation";
-
-    [JsonPropertyName("workItemIds")]
-    public List<string> WorkItemIds { get; set; } = [];
-}
-
-public sealed class MigrationTodoGraphIssue
-{
-    [JsonPropertyName("code")]
-    public required string Code { get; set; }
-
-    [JsonPropertyName("todoId")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? TodoId { get; set; }
-
-    [JsonPropertyName("dependencyId")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? DependencyId { get; set; }
-
-    [JsonPropertyName("workItemId")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? WorkItemId { get; set; }
-
-    [JsonPropertyName("message")]
-    public required string Message { get; set; }
 }
 
 public sealed class MigrationLocation

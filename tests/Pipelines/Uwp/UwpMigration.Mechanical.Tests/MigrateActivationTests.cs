@@ -695,10 +695,8 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
                 .GetBoolean());
         Assert.IsTrue(
             guidance.GetProperty("facts").GetArrayLength() > 0);
-        Assert.AreEqual(
-            "valid",
-            upgraded.RootElement.GetProperty("todoGraph")
-                .GetProperty("status").GetString());
+        Assert.IsFalse(
+            upgraded.RootElement.TryGetProperty("todoGraph", out _));
     }
 
     [TestMethod]

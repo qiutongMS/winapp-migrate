@@ -103,23 +103,6 @@ internal sealed class MigrateVerifyCommand : Command
                 Console.Out.WriteLine($"[ERROR] {exception.Message}");
                 return 1;
             }
-            if (report.TodoGraph.Status == "invalid")
-            {
-                await MigrationReportStore.WriteAtomicAsync(
-                    reportPath,
-                    report,
-                    cancellationToken);
-                Console.Out.WriteLine(
-                    $"TODO graph: invalid; 0 execution wave(s); " +
-                    $"{report.TodoGraph.Issues.Count} issue(s).");
-                foreach (var issue in report.TodoGraph.Issues)
-                {
-                    Console.Out.WriteLine(
-                        $"  [TODO graph:{issue.Code}] {issue.Message}");
-                }
-                return 1;
-            }
-
             if (!MigrationPathResolver.TryCanonicalizeRoot(
                     report.Source.Root,
                     out var sourceRoot,
@@ -257,30 +240,11 @@ internal sealed class MigrateVerifyCommand : Command
                 $"{verification.TargetProjectGraph.NestedProjects.Count} nested project(s); " +
                 $"{verification.TargetProjectGraph.Issues.Count} issue(s).");
             Console.Out.WriteLine(
-                $"TODO graph: {report.TodoGraph.Status}; " +
-                $"{report.TodoGraph.ExecutionWaves.Count} execution wave(s); " +
-                $"{report.TodoGraph.Issues.Count} issue(s).");
-            foreach (var wave in report.TodoGraph.ExecutionWaves)
-            {
-                Console.Out.WriteLine(
-                    $"  {FormatWorkStage(wave.Stage)} wave {wave.Index}: " +
-                    $"{string.Join(", ", wave.WorkItemIds)}");
-            }
-            foreach (var issue in report.TodoGraph.Issues)
-            {
-                Console.Out.WriteLine(
-                    $"  [TODO graph:{issue.Code}] {issue.Message}");
-            }
+                $"TODO contract: {report.Todos.Count} item(s); " +
+                $"{report.Todos.Count(todo => todo.Priority.Equals("required", StringComparison.OrdinalIgnoreCase))} required; " +
+                $"{report.Todos.Sum(todo => todo.DependsOn.Count)} dependency reference(s).");
             return verification.Status == "passed" ? 0 : 1;
         }
 
-        private static string FormatWorkStage(string stage) =>
-            stage switch
-            {
-                "preparation" => "Preparation",
-                "integration" => "Integration",
-                "verification" => "Verification",
-                _ => stage
-            };
     }
 }
