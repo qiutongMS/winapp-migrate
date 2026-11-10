@@ -1227,6 +1227,12 @@ public sealed class UwpEnforcementRunner
             }
             else
             {
+                RejectUnclassifiedPngWithoutNonvisualAttestation(
+                    target,
+                    state.Id,
+                    state.Target.Evidence,
+                    nonvisual,
+                    cancellationToken);
                 removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"));
                 removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"));
             }
@@ -1242,6 +1248,38 @@ public sealed class UwpEnforcementRunner
                 throw new InvalidDataException(error);
             if (File.Exists(path))
                 File.Delete(path);
+        }
+    }
+
+    private static void RejectUnclassifiedPngWithoutNonvisualAttestation(
+        DirectoryInfo target,
+        string stateId,
+        IEnumerable<string> evidencePaths,
+        bool nonvisual,
+        CancellationToken cancellationToken)
+    {
+        if (nonvisual)
+            return;
+
+        foreach (var relativePath in evidencePaths.Where(path =>
+            Path.GetExtension(path).Equals(".png", StringComparison.OrdinalIgnoreCase)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!EnforcementStore.TryResolveContainedPath(
+                    target,
+                    relativePath,
+                    out var fullPath,
+                    out var error))
+            {
+                throw new InvalidDataException(
+                    $"State {stateId} target evidence path '{relativePath}' is invalid: {error}");
+            }
+            if (PngEvidence.Classify(fullPath, cancellationToken) ==
+                PngInformation.ValidUnclassified)
+            {
+                throw new InvalidDataException(
+                    $"State {stateId} target evidence contains a valid-unclassified PNG screenshot that requires verified structured nonvisual assertions.");
+            }
         }
     }
 
@@ -2069,7 +2107,9 @@ public sealed class UwpEnforcementRunner
                 target, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
         var (persistedState, stateError) = await EnforcementStore.TryLoadAsync<EnforcementSnapshot>(
             target, EnforcementStore.StatePath, cancellationToken);
-        stateError ??= WorkflowValidation.DispositionError(persistedState?.Disposition);
+        stateError ??= WorkflowDispositions.IsRetiredAuthorization(persistedState?.Disposition)
+            ? null
+            : WorkflowValidation.DispositionError(persistedState?.Disposition);
         var artifactError = buildError ?? replayError ?? attemptsError ??
             diagnosticError ?? stateError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
             WorkflowValidation.DiagnosticError(diagnostic);

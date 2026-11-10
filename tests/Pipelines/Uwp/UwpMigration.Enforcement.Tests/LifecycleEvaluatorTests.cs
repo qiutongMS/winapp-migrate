@@ -411,6 +411,36 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
+    public void ProgressSchema20_RejectsMalformedRetiredAuthorization()
+    {
+        using var fixture = new EvaluatorFixture();
+        var input = LifecycleInput(fixture);
+        input.StatePlan!.States[0].Target.Status = "unverified";
+        var original = EnforcementEvaluator.Evaluate(input).Workflow!;
+        original.SchemaVersion = "2.0";
+        original.Disposition = new RunDisposition
+        {
+            Kind = "continue",
+            ReasonCode = "unit-hard-limit",
+            Terminal = true,
+            Retryable = false,
+            Finalization = "blocked"
+        };
+        WorkflowController.CloseActiveEpochs(
+            original,
+            LifecycleNow,
+            "terminal:continue");
+
+        var (unchanged, error) = WorkflowPersistence.ImportProgress(
+            original,
+            input.Policy,
+            LifecycleNow);
+
+        Assert.AreSame(original, unchanged);
+        StringAssert.Contains(error, "Cannot safely import");
+    }
+
+    [TestMethod]
     [DataRow(false, "continue")]
     [DataRow(true, "continue-with-debt")]
     public void ProgressSchema20_RemovesOnlyRetiredAuthorizationDebt(

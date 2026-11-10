@@ -99,6 +99,14 @@ public sealed partial class RunnerAcceptanceTests
         unit.BlockedReason = "Retired time authorization.";
         WorkflowController.CloseActiveEpochs(progress, DeadlineNow, $"terminal:{kind}");
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
+        var policy = await fixture.LoadAsync<EnforcementPolicy>(
+            EnforcementStore.PolicyPath);
+        var (imported, importError) = WorkflowPersistence.ImportProgress(
+            progress,
+            policy,
+            DeadlineNow);
+        Assert.IsNull(importError, importError);
+        Assert.AreEqual("continue", imported!.Disposition?.Kind);
         var state = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         state.GeneratedAt = DeadlineNow;
         state.Status = "blocked";
@@ -110,12 +118,15 @@ public sealed partial class RunnerAcceptanceTests
         var resumed = await new UwpEnforcementRunner(process, new ManualTimeProvider(DeadlineNow))
             .RunAsync(fixture.Root, new UwpEnforcementOptions());
 
-        Assert.AreEqual(2, process.CallCount);
+        var artifactGate = resumed.Gates.Single(
+            gate => gate.Id == "enforcement-artifacts");
+        Assert.AreEqual("passed", artifactGate.Status, artifactGate.Reason);
         Assert.AreEqual("continue", resumed.Disposition?.Kind);
         Assert.IsFalse(resumed.Disposition!.Terminal);
         Assert.AreEqual("3.0", resumed.Workflow?.SchemaVersion);
         Assert.AreEqual("within-budget", resumed.Budget?.Decision);
         Assert.IsTrue(resumed.Workflow!.Units.All(account => account.BlockedAt is null));
+        Assert.AreEqual(2, process.CallCount);
     }
 
     private static async Task SeedElapsedTimeAsync(RunnerFixture fixture, int previousMinutes)

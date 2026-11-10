@@ -112,7 +112,13 @@ public static class WorkflowValidation
             return "Workflow slice resolution or evidence generation is invalid.";
         if (progress.Disposition is null)
             return $"Workflow progress schema {progress.SchemaVersion} requires a run disposition.";
-        if (DispositionError(progress.Disposition) is { } dispositionError)
+        var dispositionError =
+            allowLegacyAuthorization &&
+            LegacyRetiredAuthorizationDispositionIsValid(
+                progress.Disposition)
+                ? null
+                : DispositionError(progress.Disposition);
+        if (dispositionError is not null)
             return dispositionError;
         if (progress.Disposition is { Terminal: true } && epochs.Any(epoch => epoch.ExitedAt is null))
             return "Terminal workflow progress must not contain an active epoch.";
@@ -148,6 +154,28 @@ public static class WorkflowValidation
             return "Workflow operations require a start time and matching budget units.";
         return null;
     }
+
+    private static bool LegacyRetiredAuthorizationDispositionIsValid(
+        RunDisposition? disposition) =>
+        disposition is
+        {
+            Terminal: true,
+            Retryable: false,
+            Finalization: "blocked",
+            AllowedOperations.Count: 0
+        } &&
+        (disposition is
+        {
+            Kind: "total-budget-exhausted",
+            ReasonCode: "total-hard-limit"
+        } ||
+         disposition is
+         {
+             Kind: "blocked-required",
+             ReasonCode: "unit-hard-limit" or
+                    "operation-ceiling" or
+                    "required-work-blocked"
+         });
 
     public static string? DispositionError(RunDisposition? disposition)
     {
