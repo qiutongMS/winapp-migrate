@@ -6,7 +6,7 @@
     "jsonRequirements": [
       {
         "path": "schemaVersion",
-        "equals": "1.6"
+        "equals": "1.7"
       },
       {
         "path": "source.root",

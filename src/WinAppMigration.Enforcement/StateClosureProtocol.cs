@@ -108,7 +108,6 @@ public static class StateClosureProtocol
             Dependencies = state.Dependencies,
             Criticality = state.Criticality,
             FeaturePaths = state.FeaturePaths,
-            TodoIds = state.TodoIds,
             Preconditions = state.Preconditions,
             Actions = state.Actions,
             ExpectedOutcome = state.ExpectedOutcome,

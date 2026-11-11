@@ -1101,6 +1101,10 @@ public sealed class UwpEnforcementRunner
             workspace.ReportPath,
             report,
             cancellationToken);
+        await TodoExecutionService.RecordVerifiedTodosUnlockedAsync(
+            workspace.Target,
+            report,
+            cancellationToken);
 
         var updated = await LoadWorkspaceAsync(
             target,
@@ -1130,10 +1134,25 @@ public sealed class UwpEnforcementRunner
             string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(todo.Status, "pending", StringComparison.OrdinalIgnoreCase)))
         {
+            var requiredStateIds = TodoCompletionContract.StateIds(todo);
             var states = plan.States.Where(state =>
-                state.TodoIds?.Contains(todo.Id, StringComparer.Ordinal) == true).ToArray();
-            if (states.Length > 0 && states.All(state =>
-                StateClosureProtocol.Verify(workspace.Target, state, workspace.Input.Replay, workspace.Input.GeneratedAt, out _, workspace.Input.WindowOwnerResolver)))
+                requiredStateIds.Contains(state.Id, StringComparer.Ordinal)).ToArray();
+            var projectChecksPass =
+                TodoCompletionContract.ProjectClosureChecksPass(
+                    todo,
+                    report,
+                    workspace.Build,
+                    workspace.Fingerprint);
+            var stateChecksBound =
+                TodoCompletionContract.StateChecksAreBound(todo, plan);
+            if (projectChecksPass &&
+                stateChecksBound &&
+                ((requiredStateIds.Count == 0 &&
+                    TodoCompletionContract.UsesProjectClosureOnly(todo)) ||
+                requiredStateIds.Count > 0 &&
+                states.Length == requiredStateIds.Count &&
+                states.All(state =>
+                    StateClosureProtocol.Verify(workspace.Target, state, workspace.Input.Replay, workspace.Input.GeneratedAt, out _, workspace.Input.WindowOwnerResolver))))
             {
                 todo.Status = "verified";
             }
@@ -1326,14 +1345,34 @@ public sealed class UwpEnforcementRunner
             string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase) &&
             !TerminalTodoStatuses.Contains(todo.Status)))
         {
-            var states = plan.States.Where(state =>
-                state.TodoIds?.Contains(todo.Id, StringComparer.Ordinal) == true).ToArray();
-            if (states.Length == 0)
+            var requiredStateIds = TodoCompletionContract.StateIds(todo);
+            if (requiredStateIds.Count == 0)
+            {
+                if (TodoCompletionContract.UsesProjectClosureOnly(todo))
+                {
+                    return (false,
+                        $"Required TODO {todo.Id} remains {todo.Status} and must be synchronized from project closure checks.");
+                }
+                return (false,
+                    $"Required TODO {todo.Id} remains {todo.Status} and has no state-backed completion check. " +
+                    "Define an exact completion check before canonical closure.");
+            }
+            if (!TodoCompletionContract.StateChecksAreBound(todo, plan))
             {
                 return (false,
-                    $"Required TODO {todo.Id} remains {todo.Status} and is not referenced by any state. " +
-                    "Before recording target state evidence, map it in a declared state's todoIds and reassess. " +
-                    "TODO mappings do not require re-sealing, but changing them invalidates existing target probes.");
+                    $"Required TODO {todo.Id} remains {todo.Status}; every state-backed completion check must name existing exact assertion IDs.");
+            }
+
+            var states = plan.States.Where(state =>
+                requiredStateIds.Contains(state.Id, StringComparer.Ordinal)).ToArray();
+            var missing = requiredStateIds
+                .Except(states.Select(state => state.Id), StringComparer.Ordinal)
+                .ToArray();
+            if (missing.Length > 0)
+            {
+                return (false,
+                    $"Required TODO {todo.Id} remains {todo.Status}; completion state(s) " +
+                    $"{string.Join(", ", missing)} are not declared in the state plan.");
             }
 
             var incomplete = states.Where(state => !StateIsVerified(state))

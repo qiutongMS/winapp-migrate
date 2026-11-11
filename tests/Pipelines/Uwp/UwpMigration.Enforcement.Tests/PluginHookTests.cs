@@ -133,7 +133,7 @@ public sealed class PluginHookTests
               "workspace": {
                 "marker": "migration-report.json",
                 "jsonRequirements": [
-                  { "path": "schemaVersion", "equals": "1.6" }
+                  { "path": "schemaVersion", "equals": "1.7" }
                 ]
               },
               "shellRules": [
@@ -212,7 +212,7 @@ public sealed class PluginHookTests
                 Path.Combine(target.FullName, "migration-report.json"),
                 """
                 {
-                  "schemaVersion": "1.6",
+                  "schemaVersion": "1.7",
                   "source": {
                     "root": "C:\\source",
                     "projectFile": "Source.csproj"

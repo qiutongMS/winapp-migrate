@@ -9,73 +9,77 @@ namespace UwpMigration.Mechanical.Tests;
 public sealed class MigrationTodoValidationTests
 {
     [TestMethod]
-    public void NormalizeForWrite_PreservesCanonicalTodoDependencies()
+    public void NormalizeForWrite_CompletesMechanicalTodoContract()
     {
-        var prerequisite = Todo("UWMIG001");
-        var dependent = Todo("UWMIG002");
-        dependent.DependsOn = ["UWMIG001", "UWMIG001"];
-        var report = Report(prerequisite, dependent);
+        var todo = Todo("UWMIG001");
+        var report = Report(todo);
 
         MigrationReportStore.NormalizeForWrite(report);
 
-        CollectionAssert.AreEqual(
-            new[] { "UWMIG001" },
-            dependent.DependsOn);
-        Assert.IsNotNull(dependent.Guidance);
-        Assert.IsNotEmpty(dependent.Guidance.Facts);
-        Assert.IsNotEmpty(dependent.Guidance.CompletionChecks);
+        Assert.AreEqual("mechanical", todo.Origin);
+        Assert.IsNull(todo.Discovery);
+        Assert.IsNotNull(todo.Guidance);
+        Assert.IsNotEmpty(todo.Guidance.Facts);
+        Assert.IsNotEmpty(todo.Guidance.CompletionChecks);
         CollectionAssert.Contains(
-            dependent.AffectedFeatures,
-            dependent.Category);
+            todo.AffectedFeatures,
+            todo.Category);
         CollectionAssert.Contains(
-            dependent.TouchSet.ConflictKeys,
-            $"category:{dependent.Category}");
+            todo.TouchSet.ConflictKeys,
+            $"category:{todo.Category}");
     }
 
     [TestMethod]
-    public void NormalizeForWrite_RejectsUnknownDependency()
+    public void NormalizeForWrite_AcceptsDiscoveredTodoWithEvidence()
+    {
+        var todo = Todo("UWDISC001");
+        todo.Origin = "discovered";
+        todo.Discovery = new MigrationTodoDiscovery
+        {
+            Phase = "runtime",
+            Signature = "startup-null-reference",
+            Evidence = ["runtime/startup.json"]
+        };
+
+        MigrationReportStore.NormalizeForWrite(Report(todo));
+
+        Assert.AreEqual("discovered", todo.Origin);
+        Assert.AreEqual("runtime", todo.Discovery.Phase);
+    }
+
+    [TestMethod]
+    public void NormalizeForWrite_RejectsUnknownOrigin()
     {
         var todo = Todo("UWMIG001");
-        todo.DependsOn = ["UWMIG999"];
+        todo.Origin = "generated";
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
             MigrationReportStore.NormalizeForWrite(Report(todo)));
 
-        StringAssert.Contains(exception.Message, "[unknown-dependency]");
-        StringAssert.Contains(exception.Message, "UWMIG999");
+        StringAssert.Contains(exception.Message, "[invalid-todo-origin]");
     }
 
     [TestMethod]
-    public void NormalizeForWrite_RejectsSelfDependency()
+    public void NormalizeForWrite_RejectsIncompleteDiscovery()
     {
-        var todo = Todo("UWMIG001");
-        todo.DependsOn = ["UWMIG001"];
+        var todo = Todo("UWDISC001");
+        todo.Origin = "discovered";
+        todo.Discovery = new MigrationTodoDiscovery
+        {
+            Phase = "runtime",
+            Signature = "",
+            Evidence = []
+        };
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
             MigrationReportStore.NormalizeForWrite(Report(todo)));
 
-        StringAssert.Contains(exception.Message, "[self-dependency]");
-    }
-
-    [TestMethod]
-    public void NormalizeForWrite_RejectsDependencyCycle()
-    {
-        var first = Todo("UWMIG001");
-        first.DependsOn = ["UWMIG002"];
-        var second = Todo("UWMIG002");
-        second.DependsOn = ["UWMIG001"];
-
-        var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
-            MigrationReportStore.NormalizeForWrite(Report(first, second)));
-
-        StringAssert.Contains(exception.Message, "[dependency-cycle]");
+        StringAssert.Contains(exception.Message, "[invalid-todo-discovery]");
     }
 
     [TestMethod]
     public void NormalizeForWrite_RejectsInvalidRawNodes()
     {
-        var invalidReferences = Todo("UWMIG001");
-        invalidReferences.DependsOn = null!;
         var invalidLocation = Todo("UWMIG002");
         invalidLocation.Locations = [null!];
         var invalidTouchSet = Todo("UWMIG003");
@@ -84,14 +88,10 @@ public sealed class MigrationTodoValidationTests
         var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
             MigrationReportStore.NormalizeForWrite(Report(
                 null!,
-                invalidReferences,
                 invalidLocation,
                 invalidTouchSet)));
 
         StringAssert.Contains(exception.Message, "[invalid-todo-node]");
-        StringAssert.Contains(
-            exception.Message,
-            "[invalid-todo-dependency-reference]");
         StringAssert.Contains(exception.Message, "[invalid-location-node]");
         StringAssert.Contains(exception.Message, "[invalid-touch-set]");
     }

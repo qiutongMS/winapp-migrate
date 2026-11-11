@@ -13,7 +13,7 @@ plugins/winapp-migrate/                    Agent Plugin and migration Skills
   skills/uwp-to-winapp/                    UWP-to-WinApp semantic workflow
 src/WinAppMigration.Cli/                   `winapp-migrate` command line
 src/WinAppMigration.Enforcement/           Shared evidence and closure engine
-src/Pipelines/Uwp/UwpMigration.Contracts/ UWP report schema 1.6 contracts
+src/Pipelines/Uwp/UwpMigration.Contracts/ UWP report schema 1.7 contracts
 src/Pipelines/Uwp/UwpMigration.Enforcement/ UWP source builder, report, and WinApp CLI adapter
 src/Pipelines/Uwp/UwpMigration.Mechanical/ Deterministic UWP conversion
 tests/Pipelines/Uwp/                       UWP pipeline tests
@@ -21,7 +21,7 @@ tests/Pipelines/Uwp/                       UWP pipeline tests
 
 The common closure layer owns phase state, target fingerprints, evidence
 freshness, diagnostic grouping, canonical replay, and closure
-gates. The UWP adapter binds those shared contracts to schema 1.6 and invokes
+gates. The UWP adapter binds those shared contracts to schema 1.7 and invokes
 released WinApp CLI commands. UWP-specific activation, package, project-item,
 XAML, and C# behavior stays in the UWP pipeline rather than being prematurely
 generalized.
@@ -52,17 +52,16 @@ UI automation. WinApp CLI does not need classic UWP `.csproj` build support.
 
 ## UWP pipeline
 
-The UWP pipeline owns schema 1.6 reports, source and dependency inventory,
+The UWP pipeline owns schema 1.7 reports, source and dependency inventory,
 activation declarations, safe filesystem handling, deterministic XAML and C#
 transforms, residual findings, target-project graph verification, MSBuild item
 evaluation, and the six explicit project-item decision strategies.
 
-Schema 1.6 also emits structured TODO guidance: authoritative detection facts
+Schema 1.7 also emits structured TODO guidance: authoritative detection facts
 remain separate from provisional classification, strategies are
-non-exhaustive, completion checks and touch/conflict sets are typed, and
-`dependsOn` records stable TODO-level prerequisites without prescribing an
-execution schedule. Invalid TODO IDs, dependencies, classifications, or cycles
-fail closed. See
+non-exhaustive, completion checks and touch/conflict sets are typed, and TODO
+origin distinguishes mechanically predicted from runtime-discovered migration
+work. Invalid TODO IDs, origins, discoveries, or classifications fail closed. See
 [Migration TODO execution contract](plugins/winapp-migrate/skills/uwp-to-winapp/references/migration-todo-contract.md).
 
 ```text
@@ -70,6 +69,13 @@ winapp-migrate uwp create <source> --output <target>
 winapp-migrate uwp migrate <source> --output <target>
 winapp-migrate uwp verify <target>
 winapp-migrate uwp decide-project-item <target> <item> <strategy> <rationale>
+winapp-migrate uwp todo assess <target> [todo-id]
+winapp-migrate uwp todo status <target>
+winapp-migrate uwp todo bind-state <target> <todo-id> --state <state-id> --assertion <assertion-id> --check-id <id> --summary <proof>
+winapp-migrate uwp todo select-approach <target> <todo-id> <approach-key> --reason <rationale>
+winapp-migrate uwp todo record <target> <todo-id> --outcome <implemented|failed> --summary <text>
+winapp-migrate uwp todo record-development <target> --state <state-id> --summary <text> --evidence <probe.json>
+winapp-migrate uwp todo discover <target> <todo-id> --category <category> --priority <priority> --summary <text> --reason <text> --phase <phase> --signature <signature> --evidence <path>
 winapp-migrate uwp source run <target>
 winapp-migrate uwp source diagnose <target>
 winapp-migrate uwp source capture <target> -- <winapp-ui-arguments>
@@ -105,6 +111,29 @@ code, XAML, project, or resource change rejects later capture.
 `source diagnose` provides the bounded foreground `--debug-output` fallback.
 Other source UI actions require `-w` or `--window` with an HWND authorized by
 the current source run.
+
+TODO implementation receipts do not require a build and are not invalidated by
+unrelated target changes. Rejected approaches retain their stable signature,
+evidence, and retry condition; selecting the same approach again requires
+explicit retry evidence. State-bound development results advance an implemented
+TODO to `development-validated` only while every state assigned by its
+completion checks remains fresh for the current target fingerprint. State-plan
+`todoIds` are compatibility metadata and do not participate in ownership or
+state contract fingerprints. State-backed checks name exact assertion IDs.
+The product derives development outcomes from trusted current probes:
+assertion parity is `passed`, a conclusive mismatch is `failed`, and tool,
+environment, safety, or evidence uncertainty is `human-validation-required`.
+The latter emits structured human steps and never authorizes canonical
+closure. Changes matching a TODO touch set make its prior results `stale`
+without discarding implementation; downstream states also include upstream
+owners' touch sets, while unrelated file changes retain the passed development
+result. `todo status` combines the authoritative closure workflow stage,
+budget, last observation, frontier, and disposition with TODO/state counts,
+the incremental development frontier, current action, latest TODO failure,
+and next checkpoint. Build and runtime failures remain in the existing
+closure attempt and semantic-finding protocols rather than a parallel TODO
+ledger. Canonical `record-state` is gated until every required TODO is
+`development-validated` for its current scope.
 
 `closure attest` invokes `winapp run` first with `--no-launch --json`, then with
 `--no-build --detach --json` after a successful analyzer-enabled build. It
@@ -239,7 +268,7 @@ The gateway resolves WinApp CLI from `--winapp`,
 not be exposed to the migration agent.
 
 The Agent Plugins package ships a Copilot `preToolUse` guard. Once a session
-enters a schema 1.6 migration workspace, direct `winapp run`, `winapp build`,
+enters a schema 1.7 migration workspace, direct `winapp run`, `winapp build`,
 and `winapp ui` shell calls are denied even if the agent later changes its
 working directory. Informational `--help` calls remain available. Source and
 target operations must use their respective product gateways; hosts and
@@ -345,7 +374,7 @@ overwritten or repeated for the same signature/fingerprint. After diagnosis,
 Repeated debug/hypothesis work and replay without new discriminating evidence
 are refused. `--force-replay` and `--max-attempts` bypass none of these guards.
 
-The UWP report remains explicitly versioned as schema 1.6. A future WPF
+The UWP report remains explicitly versioned as schema 1.7. A future WPF
 pipeline will start with its own pipeline schema; it will not reinterpret the
 UWP schema as a universal migration contract.
 

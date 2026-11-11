@@ -38,6 +38,8 @@ public static class EnforcementStore
         ".migration-evidence/enforcement/policy.json";
     public const string ProgressPath =
         ".migration-evidence/enforcement/progress.json";
+    public const string TodoProgressPath =
+        ".migration-evidence/enforcement/todo-progress.json";
     public const string FindingLedgerPath =
         ".migration-evidence/semantic-findings.json";
 

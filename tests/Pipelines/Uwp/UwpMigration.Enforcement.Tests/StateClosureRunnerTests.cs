@@ -57,27 +57,57 @@ public sealed partial class RunnerAcceptanceTests
         report.Todos.Add(new MigrationTodo
         {
             Id = "UWMIG-STATE", Category = "behavior", Priority = "required",
-            Summary = "Verify the main state.", Reason = "Requires observable equivalence."
+            Summary = "Verify the main state.", Reason = "Requires observable equivalence.",
+            AffectedStates = ["state-1"],
+            Guidance = new MigrationRepairGuidance
+            {
+                ReasonCode = "behavior",
+                CompletionChecks =
+                [
+                    new MigrationCompletionCheck
+                    {
+                        Id = "uwmig-state-main-name",
+                        Summary = "The main state preserves its name.",
+                        VerificationKind = "state-assertion",
+                        Target = "state-1",
+                        Expected = "passed",
+                        AssertionIds = ["main-name"]
+                    }
+                ]
+            }
         });
         await fixture.SaveReportAsync(report);
-        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
-        plan.States[0].TodoIds = ["UWMIG-STATE"];
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
         var process = new FakeProcessRunner(BuildSuccess(), ReplaySuccess(),
             new EnforcementProcessResult(0, ClosureTree, ""));
         var runner = new UwpEnforcementRunner(process);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
+        await TodoExecutionService.SelectApproachAsync(
+            fixture.Root,
+            "UWMIG-STATE",
+            "resolve-from-source-contract",
+            "Preserve the required state contract.");
+        await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root,
+            "UWMIG-STATE",
+            "implemented",
+            "Implemented the required state contract.");
         var command = new UwpEnforceCommand(process, new TestWindowOwnerResolver(4242));
         var captured = await InvokeWithCapturedOutputAsync(command.Parse(
             ["capture", fixture.Root.FullName, "--state", "state-1", "--", "inspect", "--json", "-w", "42"]));
         var probe = JsonSerializer.Deserialize<UiDevelopmentProbe>(captured, EnforcementStore.JsonOptions)!;
+        await TodoExecutionService.RecordDevelopmentStateAsync(
+            fixture.Root,
+            "state-1",
+            "The required state passed development validation.",
+            evidence: [probe.ArtifactPath],
+            windowOwnerResolver: new TestWindowOwnerResolver(4242));
         var recorded = await InvokeWithCapturedOutputAsync(command.Parse(
             ["record-state", fixture.Root.FullName, "--state", "state-1", "--probe", probe.ArtifactPath]));
 
         Assert.IsNotNull(JsonNode.Parse(recorded)!["Gates"], recorded);
         Assert.AreEqual("passed", JsonNode.Parse(recorded)!["Gates"]!.AsArray()
             .Single(gate => gate!["id"]!.GetValue<string>() == "state-closure")!["status"]!.GetValue<string>());
-        plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         var state = plan.States.Single();
         Assert.AreEqual("passed", state.Target.Status);
         Assert.AreEqual("verified", state.Comparison.Status);
@@ -437,7 +467,8 @@ public sealed partial class RunnerAcceptanceTests
         report.Todos.Add(new MigrationTodo
         {
             Id = "UWMIG-MANUAL", Category = "behavior", Priority = "required",
-            Summary = "Must not trust text.", Reason = "Requires derived closure."
+            Summary = "Must not trust text.", Reason = "Requires derived closure.",
+            AffectedStates = ["state-1"]
         });
         await fixture.SaveReportAsync(report);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
@@ -446,7 +477,6 @@ public sealed partial class RunnerAcceptanceTests
         var state = plan.States[0];
         state.Target.Status = "passed";
         state.Comparison.Status = "verified";
-        state.TodoIds = ["UWMIG-MANUAL"];
         state.Target.Evidence = [".migration-evidence/states/state-1/target.png", ".migration-evidence/states/state-1/stdout.log"];
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
 

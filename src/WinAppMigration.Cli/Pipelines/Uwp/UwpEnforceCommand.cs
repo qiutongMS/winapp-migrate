@@ -410,10 +410,28 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(state);
             Options.Add(probes);
             Options.Add(full);
-            SetAction((parseResult, cancellationToken) => InvokeGuardedAsync(async () =>
-                WriteSnapshot(await UwpEnforcementRunner.RecordStateAsync(
-                    parseResult.GetValue(target)!, windowOwnerResolver, parseResult.GetValue(state)!,
-                    parseResult.GetValue(probes) ?? [], cancellationToken), parseResult.GetValue(full))));
+            SetAction((parseResult, cancellationToken) =>
+                InvokeGuardedAsync(async () =>
+                {
+                    var targetValue = parseResult.GetValue(target)!;
+                    var stateValue = parseResult.GetValue(state)!;
+                    await TodoExecutionService.EnsureReadyForCanonicalAsync(
+                        targetValue,
+                        cancellationToken);
+                    var snapshot = await UwpEnforcementRunner.RecordStateAsync(
+                        targetValue,
+                        windowOwnerResolver,
+                        stateValue,
+                        parseResult.GetValue(probes) ?? [],
+                        cancellationToken);
+                    await TodoExecutionService.RecordStateVerificationAsync(
+                        targetValue,
+                        stateValue,
+                        cancellationToken);
+                    return WriteSnapshot(
+                        snapshot,
+                        parseResult.GetValue(full));
+                }));
         }
     }
 

@@ -242,7 +242,7 @@ internal sealed class MigrateVerifyCommand : Command
             Console.Out.WriteLine(
                 $"TODO contract: {report.Todos.Count} item(s); " +
                 $"{report.Todos.Count(todo => todo.Priority.Equals("required", StringComparison.OrdinalIgnoreCase))} required; " +
-                $"{report.Todos.Sum(todo => todo.DependsOn.Count)} dependency reference(s).");
+                $"{report.Todos.Count(todo => todo.Origin == "discovered")} discovered.");
             return verification.Status == "passed" ? 0 : 1;
         }
 

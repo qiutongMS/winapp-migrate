@@ -98,7 +98,7 @@ public class MigrationGuidanceContractTests
             json,
             MigrateJsonContext.Default.MigrationReport)!;
 
-        Assert.AreEqual("1.6", roundTripped.SchemaVersion);
+        Assert.AreEqual("1.7", roundTripped.SchemaVersion);
         var guidance = roundTripped.Todos.Single().Guidance!;
         Assert.AreEqual("test-reason", guidance.ReasonCode);
         Assert.AreEqual("test-fact", guidance.Facts.Single().Id);
@@ -163,5 +163,36 @@ public class MigrationGuidanceContractTests
         Assert.AreEqual("Preserved reason", todo.Reason);
         Assert.AreEqual(21, todo.Locations.Single().Line);
         Assert.IsNull(todo.Guidance);
+    }
+
+    [TestMethod]
+    public async Task ReportStoreRejectsSchema16()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(
+                path,
+                """
+                {
+                  "schemaVersion": "1.6",
+                  "source": { "root": "source" },
+                  "target": { "root": "target" }
+                }
+                """);
+
+            var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+                () => MigrationReportStore.LoadAsync(
+                    path,
+                    CancellationToken.None));
+
+            StringAssert.Contains(
+                error.Message,
+                "schemaVersion '1.6' is not supported");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

@@ -8,7 +8,7 @@ namespace UwpMigration.Contracts;
 
 public sealed class MigrationReport
 {
-    public const string CurrentSchemaVersion = "1.6";
+    public const string CurrentSchemaVersion = "1.7";
 
     [JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -726,6 +726,9 @@ public sealed class MigrationTodo
     [JsonPropertyName("status")]
     public string Status { get; set; } = "pending";
 
+    [JsonPropertyName("origin")]
+    public string Origin { get; set; } = "mechanical";
+
     [JsonPropertyName("summary")]
     public required string Summary { get; set; }
 
@@ -741,15 +744,28 @@ public sealed class MigrationTodo
     [JsonPropertyName("affectedFeatures")]
     public List<string> AffectedFeatures { get; set; } = [];
 
-    [JsonPropertyName("dependsOn")]
-    public List<string> DependsOn { get; set; } = [];
-
     [JsonPropertyName("touchSet")]
     public MigrationTodoTouchSet TouchSet { get; set; } = new();
+
+    [JsonPropertyName("discovery")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MigrationTodoDiscovery? Discovery { get; set; }
 
     [JsonPropertyName("guidance")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MigrationRepairGuidance? Guidance { get; set; }
+}
+
+public sealed class MigrationTodoDiscovery
+{
+    [JsonPropertyName("phase")]
+    public required string Phase { get; set; }
+
+    [JsonPropertyName("signature")]
+    public required string Signature { get; set; }
+
+    [JsonPropertyName("evidence")]
+    public List<string> Evidence { get; set; } = [];
 }
 
 public sealed class MigrationRepairGuidance
@@ -868,6 +884,9 @@ public sealed class MigrationCompletionCheck
 
     [JsonPropertyName("expected")]
     public required string Expected { get; set; }
+
+    [JsonPropertyName("assertionIds")]
+    public List<string> AssertionIds { get; set; } = [];
 }
 
 public sealed class MigrationTodoTouchSet

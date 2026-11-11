@@ -312,6 +312,9 @@ public static partial class MechanicalMigration
                 report.Todos.Add(CreateAppResourcesTodo(
                     preservedStartup,
                     sourceProject is not null));
+                report.Todos.Add(CreateStartupLifecycleTodo(
+                    preservedStartup,
+                    sourceProject is not null));
             }
 
             // ── 2. Preserve UWP .csproj / .appxmanifest under .uwp-source/ ───────
@@ -586,7 +589,7 @@ public static partial class MechanicalMigration
             Console.Out.WriteLine(
                 $"TODO contract: {report.Todos.Count} item(s); " +
                 $"{report.Todos.Count(todo => todo.Priority.Equals("required", StringComparison.OrdinalIgnoreCase))} required; " +
-                $"{report.Todos.Sum(todo => todo.DependsOn.Count)} dependency reference(s)");
+                $"{report.Todos.Count(todo => todo.Origin == "discovered")} discovered");
         }
 
         // ───────────────────────────── 2b ──────────────────────────────────────

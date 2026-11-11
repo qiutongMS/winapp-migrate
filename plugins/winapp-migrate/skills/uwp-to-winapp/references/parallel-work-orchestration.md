@@ -1,47 +1,51 @@
 # Parallel migration work orchestration
 
-Parallel work is an optional efficiency technique for schema `1.6` TODOs. It
+Parallel work is an implementation optimization for schema `1.7` TODOs. It
 does not determine migration correctness and is never required for closure.
 
-The mechanical report supplies dependencies, touch sets, conflict keys, and
-acceptance checks. The parent agent uses that metadata to choose work:
+The mechanical report supplies touch paths, project items, conflict keys, and
+acceptance checks. Partition all non-terminal TODOs into implementation groups:
 
-1. List required, non-terminal TODOs whose `dependsOn` TODOs are terminal.
-2. Prefer the smallest coherent set that advances observable behavior.
-3. Run serially when independence is uncertain.
-4. Parallelize only ready items with disjoint touch sets and independent
-   acceptance checks.
-5. Integrate results into the canonical target and verify before treating a
-   TODO as complete.
+1. Put TODOs that touch the same file, project item, shared abstraction,
+   startup path, or conflict key in the same group.
+2. Run groups in parallel only when their implementation and acceptance
+   surfaces are disjoint.
+3. Give each group one owner; do not ask independent workers to edit the same
+   canonical surface.
+4. Record each TODO as implemented or record its rejected approach. Do not
+   require workers to build the entire target.
+5. Reconcile all groups into the canonical target before project-level
+   stabilization.
 
 Copilot CLI `/fleet` can run independent subagents and `/tasks` can display
-their status. These commands do not make dependency decisions, detect file
-conflicts, isolate workspaces, or prove completion. The parent agent retains
-those responsibilities.
+their status. These commands do not detect file conflicts, isolate workspaces,
+or prove completion. The parent agent retains those responsibilities.
 
 ## Delegate bounded work
 
-Give each worker one ready TODO with:
+Give each worker one conflict-free group with:
 
-- its stable ID and completed dependencies;
+- stable TODO IDs and origins;
 - authoritative facts and source invariants;
 - allowed touch paths and known conflicts;
-- candidate strategies and forbidden shortcuts;
-- concrete acceptance checks.
+- candidate approaches and rejected approaches;
+- forbidden shortcuts and concrete completion checks.
 
-A worker must report changed paths, completed checks, and unresolved findings.
-Its completion claim is not migration evidence. The parent reviews overlap,
-reconciles conflicts, and runs canonical verification.
+A worker reports changed paths, implemented TODOs, rejected approaches, and
+new migration obligations. Its completion claim is not migration evidence.
 
-## Integrate conservatively
+## Stabilize globally
 
-Parallel preparation may be useful for disjoint project, dependency, resource,
-or manifest work. Startup/lifetime changes, shared project files, generated
-code boundaries, and overlapping XAML/code-behind pairs usually require serial
-integration.
+Do not build after each worker or TODO. After all currently implementable work
+is integrated, run the canonical project build and replay. Fix all diagnostics
+governed by one root cause before rebuilding.
 
-After integrating a logical group, run the smallest relevant mechanical or
-build check. Use canonical replay and state capture only from the parent.
-If a conflict, missing dependency, or new semantic finding appears, return the
-affected TODOs to serial work. Falling back to serial execution affects only
-speed, not the validity of the migration.
+A build or runtime symptom remains project-level unless evidence proves:
+
+- an existing TODO implementation is wrong, in which case reject that
+  approach and reopen the TODO; or
+- mechanical analysis omitted app-owned migration work, in which case add a
+  discovered TODO.
+
+After a fresh canonical replay, verify planned states and run `finalize` once.
+It derives each TODO's verified status from evidence.

@@ -204,7 +204,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         StringAssert.Contains(migrated, "Microsoft.UI.Xaml.Controls");
 
         using var report = await ReadReportAsync(target);
-        Assert.AreEqual("1.6", report.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.AreEqual("1.7", report.RootElement.GetProperty("schemaVersion").GetString());
         Assert.AreEqual("mechanical-migration-complete", report.RootElement.GetProperty("status").GetString());
         Assert.IsTrue(report.RootElement.GetProperty("todos").GetArrayLength() >= 2);
         Assert.IsTrue(report.RootElement.GetProperty("todos").EnumerateArray()

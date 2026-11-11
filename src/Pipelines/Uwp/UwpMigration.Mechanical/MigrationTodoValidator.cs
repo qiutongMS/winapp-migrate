@@ -13,6 +13,24 @@ internal static class MigrationTodoValidator
     private static readonly HashSet<string> ConfidenceLevels =
         new(["high", "medium", "low"], StringComparer.Ordinal);
 
+    private static readonly HashSet<string> TodoOrigins =
+        new(["mechanical", "discovered"], StringComparer.Ordinal);
+
+    private static readonly HashSet<string> DiscoveryPhases =
+        new(["implementation", "build", "runtime", "behavior"], StringComparer.Ordinal);
+
+    private static readonly HashSet<string> CompletionVerificationKinds =
+        new(
+            [
+                "state-assertion",
+                "state-set",
+                "build-attestation",
+                "report-collection-status",
+                "report-field",
+                "todo-resolution-evidence"
+            ],
+            StringComparer.Ordinal);
+
     internal static void ValidateAndNormalize(List<MigrationTodo>? todos)
     {
         var issues = Validate(todos);
@@ -83,7 +101,6 @@ internal static class MigrationTodoValidator
 
         if (issues.Count == 0)
         {
-            ValidateDependencies(validTodos, issues);
             ValidateGuidanceSemantics(validTodos, issues);
         }
         return issues;
@@ -95,23 +112,31 @@ internal static class MigrationTodoValidator
         List<ValidationIssue> issues)
     {
         var owner = todo.Id ?? $"entry {todoIndex}";
-        if (todo.DependsOn is null)
+        if (!TodoOrigins.Contains(todo.Origin))
         {
             issues.Add(new(
-                "invalid-todo-dependency-reference",
-                $"TODO '{owner}' has a null dependsOn collection."));
+                "invalid-todo-origin",
+                $"TODO '{owner}' has unsupported origin '{todo.Origin}'."));
         }
-        else
+        if (todo.Origin == "discovered")
         {
-            for (var index = 0; index < todo.DependsOn.Count; index++)
+            if (todo.Discovery is null ||
+                !DiscoveryPhases.Contains(todo.Discovery.Phase) ||
+                string.IsNullOrWhiteSpace(todo.Discovery.Signature) ||
+                todo.Discovery.Evidence is null ||
+                todo.Discovery.Evidence.Count == 0 ||
+                todo.Discovery.Evidence.Any(string.IsNullOrWhiteSpace))
             {
-                if (string.IsNullOrWhiteSpace(todo.DependsOn[index]))
-                {
-                    issues.Add(new(
-                        "invalid-todo-dependency-reference",
-                        $"TODO '{owner}' has a null, empty, or whitespace dependency reference at index {index}."));
-                }
+                issues.Add(new(
+                    "invalid-todo-discovery",
+                    $"Discovered TODO '{owner}' requires a supported phase, stable signature, and non-empty evidence."));
             }
+        }
+        else if (todo.Discovery is not null)
+        {
+            issues.Add(new(
+                "invalid-todo-discovery",
+                $"Mechanical TODO '{owner}' cannot contain discovery metadata."));
         }
 
         ValidateLocations(todo.Locations, owner, issues);
@@ -229,11 +254,34 @@ internal static class MigrationTodoValidator
             return;
         }
         if (guidance.Facts.Any(fact => fact is null)
-            || guidance.CandidateStrategies.Any(strategy => strategy is null))
+            || guidance.CandidateStrategies.Any(strategy => strategy is null)
+            || guidance.CompletionChecks.Any(check => check is null))
         {
             issues.Add(new(
                 "invalid-guidance-node",
                 $"TODO '{owner}' has a null guidance node."));
+            return;
+        }
+        var duplicateCheck = guidance.CompletionChecks
+            .GroupBy(check => check.Id, StringComparer.Ordinal)
+            .FirstOrDefault(group =>
+                string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
+        if (duplicateCheck is not null ||
+            guidance.CompletionChecks.Any(check =>
+                string.IsNullOrWhiteSpace(check.Summary) ||
+                string.IsNullOrWhiteSpace(check.VerificationKind) ||
+                !CompletionVerificationKinds.Contains(
+                    check.VerificationKind) ||
+                string.IsNullOrWhiteSpace(check.Target) ||
+                string.IsNullOrWhiteSpace(check.Expected) ||
+                check.AssertionIds is null ||
+                check.AssertionIds.Any(string.IsNullOrWhiteSpace) ||
+                check.AssertionIds.Distinct(StringComparer.Ordinal).Count() !=
+                    check.AssertionIds.Count))
+        {
+            issues.Add(new(
+                "invalid-completion-check",
+                $"TODO '{owner}' completion checks require unique non-empty IDs, summaries, verification kinds, targets, and expected outcomes."));
         }
 
         var classification = guidance.Classification;
@@ -253,77 +301,6 @@ internal static class MigrationTodoValidator
             issues.Add(new(
                 "invalid-classification-node",
                 $"TODO '{owner}' has a null classification candidate."));
-        }
-    }
-
-    private static void ValidateDependencies(
-        List<MigrationTodo> todos,
-        List<ValidationIssue> issues)
-    {
-        var byId = todos.ToDictionary(todo => todo.Id, StringComparer.Ordinal);
-        foreach (var todo in todos)
-        {
-            foreach (var dependencyId in todo.DependsOn
-                .Distinct(StringComparer.Ordinal))
-            {
-                if (!byId.ContainsKey(dependencyId))
-                {
-                    issues.Add(new(
-                        "unknown-dependency",
-                        $"TODO '{todo.Id}' depends on unknown TODO '{dependencyId}'."));
-                }
-                else if (dependencyId.Equals(todo.Id, StringComparison.Ordinal))
-                {
-                    issues.Add(new(
-                        "self-dependency",
-                        $"TODO '{todo.Id}' cannot depend on itself."));
-                }
-            }
-        }
-        if (issues.Count > 0)
-        {
-            return;
-        }
-
-        var dependents = byId.Keys.ToDictionary(
-            id => id,
-            _ => new List<string>(),
-            StringComparer.Ordinal);
-        var indegree = byId.Keys.ToDictionary(
-            id => id,
-            _ => 0,
-            StringComparer.Ordinal);
-        foreach (var todo in todos)
-        {
-            foreach (var dependencyId in todo.DependsOn
-                .Distinct(StringComparer.Ordinal))
-            {
-                dependents[dependencyId].Add(todo.Id);
-                indegree[todo.Id]++;
-            }
-        }
-
-        var ready = new Queue<string>(
-            indegree.Where(entry => entry.Value == 0)
-                .Select(entry => entry.Key)
-                .Order(StringComparer.Ordinal));
-        var visited = 0;
-        while (ready.TryDequeue(out var id))
-        {
-            visited++;
-            foreach (var dependent in dependents[id].Order(StringComparer.Ordinal))
-            {
-                if (--indegree[dependent] == 0)
-                {
-                    ready.Enqueue(dependent);
-                }
-            }
-        }
-        if (visited != todos.Count)
-        {
-            issues.Add(new(
-                "dependency-cycle",
-                "TODO dependency cycle detected."));
         }
     }
 
@@ -358,10 +335,9 @@ internal static class MigrationTodoValidator
 
     private static void Normalize(MigrationTodo todo)
     {
-        todo.DependsOn = todo.DependsOn
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToList();
+        todo.Origin = string.IsNullOrWhiteSpace(todo.Origin)
+            ? "mechanical"
+            : todo.Origin;
         if (todo.AffectedFeatures.Count == 0)
         {
             todo.AffectedFeatures.Add(todo.Category);
@@ -416,15 +392,36 @@ internal static class MigrationTodoValidator
         }
         if (guidance.CompletionChecks.Count == 0)
         {
-            guidance.CompletionChecks.Add(new MigrationCompletionCheck
+            if (todo.AffectedStates.Count > 0)
             {
-                Id = $"{todo.Id.ToLowerInvariant()}-resolution-evidence",
-                Summary =
-                    "The TODO has evidence-backed terminal resolution.",
-                VerificationKind = "todo-resolution-evidence",
-                Target = todo.Id,
-                Expected = "terminal-with-evidence"
-            });
+                foreach (var stateId in todo.AffectedStates
+                    .Distinct(StringComparer.Ordinal)
+                    .Order(StringComparer.Ordinal))
+                {
+                    guidance.CompletionChecks.Add(new MigrationCompletionCheck
+                    {
+                        Id =
+                            $"{todo.Id.ToLowerInvariant()}-state-{guidance.CompletionChecks.Count + 1}",
+                        Summary =
+                            $"State '{stateId}' preserves the TODO source invariant.",
+                        VerificationKind = "state-assertion",
+                        Target = stateId,
+                        Expected = "passed"
+                    });
+                }
+            }
+            else
+            {
+                guidance.CompletionChecks.Add(new MigrationCompletionCheck
+                {
+                    Id = $"{todo.Id.ToLowerInvariant()}-resolution-evidence",
+                    Summary =
+                        "The TODO has evidence-backed terminal resolution.",
+                    VerificationKind = "todo-resolution-evidence",
+                    Target = todo.Id,
+                    Expected = "terminal-with-evidence"
+                });
+            }
         }
 
         foreach (var fact in guidance.Facts)
@@ -436,6 +433,10 @@ internal static class MigrationTodoValidator
             strategy.Actions ??= [];
             strategy.Preconditions ??= [];
             strategy.Risks ??= [];
+        }
+        foreach (var check in guidance.CompletionChecks)
+        {
+            check.AssertionIds ??= [];
         }
     }
 

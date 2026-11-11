@@ -13,72 +13,51 @@ public static partial class MechanicalMigration
             IReadOnlyList<string> preservedStartup,
             bool hasSourceProject)
         {
-            var locations = preservedStartup.Select(path => new MigrationLocation
-            {
-                Path = NormalizePath(Path.Combine(
-                    ".uwp-source",
-                    path + ".reference"))
-            }).ToList();
+            var locations = PreservedAppLocations(
+                preservedStartup,
+                path => path.EndsWith(
+                    "App.xaml",
+                    StringComparison.OrdinalIgnoreCase));
             return new MigrationTodo
             {
                 Id = "UWMIG001",
                 Category = "app-resources",
                 Priority = "required",
                 Summary =
-                    "Merge application resources and startup behavior from the preserved UWP App files",
+                    "Merge application resources from the preserved UWP App.xaml",
                 Reason =
-                    "The WinUI startup files were kept because UWP App.xaml and App.xaml.cs cannot safely overwrite the desktop bootstrap.",
+                    "The target-owned WinUI App.xaml cannot be overwritten by the UWP file, so source resources require an explicit merge.",
                 Locations = locations,
                 AffectedStates = ["app-launch"],
-                AffectedFeatures =
-                [
-                    "application-startup",
-                    "application-resources"
-                ],
+                AffectedFeatures = ["application-resources"],
                 TouchSet = new MigrationTodoTouchSet
                 {
-                    Paths =
-                    [
-                        "App.xaml",
-                        "App.xaml.cs",
-                        "MainWindow.xaml",
-                        "MainWindow.xaml.cs"
-                    ],
-                    ConflictKeys =
-                    [
-                        "app-resources",
-                        "startup-bootstrap"
-                    ]
+                    Paths = ["App.xaml"],
+                    ConflictKeys = ["app-resources"]
                 },
                 Guidance = new MigrationRepairGuidance
                 {
-                    ReasonCode = "preserved-uwp-app-contract-requires-merge",
+                    ReasonCode = "preserved-uwp-resource-contract-requires-merge",
                     Facts = locations.Select(location =>
-                    {
-                        var resourceFile = location.Path.EndsWith(
-                            "App.xaml.reference",
-                            StringComparison.OrdinalIgnoreCase);
-                        return new MigrationGuidanceFact
+                        new MigrationGuidanceFact
                         {
                             Id =
-                                $"preserved-startup-reference:{location.Path}",
-                            Summary = resourceFile
-                                ? $"The source application resource file is preserved at {location.Path}; its keys and merged dictionaries must be mapped into target App.xaml."
-                                : $"The source startup implementation is preserved at {location.Path}; its launch, activation, and window side effects must be mapped into target App.xaml.cs/MainWindow.",
+                                $"preserved-resource-reference:{location.Path}",
+                            Summary =
+                                $"The source application resource file is preserved at {location.Path}; its keys and merged dictionaries must be mapped into target App.xaml.",
                             Locations = [location]
-                        };
-                    }).Append(new MigrationGuidanceFact
+                        }).Append(new MigrationGuidanceFact
                     {
-                        Id = "target-startup-ownership",
+                        Id = "target-resource-ownership",
                         Summary = hasSourceProject
-                            ? "The target template owns App.xaml, App.xaml.cs, MainWindow.xaml, and MainWindow.xaml.cs; dependency preparation may proceed independently, while integrated build verification waits for dependency integration."
-                            : "The target template owns App.xaml, App.xaml.cs, MainWindow.xaml, and MainWindow.xaml.cs."
+                            ? "The target template owns App.xaml; dependency preparation may proceed independently, while integrated resource lookup verification waits for dependency integration."
+                            : "The target template owns App.xaml."
                     }).ToList(),
                     Classification = new MigrationGuidanceClassification
                     {
-                        Status = "ambiguous",
+                        Status = "confirmed",
                         Summary =
-                            "The preserved files prove source startup/resource behavior exists, but resource-only and lifecycle responsibilities must be separated by source inspection.",
+                            "The preserved App.xaml proves an application resource contract that must be merged without replacing the target bootstrap.",
                         Candidates =
                         [
                             new()
@@ -87,19 +66,12 @@ public static partial class MechanicalMigration
                                 Confidence = "high",
                                 Reason =
                                     "App.xaml commonly owns application resource dictionaries and theme resources."
-                            },
-                            new()
-                            {
-                                Type = "startup-lifecycle-port",
-                                Confidence = "medium",
-                                Reason =
-                                    "App.xaml.cs may own launch, activation, or window initialization behavior."
                             }
                         ],
                         DiscriminatingTests =
                         [
-                            "Compare source and target App resources by key and merged-dictionary URI.",
-                            "Launch the target through every source activation path and verify the first window/page and startup side effects."
+                            "Compare source and target App resources by key, merged-dictionary URI, and override order.",
+                            "Resolve consumed application resources from the launched target."
                         ]
                     },
                     CandidateStrategiesExhaustive = false,
@@ -123,7 +95,107 @@ public static partial class MechanicalMigration
                             [
                                 "Changing dictionary order can alter resource resolution or theme overrides."
                             ]
-                        },
+                        }
+                    ],
+                    ForbiddenShortcuts =
+                    [
+                        "Do not overwrite target App.xaml with the preserved UWP file.",
+                        "Do not drop source resource dictionaries because the target launches without them.",
+                        "Do not treat a successful build as proof that resource lookup and precedence are preserved."
+                    ],
+                    CompletionConditions =
+                    [
+                        "Every source application resource consumed by a reachable target state resolves with equivalent precedence.",
+                        "The canonical app-launch state resolves the required application resources."
+                    ],
+                    CompletionChecks =
+                    [
+                        new()
+                        {
+                            Id = "app-resource-replay-passed",
+                            Summary =
+                                "The canonical application launch state verifies required resource lookup.",
+                            VerificationKind = "state-assertion",
+                            Target = "app-launch",
+                            Expected = "passed"
+                        }
+                    ]
+                }
+            };
+        }
+
+        private static MigrationTodo CreateStartupLifecycleTodo(
+            IReadOnlyList<string> preservedStartup,
+            bool hasSourceProject)
+        {
+            var locations = PreservedAppLocations(
+                preservedStartup,
+                path => path.EndsWith(
+                    "App.xaml.cs",
+                    StringComparison.OrdinalIgnoreCase));
+            return new MigrationTodo
+            {
+                Id = "UWMIG004",
+                Category = "startup-lifecycle",
+                Priority = "required",
+                Summary =
+                    "Port startup and activation behavior from the preserved UWP App.xaml.cs",
+                Reason =
+                    "The target-owned desktop bootstrap cannot be replaced by the UWP App class, so its launch, activation, window, and startup side effects require explicit target owners.",
+                Locations = locations,
+                AffectedStates = ["app-launch"],
+                AffectedFeatures = ["application-startup"],
+                TouchSet = new MigrationTodoTouchSet
+                {
+                    Paths =
+                    [
+                        "App.xaml.cs",
+                        "MainWindow.xaml",
+                        "MainWindow.xaml.cs"
+                    ],
+                    ConflictKeys = ["startup-bootstrap"]
+                },
+                Guidance = new MigrationRepairGuidance
+                {
+                    ReasonCode = "preserved-uwp-startup-contract-requires-port",
+                    Facts = locations.Select(location =>
+                        new MigrationGuidanceFact
+                        {
+                            Id = $"preserved-startup-reference:{location.Path}",
+                            Summary =
+                                $"The source startup implementation is preserved at {location.Path}; its launch, activation, and window side effects must be mapped into the target-owned bootstrap.",
+                            Locations = [location]
+                        }).Append(new MigrationGuidanceFact
+                    {
+                        Id = "target-startup-ownership",
+                        Summary = hasSourceProject
+                            ? "The target template owns App.xaml.cs and MainWindow; dependency preparation may proceed independently, while integrated startup verification waits for dependency integration."
+                            : "The target template owns App.xaml.cs and MainWindow."
+                    }).ToList(),
+                    Classification = new MigrationGuidanceClassification
+                    {
+                        Status = "ambiguous",
+                        Summary =
+                            "The source startup implementation is authoritative, but each lifecycle side effect needs a target owner before it can be ported safely.",
+                        Candidates =
+                        [
+                            new()
+                            {
+                                Type = "startup-lifecycle-port",
+                                Confidence = "high",
+                                Reason =
+                                    "App.xaml.cs commonly owns launch, activation, window creation, and startup side effects."
+                            }
+                        ],
+                        DiscriminatingTests =
+                        [
+                            "Trace source launch and activation handlers to their visible and persistent side effects.",
+                            "Launch the target through each required entry path and verify the first window, page, payload, and startup side effects."
+                        ]
+                    },
+                    CandidateStrategiesExhaustive = false,
+                    CandidateStrategies =
+                    [
                         new()
                         {
                             Id = "port-startup-contract",
@@ -147,26 +219,16 @@ public static partial class MechanicalMigration
                     ForbiddenShortcuts =
                     [
                         "Do not overwrite the WinUI App.xaml.cs or MainWindow bootstrap with the preserved UWP file.",
-                        "Do not drop source resource dictionaries because the target launches without them.",
-                        "Do not treat a successful build as proof that startup side effects or resource lookup are preserved."
+                        "Do not drop source startup side effects because the target launches.",
+                        "Do not treat a successful build as proof that activation payloads or window ownership are preserved."
                     ],
                     CompletionConditions =
                     [
-                        "Every source application resource consumed by a reachable target state resolves with equivalent precedence.",
                         "Every source startup or activation side effect has an explicit target owner.",
-                        "The canonical app-launch state passes with the intended initial window and content."
+                        "The canonical app-launch state passes with the intended initial window, content, and startup side effects."
                     ],
                     CompletionChecks =
                     [
-                        new()
-                        {
-                            Id = "app-resource-contract-accounted",
-                            Summary =
-                                "Every preserved App resource entry is mapped to a target resource or explicit exclusion decision.",
-                            VerificationKind = "resource-contract-accounting",
-                            Target = ".uwp-source/App.xaml.reference",
-                            Expected = "all-consumed-resources-accounted"
-                        },
                         new()
                         {
                             Id = "startup-replay-passed",
@@ -180,6 +242,18 @@ public static partial class MechanicalMigration
                 }
             };
         }
+
+        private static List<MigrationLocation> PreservedAppLocations(
+            IReadOnlyList<string> preservedStartup,
+            Func<string, bool> predicate) =>
+            preservedStartup.Where(predicate)
+                .Select(path => new MigrationLocation
+                {
+                    Path = NormalizePath(Path.Combine(
+                        ".uwp-source",
+                        path + ".reference"))
+                })
+                .ToList();
 
         private static MigrationTodo CreateProjectDependenciesTodo(
             IReadOnlyList<string> sourceProjects,
@@ -438,6 +512,11 @@ public static partial class MechanicalMigration
                     .Select(category => $"activation:{category}")
                     .Prepend("manifest-capabilities")
                     .ToList();
+            var affectedStates = activationCategories.Count == 0
+                ? ["app-launch"]
+                : activationCategories
+                    .Select(category => $"activation:{category}")
+                    .ToList();
             return new MigrationTodo
             {
                 Id = "UWMIG002",
@@ -448,11 +527,7 @@ public static partial class MechanicalMigration
                 Reason =
                     "Safe activation declarations may be migrated mechanically, but application lifecycle routing and runtime activation behavior still require semantic implementation and validation.",
                 Locations = locations,
-                AffectedStates = activationCategories.Count == 0
-                    ? ["app-launch"]
-                    : activationCategories
-                        .Select(category => $"activation:{category}")
-                        .ToList(),
+                AffectedStates = affectedStates,
                 AffectedFeatures = features,
                 TouchSet = new MigrationTodoTouchSet
                 {
@@ -614,15 +689,16 @@ public static partial class MechanicalMigration
                             Target = "mechanicalVerification.activationContracts.reviewRequiredContracts",
                             Expected = "0"
                         },
-                        new()
-                        {
-                            Id = "activation-state-replay",
-                            Summary =
-                                "Each affected activation state passes canonical replay.",
-                            VerificationKind = "state-set",
-                            Target = "affectedStates",
-                            Expected = "all-passed"
-                        }
+                        .. affectedStates.Select((stateId, index) =>
+                            new MigrationCompletionCheck
+                            {
+                                Id = $"activation-state-replay-{index + 1}",
+                                Summary =
+                                    $"Activation state '{stateId}' passes canonical replay.",
+                                VerificationKind = "state-assertion",
+                                Target = stateId,
+                                Expected = "passed"
+                            })
                     ]
                 }
             };

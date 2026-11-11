@@ -801,7 +801,7 @@ public sealed partial class RunnerAcceptanceTests
 
         Assert.AreEqual("passed", snapshot.Status);
         var finalized = await fixture.LoadReportAsync();
-        Assert.AreEqual("1.6", finalized.SchemaVersion);
+        Assert.AreEqual("1.7", finalized.SchemaVersion);
         var legacyTodo = finalized.Todos.Single(todo =>
             todo.Id == "UWMIG-LEGACY");
         Assert.AreEqual("accepted", legacyTodo.Status);
@@ -829,18 +829,31 @@ public sealed partial class RunnerAcceptanceTests
             Category = "app-resources",
             Priority = "required",
             Summary = "Finish app resources.",
-            Reason = "The app resource migration requires semantic verification."
+            Reason = "The app resource migration requires semantic verification.",
+            AffectedStates = ["state-1"],
+            Guidance = new MigrationRepairGuidance
+            {
+                ReasonCode = "app-resources",
+                CompletionChecks =
+                [
+                    new MigrationCompletionCheck
+                    {
+                        Id = "app-resource-main-name",
+                        Summary =
+                            "The main state resolves the required resources.",
+                        VerificationKind = "state-assertion",
+                        Target = "state-1",
+                        Expected = "passed",
+                        AssertionIds = ["main-name"]
+                    }
+                ]
+            }
         });
         await fixture.SaveReportAsync(report);
-        var plan = await fixture.LoadAsync<StatePlanDocument>(
-            ".migration-evidence/state-plan.json");
-        plan.States[0].TodoIds = ["UWMIG001"];
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root, ".migration-evidence/state-plan.json", plan);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
             fixture.Root, new UwpEnforcementOptions());
         await fixture.WriteTargetEvidenceAsync();
-        plan = await fixture.LoadAsync<StatePlanDocument>(
+        var plan = await fixture.LoadAsync<StatePlanDocument>(
             ".migration-evidence/state-plan.json");
         plan.States[0].Target.Evidence =
         [
@@ -900,12 +913,54 @@ public sealed partial class RunnerAcceptanceTests
         var gate = snapshot.Gates.Single(item => item.Id == "report-closure");
         Assert.AreEqual("blocked", gate.Status);
         StringAssert.Contains(gate.Reason, "UWMIG002");
-        StringAssert.Contains(gate.Reason, "not referenced by any state");
-        StringAssert.Contains(gate.Reason, "todoIds");
-        StringAssert.Contains(gate.Reason, "do not require re-sealing");
-        StringAssert.Contains(gate.Reason, "invalidates existing target probes");
+        StringAssert.Contains(gate.Reason, "no state-backed completion check");
+        StringAssert.Contains(gate.Reason, "Define an exact completion check");
         Assert.AreEqual(
             "pending",
+            (await fixture.LoadReportAsync()).Todos.Single().Status);
+    }
+
+    [TestMethod]
+    public async Task SyncReport_VerifiesProjectClosureOnlyTodo()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "UWMIG-BUILD",
+            Category = "project-dependencies",
+            Priority = "required",
+            Summary = "Complete the target project graph.",
+            Reason = "The TODO is proven by project closure.",
+            Guidance = new MigrationRepairGuidance
+            {
+                ReasonCode = "project-closure",
+                CompletionChecks =
+                [
+                    new()
+                    {
+                        Id = "target-build-passed",
+                        Summary = "The current target build passes.",
+                        VerificationKind = "build-attestation",
+                        Target = "target-build",
+                        Expected = "passed"
+                    }
+                ]
+            }
+        });
+        await fixture.SaveReportAsync(report);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
+            fixture.Root,
+            new UwpEnforcementOptions());
+        await fixture.VerifyStateAsync();
+
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root,
+            TestWindowOwnerResolver.Shared);
+
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.AreEqual(
+            "verified",
             (await fixture.LoadReportAsync()).Todos.Single().Status);
     }
 
@@ -936,11 +991,6 @@ public sealed partial class RunnerAcceptanceTests
             }
         ]);
         await fixture.SaveReportAsync(report);
-        var plan = await fixture.LoadAsync<StatePlanDocument>(
-            ".migration-evidence/state-plan.json");
-        plan.States[0].TodoIds = ["UWMIG001", "UWMIG003"];
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root, ".migration-evidence/state-plan.json", plan);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
             fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();

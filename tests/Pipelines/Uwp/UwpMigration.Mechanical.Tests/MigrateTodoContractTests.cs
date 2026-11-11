@@ -45,16 +45,26 @@ public partial class MigrateCommandTests
             Path.Combine(target.FullName, "migration-report.json"),
             TestContext.CancellationToken));
         Assert.AreEqual(
-            "1.6",
+            "1.7",
             report.RootElement.GetProperty("schemaVersion").GetString());
         Assert.IsFalse(report.RootElement.TryGetProperty("todoGraph", out _));
         var todos = report.RootElement.GetProperty("todos")
             .EnumerateArray()
             .ToDictionary(todo => todo.GetProperty("id").GetString()!);
-        foreach (var id in new[] { "UWMIG001", "UWMIG002", "UWMIG003" })
+        foreach (var id in new[]
+        {
+            "UWMIG001",
+            "UWMIG002",
+            "UWMIG003",
+            "UWMIG004"
+        })
         {
             var todo = todos[id];
             Assert.IsFalse(todo.TryGetProperty("workSlices", out _));
+            Assert.AreEqual(
+                "mechanical",
+                todo.GetProperty("origin").GetString());
+            Assert.IsFalse(todo.TryGetProperty("dependsOn", out _));
             Assert.IsTrue(todo.GetProperty("touchSet")
                 .GetProperty("conflictKeys").GetArrayLength() > 0);
             Assert.IsTrue(todo.GetProperty("affectedFeatures")
@@ -63,12 +73,34 @@ public partial class MigrateCommandTests
             Assert.IsTrue(guidance.GetProperty("facts").GetArrayLength() > 0);
             Assert.IsTrue(guidance.GetProperty("completionChecks")
                 .GetArrayLength() > 0);
+            Assert.IsFalse(guidance.GetProperty("completionChecks")
+                .EnumerateArray()
+                .Any(check =>
+                    check.GetProperty("verificationKind").GetString() ==
+                    "state-set"));
             Assert.IsTrue(guidance.GetProperty("candidateStrategies")
                 .EnumerateArray()
                 .All(strategy =>
                     strategy.GetProperty("preconditions").GetArrayLength() > 0
                     && strategy.GetProperty("risks").GetArrayLength() > 0));
         }
+        Assert.AreEqual(
+            "app-resources",
+            todos["UWMIG001"].GetProperty("category").GetString());
+        Assert.AreEqual(
+            "startup-lifecycle",
+            todos["UWMIG004"].GetProperty("category").GetString());
+        Assert.AreEqual(
+            "App.xaml",
+            todos["UWMIG001"].GetProperty("touchSet")
+                .GetProperty("paths")[0].GetString());
+        CollectionAssert.Contains(
+            todos["UWMIG004"].GetProperty("touchSet")
+                .GetProperty("paths")
+                .EnumerateArray()
+                .Select(path => path.GetString())
+                .ToArray(),
+            "App.xaml.cs");
 
         var dependencyFacts = todos["UWMIG003"]
             .GetProperty("guidance")
@@ -147,17 +179,15 @@ public partial class MigrateCommandTests
             .Single(todo =>
                 todo.GetProperty("id").GetString() == "UWMIG001");
         Assert.IsFalse(startup.TryGetProperty("workSlices", out _));
+        Assert.IsFalse(startup.TryGetProperty("dependsOn", out _));
         Assert.AreEqual("accepted", startup.GetProperty("status").GetString());
-        CollectionAssert.AreEqual(
-            new[] { "UWMIG003" },
-            startup.GetProperty("dependsOn")
-                .EnumerateArray()
-                .Select(item => item.GetString())
-                .ToArray());
+        Assert.AreEqual(
+            "mechanical",
+            startup.GetProperty("origin").GetString());
     }
 
     [TestMethod]
-    public async Task Verify_InvalidTodoDependencyFailsClosed()
+    public async Task Verify_LegacyTodoDependencyIsIgnoredAndRemoved()
     {
         var source = await CreateUwpSourceAsync("InvalidTodoContractApp");
         await WriteAsync(source, "App.xaml", "<Application />");
@@ -190,10 +220,14 @@ public partial class MigrateCommandTests
 
         var (verifyExit, verifyOutput) = await InvokeVerifyAsync(target);
 
-        Assert.AreEqual(1, verifyExit, verifyOutput);
-        StringAssert.Contains(
-            verifyOutput,
-            "TODO contract is invalid: [unknown-dependency]");
-        StringAssert.Contains(verifyOutput, "UWMIG999");
+        Assert.AreEqual(0, verifyExit, verifyOutput);
+        using var verified = JsonDocument.Parse(await File.ReadAllTextAsync(
+            reportPath,
+            TestContext.CancellationToken));
+        var verifiedStartup = verified.RootElement.GetProperty("todos")
+            .EnumerateArray()
+            .Single(todo =>
+                todo.GetProperty("id").GetString() == "UWMIG001");
+        Assert.IsFalse(verifiedStartup.TryGetProperty("dependsOn", out _));
     }
 }

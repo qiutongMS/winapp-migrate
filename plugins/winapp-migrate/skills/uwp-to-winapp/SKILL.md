@@ -7,14 +7,13 @@ description: "Use immediately when migrating, porting, or converting a C# UWP ap
 
 Preserve the app; do not redesign it. Keep every page, control, resource, helper, navigation path, and user-visible behavior unless authoritative platform evidence proves there is no WinUI 3 desktop equivalent. Report unsupported behavior explicitly; never omit it silently.
 
-This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.6`. WinApp CLI remains a separate implementation tool, but every source baseline operation must cross the `winapp-migrate uwp source` boundary and every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp closure` boundary.
+This skill is the UWP pipeline in the preview `winapp-migrate` product. It uses `winapp-migrate uwp` for deterministic mechanical conversion and consumes its UWP migration report with schema `1.7`. WinApp CLI remains a separate implementation tool, but every source baseline operation must cross the `winapp-migrate uwp source` boundary and every target build, launch, diagnosis, and UI action must cross the `winapp-migrate uwp closure` boundary.
 
 Three controls remain independent. The plugin's machine-readable Skill
 execution contract enforces gateway boundaries. Migration
 closure determines whether the resulting app is mechanically and behaviorally
-complete. TODO dependencies and touch sets are advisory coordination metadata;
-the agent chooses ready work and may use parallel subagents when tasks are
-independent.
+complete. TODO touch sets partition implementation work; build and runtime
+stabilization remain project-level.
 
 ## Tool and contract compatibility
 
@@ -22,7 +21,7 @@ Treat three capabilities as independent:
 
 | Capability | Required contract | Current compatibility truth |
 |---|---|---|
-| UWP migration and closure | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, and `closure`; migration report schema `1.6`, closure evidence schema `1.0`, workflow progress schema `3.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its target-operation boundary. |
+| UWP migration and closure | `winapp-migrate uwp` with `migrate`, `verify`, `decide-project-item`, `todo`, and `closure`; migration report schema `1.7`, TODO progress schema `2.4`, closure evidence schema `1.0`, workflow progress schema `3.0` | The preview `winapp-migrate` build from this repository owns these capabilities and invokes WinApp CLI at its target-operation boundary. |
 | Build, register, launch, diagnose, and automate | Gateway-mediated WinApp CLI `run` and `ui` capabilities | WinApp CLI 0.7+ can supply these capabilities. The source and closure gateways resolve it from `--winapp`, then `WINAPP_MIGRATE_WINAPP_PATH`, then PATH; it is valid for the raw executable to be absent from the agent's PATH. |
 | Static WinUI diagnostics | A project `PackageReference` to `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` with `PrivateAssets="all"` | The analyzer is a separate preview/`0.x` NuGet package. WinApp CLI does not inject it, and this plugin does not bundle its DLL. |
 
@@ -35,18 +34,19 @@ winapp-migrate uwp --help
 winapp-migrate uwp migrate --help
 winapp-migrate uwp verify --help
 winapp-migrate uwp decide-project-item --help
+winapp-migrate uwp todo --help
 winapp-migrate uwp source --help
 winapp-migrate uwp closure --help
 ```
 
 Verify from the actual output that:
 
-1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, `source`, and `closure`;
+1. `winapp-migrate uwp` exposes `migrate`, `verify`, `decide-project-item`, `todo`, `source`, and `closure`;
 2. `winapp-migrate uwp source --help` exposes `run`, `capture`, and `diagnose`;
 3. `winapp-migrate uwp closure --help` exposes `seal-contract`, `rebind-selector`, `assess`, `attest`, `capture`, `record-state`, `finalize`, `diagnose`, `record-failure`, and `record-diagnosis`;
 4. the configured WinApp CLI satisfies the gateway contract. If the raw executable is intentionally hidden from PATH, do not bypass that boundary merely to inspect its help.
 
-Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.6`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
+Accept the `winapp-migrate uwp` pipeline only when its local help or versioned documentation explicitly promises schema `1.7`. Do not infer compatibility from a preview version number, a branch name, or the presence of this skill.
 
 If `<target>\migration-report.json` does not exist, create the deterministic target before semantic edits:
 
@@ -54,7 +54,7 @@ If `<target>\migration-report.json` does not exist, create the deterministic tar
 winapp-migrate uwp migrate "<source>" --output "<target>"
 ```
 
-If the report already exists, parse it, require `schemaVersion` exactly `1.6`, and refresh mechanically owned evidence:
+If the report already exists, parse it, require `schemaVersion` exactly `1.7`, and refresh mechanically owned evidence:
 
 ```powershell
 winapp-migrate uwp verify "<target>"
@@ -111,46 +111,45 @@ ordering, assertions, and intended behavior remain valid, use the audited
 reference. Never edit the frozen plan command directly. Rebinding invalidates
 that state's earlier target probes and requires recapture.
 
-`todoIds` do not redefine the sealed action/assertion contract. If assessment
-reports that a required TODO is not mapped, add its stable ID to the
-appropriate declared states and reassess before recording target state
-evidence; do not re-seal merely to repair that mapping. Changing a mapping
-after target probes exist invalidates those probes and requires recapture.
+Legacy state-plan `todoIds` are ignored compatibility metadata. They do not
+redefine the sealed action/assertion contract, TODO ownership, or the state
+contract fingerprint; new plans omit them. Ownership is derived from exact
+TODO `completionChecks`, with `affectedStates` retained only for legacy report
+compatibility. A changed completion state requires fresh target evidence for
+that state.
 
 If neither a valid report nor a compatible `winapp-migrate uwp` pipeline is available, stop before scaffolding or copying application files. Report that deterministic migration is unavailable. Do not replace the missing tool with hand-written namespace replacement, a second scaffold, or a fabricated report.
 
 ## Ownership
 
-- `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, canonical closure attestations, evidence freshness, closure gates, and its mechanically owned schema `1.6` report fields.
+- `winapp-migrate uwp` owns source-file classification, deterministic transforms, project-item accounting, activation declaration inventory, mechanical verification, canonical closure attestations, evidence freshness, closure gates, and schema `1.7` report fields.
 - This skill owns semantic decisions, dependency-contract preservation, target implementation, and behavioral validation.
 - `winapp-migrate` owns classic UWP source detection, Visual Studio MSBuild/SDK selection, framework-dependency preparation, and source evidence provenance. WinApp CLI owns general target build plus loose-layout registration, launch, crash diagnostics, and UI automation. The source gateway owns source launch/window capability; the closure gateway owns every target invocation and its provenance.
 - The analyzer reports static WinUI risks during ordinary builds. It does not create the migration report and does not replace runtime replay.
 
-Do not duplicate `winapp-migrate uwp` checks with ad hoc extension lists or repository-wide searches when current schema `1.6` evidence already covers them. An empty migration TODO list still does not guarantee a buildable, runnable, or behaviorally equivalent app.
+Do not duplicate `winapp-migrate uwp` checks with ad hoc extension lists or repository-wide searches when current schema `1.7` evidence already covers them. An empty migration TODO list still does not guarantee a buildable, runnable, or behaviorally equivalent app.
 
 ## 1. Validate the migration input and classify risk
 
 Before semantic edits:
 
 1. Identify the exact entry UWP `.csproj`; never substitute a repository or solution root merely because it contains the project recursively.
-2. Confirm `<target>\migration-report.json` exists and has schema `1.6`.
+2. Confirm `<target>\migration-report.json` exists and has schema `1.7`.
 3. Confirm `source.projectFile` identifies that exact entry project.
 4. Require the overall mechanical result, project graph, project-item accounting, and mechanically eligible activation declarations to be in the report-documented ready state.
 5. If mechanically owned evidence is stale or failed, run `winapp-migrate uwp verify "<target>"`. For a decision-required project item, use the stable item ID and an allowed strategy from `winapp-migrate uwp decide-project-item --help`, then run `verify` again. Never edit mechanically owned fields by hand.
-6. For every required TODO with `guidance`, treat its `facts` and `mechanicallyAppliedTransforms` as tool-owned evidence. A `candidateStrategy` is applicable only when its listed preconditions are proven from the source and target; record the selected strategy in the semantic finding ledger and obey its risks, `forbiddenShortcuts`, and `completionConditions`. Map the TODO to every state needed to prove those conditions. If implementation is delegated, include the relevant facts, selected strategy, risks, forbidden shortcuts, and completion conditions in the delegated task. Do not inject guidance as target-code comments or treat a candidate as an automatic repair.
+6. For every required TODO with `guidance`, treat its `facts` and `mechanicallyAppliedTransforms` as tool-owned evidence. A candidate approach is applicable only when its listed preconditions are proven from the source and target; record it with `uwp todo select-approach`, then obey its risks, `forbiddenShortcuts`, and `completionConditions`. Map the TODO to every state needed to prove those conditions. If implementation is delegated, include the relevant facts, selected and rejected approaches, risks, forbidden shortcuts, and completion conditions. Do not inject guidance as target-code comments or treat a candidate as an automatic repair.
 7. Read startup, the feature registry or navigation shell, `dependencyAnalysis`, `activationAnalysis`, and enough source to classify the migration as fast or expanded.
 8. Identify the source behavior that proves the app's primary purpose and any user-critical flow.
 
 Read
 [Migration TODO execution contract](references/migration-todo-contract.md) and
 [Parallel migration work orchestration](references/parallel-work-orchestration.md).
-Select required, non-terminal TODOs whose `dependsOn` TODOs are terminal. The
-TODO supplies dependency and touch-set facts, not a fixed schedule, repair
-strategy, or completion verdict. Run TODOs serially unless their touch sets are
-disjoint and their acceptance conditions are independently verifiable. For
-independent items, use Copilot CLI parallel subagents and reconcile their
-results in the canonical target before verification. Parallel execution is an
-optimization, never a completion requirement.
+Partition required, non-terminal TODOs by touch paths, project items, conflict
+keys, shared abstractions, and acceptance conditions. Implement disjoint groups
+in parallel and overlapping groups under one owner. Reconcile all results in
+the canonical target before project-level build/runtime stabilization. Parallel
+execution is an optimization, never a completion requirement.
 
 Use the **fast path** when the primary behavior is page-local, dependencies and APIs have direct target mappings, and it crosses no uncertain project, lifetime, activation, window, native-host, or shared asynchronous boundary. Read only startup, capability-bearing manifest entries, relevant pages, and their custom controls or resources. Do not create a semantic finding ledger before a real finding exists.
 
@@ -174,18 +173,89 @@ debt and prevents parity/strict closure, but it does not prohibit target edits,
 mechanical verification, canonical build/replay, diagnosis, or partial target
 development probes.
 
-## 3. Build the first viable slice
+## 3. Implement the TODO backlog
 
 Treat report categories as evidence within the active behavior scope, not as an exhaustive worklist or a completion definition.
 
-Choose ready TODOs dynamically. A TODO is ready when its declared dependencies
-are complete. Parallelize only ready TODOs with non-overlapping touch sets and
-clear acceptance checks; otherwise proceed serially. After integrating a logical
-group, run the smallest relevant verification before selecting more work. The
-parent agent owns dependency decisions, conflict handling, and final closure;
-subagent completion is not verification evidence.
+Partition non-terminal TODOs into conflict-free groups. Parallelize groups with
+non-overlapping touch sets and independent acceptance checks; keep startup,
+shared project files, shared abstractions, and overlapping XAML/code-behind
+under one owner. Workers implement and report; they do not require a global
+build. The parent owns conflict handling, integration, and final closure.
 
-On the fast path, migrate the complete small behavior surface as one coherent patch when practical. On the expanded path, implement the smallest architecture slice that can build and exercise startup plus the active sentinel: its consumed dependency contract, owning projects, shared abstraction, and direct call path.
+For each active TODO, use the product-owned bounded execution receipt:
+
+```powershell
+winapp-migrate uwp todo status "<target>"
+winapp-migrate uwp todo assess "<target>" "<todo-id>"
+winapp-migrate uwp todo select-approach "<target>" "<todo-id>" "<approach-key>" --reason "<rationale>"
+```
+
+The project status combines the authoritative closure workflow stage, budget,
+last observation, frontier, and disposition with TODO and state counts, the
+incremental development frontier, latest TODO failure, current action, and
+next checkpoint.
+The assessment is the compact per-TODO resume packet. Do not repeatedly reread the
+whole report, this Skill, CLI help, or unrelated source after it identifies the
+TODO facts, current approach, rejected approaches, completion states, and next
+command. Candidate approaches remain non-exhaustive unless the report says
+otherwise.
+
+If assessment returns `bind-state`, the mechanical pass could not know the
+exact semantic proof. Bind only the smallest existing state and assertion(s)
+that prove the TODO invariant; do not broaden it across every state:
+
+```powershell
+winapp-migrate uwp todo bind-state "<target>" "<todo-id>" --state "<state-id>" --assertion "<assertion-id>" --check-id "<stable-check-id>" --summary "<why-this-assertion-proves-the-invariant>"
+```
+
+Implement one coherent attempt and record it without requiring a build:
+
+```powershell
+winapp-migrate uwp todo record "<target>" "<todo-id>" --outcome implemented --summary "<change>" --evidence "<target-relative-path>"
+```
+
+After integrated build/replay, record each assigned exploratory state outcome.
+Successful outcomes must reference product-generated state-bound development
+probe artifacts; they advance only TODOs whose completion checks own that state
+and reach `development-validated` only when every assigned state passes for the
+current target fingerprint:
+
+```powershell
+winapp-migrate uwp todo record-development "<target>" --state "<state-id>" --summary "<attempt>" --evidence "<probe.json>"
+```
+
+The product derives the result. Exact assertion parity passes, an exact
+behavior mismatch fails, and every unsupported, ambiguous, unavailable, or
+safety-denied result becomes `human-validation-required`. Follow the emitted
+human validation item; never rewrite an inconclusive result as passed.
+
+An affected target change matching the TODO touch set, or an upstream state
+dependency's owning touch set, makes that development result `stale` without
+discarding the implementation receipt; unrelated files do not invalidate it.
+A failed state records its stable
+signature and leaves only its owning TODOs `blocked`, not every TODO mentioned
+by an arbitrary state-plan mapping.
+
+Do not begin canonical `closure record-state` while any required TODO is
+`not-run`, `partial`, `blocked`, `stale`, or `unmapped`. The CLI enforces this
+TODO readiness gate; the existing closure frontier independently governs
+failures and semantic findings. After it opens, run one complete ordered
+canonical pass on one unchanged target fingerprint and replay identity, then
+finalize once.
+
+If the approach fails, record the exact negative result:
+
+```powershell
+winapp-migrate uwp todo record "<target>" "<todo-id>" --outcome failed --summary "<failure>" --failure-signature "<signature>" --retry-condition "<changed-condition>" --evidence "<target-relative-path>"
+```
+
+The same approach cannot be selected again without `--retry-evidence`.
+Unrelated target changes do not invalidate implementation progress. If work
+reveals a missing app-owned migration obligation, add it with `todo discover`;
+do not turn ordinary compiler/runtime symptoms into TODOs.
+
+On the fast path, migrate the complete small behavior surface as one coherent patch when practical. On the expanded path, implement coherent conflict groups across the consumed dependency contract, owning projects, shared abstraction, and direct call path. Do not require each group to build independently; project-level stabilization follows after currently implementable work is integrated.
 
 Common checks include:
 
@@ -195,7 +265,7 @@ Common checks include:
 - reconcile shared-file conflicts without losing either side's required behavior;
 - wire the initial page without replacing generated bootstrap or title-bar behavior.
 
-Use schema `1.6` `dependencyAnalysis` as the source dependency inventory, not as a package recommendation. Follow [Dependency contracts](references/dependency-contracts.md) for every `review-required` dependency and every package replacement, adapter, source port, or equivalent implementation. Resolve or explicitly account for every `inspectionIssue` when the analysis is incomplete.
+Use schema `1.7` `dependencyAnalysis` as the source dependency inventory, not as a package recommendation. Follow [Dependency contracts](references/dependency-contracts.md) for every `review-required` dependency and every package replacement, adapter, source port, or equivalent implementation. Resolve or explicitly account for every `inspectionIssue` when the analysis is incomplete.
 
 Use `activationAnalysis` as the declaration inventory, not as evidence that activation behavior works. For every activation contract in scope, follow [Activation contracts](references/activation-contracts.md). A translated declaration does not prove routing, single-instance behavior, navigation, file loading, restoration, or error handling.
 
@@ -203,7 +273,7 @@ For unknown report categories, use their `summary`, `reason`, and `locations`; d
 
 Use [Platform semantic differences](references/platform-semantic-differences.md) as a non-exhaustive review accelerator. When an API mapping is uncertain, consult the official [UWP to Windows App SDK mapping table](https://learn.microsoft.com/windows/apps/windows-app-sdk/migrate-to-windows-app-sdk/api-mapping-table). A visible fallback is a documented limitation, not evidence of parity.
 
-## 4. Add the analyzer and build/register in batches
+## 4. Stabilize the project
 
 The target project must reference the analyzer package. Add it through the project's package-management convention:
 
@@ -237,6 +307,16 @@ canonical gateway attestation and its output cannot satisfy a closure gate.
 On failure, read the current enforcement state and grouped build diagnostics,
 then fix every governed occurrence of the active root cause in one pass. Do
 not build after every file or diagnostic.
+
+Build and runtime failures are project-level closure failures, not TODO
+dependencies. Record them through `closure record-failure`, complete the
+source-first diagnosis through `closure record-diagnosis`, and retain
+behavioral root causes in the semantic finding ledger. Do not copy them into
+a parallel TODO issue ledger.
+
+Associate the evidence with an existing TODO only when it proves that TODO's
+approach is wrong. Add a discovered TODO only when it proves omitted app-owned
+migration work.
 
 An unchanged failed target cannot be built again. Change the governed target
 fingerprint before requesting another build. Repeated replay requires fresh
@@ -359,7 +439,8 @@ winapp-migrate uwp closure attest "<target>" --force-replay --discriminating-evi
 
 Fresh discriminating evidence must justify a repeated replay. Touching,
 renaming, or reusing the same evidence content is not progress.
-`--force-replay` cannot bypass diagnosis, change-required, or evidence freshness.
+`--force-replay` cannot bypass diagnosis, change-required, TODO development
+readiness, or evidence freshness.
 Finish this falsification pass before report synchronization makes a fully
 passed closure terminal; do not request more target operations afterward.
 
@@ -414,7 +495,7 @@ Before claiming completion:
 - no finding retains an actionable app-owned location or next action;
 - the current build is analyzer-enabled and successful;
 - the primary sentinel and every runnable target state pass in one fresh canonical sequence;
-- mechanically owned schema `1.6` evidence remains current according to `winapp-migrate uwp verify`;
+- mechanically owned schema `1.7` evidence remains current according to `winapp-migrate uwp verify`;
 - `winapp-migrate uwp closure assess "<target>" --strict` reports every closure gate as passed.
 
 After updating state and finding evidence, run:

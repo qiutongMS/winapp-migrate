@@ -1,6 +1,6 @@
 # Semantic migration protocol
 
-Use this protocol for migration work that is not completely determined by the schema `1.6` `winapp-migrate uwp` report. It is deliberately open-ended: documented mappings and platform patterns can accelerate analysis, but absence of a known pattern never proves that a feature is unsupported or that migration is complete.
+Use this protocol for migration work that is not completely determined by the schema `1.7` `winapp-migrate uwp` report. It is deliberately open-ended: documented mappings and platform patterns can accelerate analysis, but absence of a known pattern never proves that a feature is unsupported or that migration is complete.
 
 ## 1. Define the active contract
 

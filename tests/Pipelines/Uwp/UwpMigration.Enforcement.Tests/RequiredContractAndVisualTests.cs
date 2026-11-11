@@ -194,14 +194,23 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task RequiredContract_TodoMappingsRemainRepairableAfterWorkflowStart()
+    public async Task RequiredContract_TodoCompletionOwnershipRemainsRepairableAfterWorkflowStart()
     {
         using var fixture = await RunnerFixture.CreateRequiredAsync();
         var plan = fixture.RequiredPlan;
         var contract = fixture.RequiredContract;
         await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        plan.States[0].TodoIds = ["UWMIG001"];
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+        var report = await fixture.LoadReportAsync();
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "UWMIG001",
+            Category = "behavior",
+            Priority = "required",
+            Summary = "Verify the required state.",
+            Reason = "The completion contract assigns exact proof ownership.",
+            AffectedStates = ["state-1"]
+        });
+        await fixture.SaveReportAsync(report);
 
         Assert.AreEqual(contract.RequiredContractHash,
             RequiredStateContracts.Require(fixture.Root, plan.States[0]));
@@ -451,12 +460,32 @@ public sealed partial class RunnerAcceptanceTests
     private static async Task AddRequiredTodoAndFindingAsync(RunnerFixture fixture, string[] assertionIds)
     {
         var report = await fixture.LoadReportAsync();
-        report.Todos.Add(new MigrationTodo { Id = "SEMANTIC-REQUIRED", Category = "behavior", Priority = "required",
-            Summary = "Complete the required behavior.", Reason = "Requires parity, not merely valid evidence." });
+        report.Todos.Add(new MigrationTodo
+        {
+            Id = "SEMANTIC-REQUIRED",
+            Category = "behavior",
+            Priority = "required",
+            Summary = "Complete the required behavior.",
+            Reason = "Requires parity, not merely valid evidence.",
+            AffectedStates = ["state-1"],
+            Guidance = new MigrationRepairGuidance
+            {
+                ReasonCode = "behavior",
+                CompletionChecks =
+                [
+                    new MigrationCompletionCheck
+                    {
+                        Id = "semantic-contract",
+                        Summary = "Verify every required behavior assertion.",
+                        VerificationKind = "state-assertion",
+                        Target = "state-1",
+                        Expected = "passed",
+                        AssertionIds = [.. assertionIds]
+                    }
+                ]
+            }
+        });
         await fixture.SaveReportAsync(report);
-        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
-        plan.States[0].TodoIds = ["SEMANTIC-REQUIRED"];
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.FindingLedgerPath,
             new SemanticFindingLedger { Findings = [new SemanticFinding
             {
