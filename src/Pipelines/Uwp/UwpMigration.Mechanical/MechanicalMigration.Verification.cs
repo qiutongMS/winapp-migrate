@@ -880,6 +880,8 @@ public static partial class MechanicalMigration
                 .ToList();
 
             var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(targetRoot);
+            var incompatibleUwpResiduals = FindIncompatibleUwpResiduals(targetRoot);
+            RefreshUwpCompatibilityTodo(report, incompatibleUwpResiduals);
             var targetProjectGraph = await AnalyzeTargetProjectGraphAsync(
                 targetRoot,
                 targetProject,
@@ -912,6 +914,7 @@ public static partial class MechanicalMigration
                     UnclassifiedFiles = unclassified
                 },
                 LegacyNamespaceResiduals = residuals,
+                IncompatibleUwpResiduals = incompatibleUwpResiduals,
                 UninspectedFiles = uninspectedFiles,
                 ProjectItems = new MigrationProjectItemVerification
                 {
@@ -967,6 +970,8 @@ public static partial class MechanicalMigration
                 cancellationToken,
                 projectItemEvaluation);
             var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(targetRoot);
+            var incompatibleUwpResiduals = FindIncompatibleUwpResiduals(targetRoot);
+            RefreshUwpCompatibilityTodo(report, incompatibleUwpResiduals);
             var targetProjectGraph = await AnalyzeTargetProjectGraphAsync(
                 targetRoot,
                 targetProject,
@@ -983,6 +988,7 @@ public static partial class MechanicalMigration
                 report.ActivationAnalysis);
 
             var failed = residuals.Count > 0
+                || incompatibleUwpResiduals.Count > 0
                 || report.MechanicalVerification.Inventory.UnclassifiedFiles.Count > 0
                 || projectItems.MissingTargetItems.Count > 0
                 || targetProjectGraph.Status is "failed" or "incomplete"
@@ -992,6 +998,7 @@ public static partial class MechanicalMigration
                 Status = failed ? "failed" : "passed",
                 Inventory = report.MechanicalVerification.Inventory,
                 LegacyNamespaceResiduals = residuals,
+                IncompatibleUwpResiduals = incompatibleUwpResiduals,
                 UninspectedFiles = uninspectedFiles,
                 ProjectItems = new MigrationProjectItemVerification
                 {
@@ -1041,6 +1048,8 @@ public static partial class MechanicalMigration
                     continue;
                 }
 
+                if (Path.GetExtension(file).Equals(".cs", StringComparison.OrdinalIgnoreCase))
+                    text = MaskCSharpNonCode(text);
                 var lines = text.Split(["\r\n", "\n"], StringSplitOptions.None);
                 for (var index = 0; index < lines.Length; index++)
                 {
@@ -1059,7 +1068,8 @@ public static partial class MechanicalMigration
 
         private static List<string> EnumerateContainedVerificationFiles(
             string targetRoot,
-            out int uninspectedPaths)
+            out int uninspectedPaths,
+            bool skipReparsePoints = false)
         {
             var files = new List<string>();
             uninspectedPaths = 0;
@@ -1091,6 +1101,9 @@ public static partial class MechanicalMigration
 
                 foreach (var file in childFiles)
                 {
+                    if (skipReparsePoints &&
+                        (File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                        continue;
                     var relativePath = Path.GetRelativePath(
                         targetRoot,
                         file);
@@ -1108,6 +1121,9 @@ public static partial class MechanicalMigration
                 }
                 foreach (var childDirectory in childDirectories)
                 {
+                    if (skipReparsePoints &&
+                        (File.GetAttributes(childDirectory) & FileAttributes.ReparsePoint) != 0)
+                        continue;
                     var name = Path.GetFileName(childDirectory);
                     if (ExcludeDirSegments.Contains(
                             name,

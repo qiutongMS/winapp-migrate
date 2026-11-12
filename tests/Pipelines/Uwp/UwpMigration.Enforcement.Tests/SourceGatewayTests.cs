@@ -119,7 +119,9 @@ public sealed class SourceGatewayTests
                 0,
                 """{"nodes":[{"type":"Window","name":"Source"}]}""",
                 ""));
-        var gateway = CreateGateway(process, fixture);
+        process.SaveComparisonScreenshots = true;
+        var gateway = CreateGateway(process, fixture,
+            windowOwnerResolver: new SourcePickerWindowOwnerResolver());
         var run = await gateway.RunAsync(fixture.Target, TestOptions());
 
         var probe = await gateway.CaptureAsync(
@@ -143,6 +145,13 @@ public sealed class SourceGatewayTests
         CollectionAssert.AreEqual(
             new[] { "ui", "inspect", "-w", "20", "--json" },
             process.Calls[3]);
+        Assert.HasCount(1, process.ScreenshotCalls);
+        var image = process.ScreenshotCalls.Single()[^1];
+        Assert.IsTrue(File.Exists(image));
+        using var receipt = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(Path.GetDirectoryName(fixture.Resolve(probe.ArtifactPath))!, "comparison-capture.json")));
+        Assert.AreEqual("saved", receipt.RootElement.GetProperty("status").GetString());
+        Assert.AreEqual(run.Id, receipt.RootElement.GetProperty("runId").GetString());
     }
 
     [TestMethod]
@@ -402,6 +411,8 @@ public sealed class SourceGatewayTests
             new(results);
 
         internal List<string[]> Calls { get; } = [];
+        internal List<string[]> ScreenshotCalls { get; } = [];
+        internal bool SaveComparisonScreenshots { get; set; }
 
         public Task<EnforcementProcessResult> RunAsync(
             string executable,
@@ -409,6 +420,15 @@ public sealed class SourceGatewayTests
             IReadOnlyList<string> arguments,
             CancellationToken cancellationToken = default)
         {
+            if (arguments.Count > 1 && arguments[1] == "screenshot" && arguments[^2] == "-o" &&
+                arguments[^1].EndsWith("comparison.png", StringComparison.Ordinal))
+            {
+                ScreenshotCalls.Add([.. arguments]);
+                if (SaveComparisonScreenshots)
+                    File.WriteAllBytes(arguments[^1], PngTestData.Create());
+                return Task.FromResult(new EnforcementProcessResult(
+                    SaveComparisonScreenshots ? 0 : 1, "", "Optional screenshot unavailable."));
+            }
             Calls.Add([.. arguments]);
             return Task.FromResult(_results.Dequeue());
         }
@@ -539,8 +559,12 @@ public sealed class SourceGatewayTests
                         new()
                         {
                             Id = "source-state",
-                            Actions = ["Observe the source window."],
-                            ExpectedOutcome = "The source window is observable.",
+                            Kind = "window",
+                            SourceDefinitions = ["MainPage.xaml"],
+                            Verification = new StateVerificationContract
+                            {
+                                TreeProbeIndex = 0
+                            },
                             Source = new StateObservation
                             {
                                 Status = "not-run"
@@ -584,6 +608,7 @@ public sealed class SourceGatewayTests
                 ".migration-evidence/state-plan.json")).Value!;
             plan.States[0].Source.Status = "captured";
             plan.States[0].Source.Evidence = [image, tree, action];
+            plan.States[0].Source.TreeEvidence = tree;
             await EnforcementStore.WriteAtomicAsync(
                 Target,
                 ".migration-evidence/state-plan.json",

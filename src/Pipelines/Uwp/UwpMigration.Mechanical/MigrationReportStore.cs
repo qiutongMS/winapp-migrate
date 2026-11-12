@@ -15,16 +15,6 @@ internal static class MigrationReportStore
     private static readonly TimeSpan TransactionLockRetryDelay =
         TimeSpan.FromMilliseconds(50);
 
-    private static readonly HashSet<string> SupportedSchemaVersions =
-        new(StringComparer.Ordinal)
-        {
-            "1.2",
-            "1.3",
-            "1.4",
-            "1.5",
-            MigrationReport.CurrentSchemaVersion
-        };
-
     internal static async Task<MigrationReport> LoadAsync(
         string reportPath,
         CancellationToken cancellationToken)
@@ -48,11 +38,11 @@ internal static class MigrationReportStore
             throw new InvalidDataException(
                 "migration-report.json did not contain a migration report.");
         }
-        if (!SupportedSchemaVersions.Contains(report.SchemaVersion))
+        if (report.SchemaVersion != MigrationReport.CurrentSchemaVersion)
         {
             throw new InvalidDataException(
                 $"migration-report.json schemaVersion '{report.SchemaVersion}' is not supported. " +
-                $"Supported versions: {string.Join(", ", SupportedSchemaVersions.Order())}.");
+                $"Only {MigrationReport.CurrentSchemaVersion} is supported; preserve the original report.");
         }
         if (report.Source is null || report.Target is null)
         {
@@ -60,7 +50,7 @@ internal static class MigrationReportStore
                 "migration-report.json must contain source and target project records.");
         }
 
-        NormalizeForWrite(report);
+        MigrationTodoValidator.ValidatePersisted(report.Todos);
         return report;
     }
 

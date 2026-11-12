@@ -34,8 +34,6 @@ public static class EnforcementStore
         ".migration-evidence/enforcement/diagnostic-attestation.json";
     public const string UiProbePath =
         ".migration-evidence/enforcement/ui-probe.json";
-    public const string PolicyPath =
-        ".migration-evidence/enforcement/policy.json";
     public const string ProgressPath =
         ".migration-evidence/enforcement/progress.json";
     public const string TodoProgressPath =
@@ -134,7 +132,10 @@ public static class EnforcementStore
                     cancellationToken);
                 await stream.FlushAsync(cancellationToken);
             }
-            File.Move(temporary, path, overwrite: true);
+            await MoveAtomicAsync(
+                temporary,
+                path,
+                cancellationToken);
         }
         finally
         {
@@ -172,7 +173,10 @@ public static class EnforcementStore
                 temporary,
                 value,
                 cancellationToken);
-            File.Move(temporary, path, overwrite: true);
+            await MoveAtomicAsync(
+                temporary,
+                path,
+                cancellationToken);
         }
         finally
         {
@@ -188,6 +192,45 @@ public static class EnforcementStore
         CancellationToken cancellationToken = default)
     {
         return AcquireLockAsync(targetRoot, null, cancellationToken);
+    }
+
+    private static async Task MoveAtomicAsync(
+        string temporary,
+        string destination,
+        CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 6;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(
+                    temporary,
+                    destination,
+                    overwrite: true);
+                return;
+            }
+            catch (Exception exception) when (
+                attempt < maximumAttempts &&
+                IsTransientFileAccess(exception))
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(100),
+                    cancellationToken);
+            }
+        }
+    }
+
+    private static bool IsTransientFileAccess(
+        Exception exception)
+    {
+        if (exception is not IOException and
+            not UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return (exception.HResult & 0xFFFF) is 5 or 32 or 33;
     }
 
     public static async Task<FileStream> AcquireLockAsync(

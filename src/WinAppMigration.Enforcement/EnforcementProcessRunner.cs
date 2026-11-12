@@ -49,10 +49,24 @@ public sealed class EnforcementProcessRunner : IEnforcementProcessRunner
         Task<string>? error = null;
         try
         {
+            if (EnforcementTrace.Current is { } trace)
+            {
+                process.EnableRaisingEvents = true;
+                process.Exited += (_, _) => trace.Record("child.exited");
+            }
             process.Start();
+            EnforcementTrace.Mark("child.started", new { pid = process.Id, executable });
             output = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
             error = process.StandardError.ReadToEndAsync(CancellationToken.None);
-            await process.WaitForExitAsync(cancellationToken);
+            await ObserveWaitAsync(process.WaitForExitAsync(cancellationToken),
+                "child.exit", process, output, error);
+            await ObserveWaitAsync(Task.WhenAll(output, error),
+                "child.streams", process, output, error);
+            EnforcementTrace.Mark("child.completed", new
+            {
+                pid = process.Id, exitCode = process.ExitCode,
+                stdoutCharacters = output.Result.Length, stderrCharacters = error.Result.Length
+            });
             return new EnforcementProcessResult(
                 process.ExitCode,
                 await output,
@@ -96,6 +110,23 @@ public sealed class EnforcementProcessRunner : IEnforcementProcessRunner
                 string.Empty,
                 exception.Message) { InfrastructureFailure = true };
         }
+    }
+
+    private static async Task ObserveWaitAsync(
+        Task task, string phase, Process process, Task<string> output, Task<string> error)
+    {
+        using var timing = EnforcementTrace.Measure(phase);
+        while (EnforcementTrace.Current is not null && !task.IsCompleted)
+        {
+            if (await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(5))) == task)
+                break;
+            EnforcementTrace.Mark(phase + ".waiting", new
+            {
+                pid = process.Id, hasExited = process.HasExited,
+                stdoutCompleted = output.IsCompleted, stderrCompleted = error.IsCompleted
+            });
+        }
+        await task;
     }
 
     private static async Task ObserveAsync(Task<string> task)

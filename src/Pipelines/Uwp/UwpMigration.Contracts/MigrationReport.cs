@@ -6,11 +6,12 @@ using System.Text.Json.Serialization;
 
 namespace UwpMigration.Contracts;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class MigrationReport
 {
     public const string CurrentSchemaVersion = "1.7";
 
-    [JsonPropertyName("schemaVersion")]
+    [JsonRequired, JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     [JsonPropertyName("status")]
@@ -280,6 +281,9 @@ public sealed class MigrationMechanicalVerification
     [JsonPropertyName("legacyNamespaceResiduals")]
     public List<MigrationLocation> LegacyNamespaceResiduals { get; set; } = [];
 
+    [JsonPropertyName("incompatibleUwpResiduals")]
+    public List<MigrationUwpResidual> IncompatibleUwpResiduals { get; set; } = [];
+
     [JsonPropertyName("uninspectedFiles")]
     public int UninspectedFiles { get; set; }
 
@@ -291,6 +295,21 @@ public sealed class MigrationMechanicalVerification
 
     [JsonPropertyName("targetProjectGraph")]
     public MigrationTargetProjectGraphVerification TargetProjectGraph { get; set; } = new();
+}
+
+public sealed class MigrationUwpResidual
+{
+    [JsonPropertyName("ruleId")]
+    public required string RuleId { get; set; }
+
+    [JsonPropertyName("location")]
+    public required MigrationLocation Location { get; set; }
+
+    [JsonPropertyName("reason")]
+    public required string Reason { get; set; }
+
+    [JsonPropertyName("requiredResolution")]
+    public required string RequiredResolution { get; set; }
 }
 
 public sealed class MigrationTargetProjectGraphVerification
@@ -712,6 +731,7 @@ public sealed class MigrationTransform
     public int ChangedFiles { get; set; }
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class MigrationTodo
 {
     [JsonPropertyName("id")]
@@ -738,7 +758,7 @@ public sealed class MigrationTodo
     [JsonPropertyName("locations")]
     public List<MigrationLocation> Locations { get; set; } = [];
 
-    [JsonPropertyName("affectedStates")]
+    [JsonPropertyName("affectedSurfaces")]
     public List<string> AffectedStates { get; set; } = [];
 
     [JsonPropertyName("affectedFeatures")]
@@ -868,6 +888,7 @@ public sealed class MigrationGuidanceStrategy
     public List<string> Risks { get; set; } = [];
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class MigrationCompletionCheck
 {
     [JsonPropertyName("id")]
@@ -885,7 +906,7 @@ public sealed class MigrationCompletionCheck
     [JsonPropertyName("expected")]
     public required string Expected { get; set; }
 
-    [JsonPropertyName("assertionIds")]
+    [JsonPropertyName("checkIds")]
     public List<string> AssertionIds { get; set; } = [];
 }
 

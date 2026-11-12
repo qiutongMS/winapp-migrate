@@ -1,33 +1,27 @@
-# Platform semantic differences
+# Platform differences
 
-Use these families to accelerate review after defining source contracts. They are not recipes, an exhaustive checklist, or proof of coverage. When none applies, continue with the semantic migration protocol.
+Read when converted code compiles but a platform boundary behaves differently. These are migration-specific areas to inspect, not an exhaustive checklist or additional acceptance gates.
 
-## Lifetime and ownership
+## Window and dispatcher ownership
 
-UWP APIs can imply ownership by the current view, `CoreWindow`, frame, package activation, or framework lifetime. WinUI 3 desktop code may require an explicit `Window`, HWND, dispatcher queue, app-owned lifetime, or packaged/unpackaged distinction. Trace the value to every consumer and preserve cleanup and re-entry behavior.
-
-## Threading and asynchronous transitions
-
-Framework events and delegates may not propagate `Task` completion. Preserve ordering, exceptions, cancellation, and visual-tree lifetime through an async-capable app-owned boundary. Fire-and-forget work is valid only when it is intentionally independent, observes failures, and cannot race navigation, overlay removal, or disposal.
+UWP APIs can imply ownership by the current view, `CoreWindow`, frame, or framework lifetime. WinUI 3 desktop code may require an explicit `Window`, HWND, dispatcher queue, or app-owned lifetime. Carry the actual window and dispatcher through consumers, including asynchronous work and cleanup; do not assume a UWP current-view lookup identifies the desktop owner.
 
 ## XAML resources and binding
 
-Equivalent type names do not guarantee equivalent resource lookup, dependency-property metadata, binding defaults, generated event signatures, theme behavior, or control templates. Verify the effective runtime value and user-visible state rather than only converted markup.
+Resource lookup, dependency-property metadata, binding defaults, generated event signatures, theme resources, and control templates can differ after namespace conversion. Inspect effective runtime values rather than assuming equivalent names preserve them.
 
-A custom template whose target is a framework-owned control depends on that framework's template contract, not only its public type. When the active sentinel reaches such a control, inspect the template root, presenters, named parts, resources, and selection assumptions consumed by source behavior. If those internals are invalid on the target, retain the target framework's template contract and reapply only the source-visible customization required by the invariant.
+A framework control's custom template also depends on its presenters, named parts, resources, and selection assumptions. If the source template relies on incompatible framework internals, retain the target framework's template contract and reapply the source-visible customization.
 
-## Collections, selection, and input
+## Collections and navigation
 
-WinRT collections, .NET collections, change notification, selected-item identity, focus, keyboard modifiers, pointer input, and UI Automation can differ across framework boundaries. Preserve the source state transition and event ordering, not merely the destination control.
+WinRT and .NET collection boundaries can change notification behavior and selected-item identity. Port collection adapters together with their bindings and selection handling.
 
-When navigation mixes stable destinations with transient documents, configuration sessions, or dynamically removed state, decide the target representation before porting source collection mutation. Treat add, select, navigate, cancel or close, remove, reopen, collection ownership, selected-item identity, and visual-tree removal as one lifetime contract.
+Dynamically removing navigation items or closing transient documents can change selection and visual-tree lifetime. Preserve add/select/close/reopen behavior without stale selection or teardown races. Use a target-owned content host when required by target control constraints, not as a routine navigation redesign.
 
-Use mutable target navigation topology only when the target control can own that complete lifecycle without stale selection, generated-binding type conflicts, re-entry, or teardown races. Otherwise keep stable destinations in the navigation control and host transient state behind a target-owned frame, overlay, document host, or equivalent boundary.
+## Package identity and entry points
 
-## Activation, windows, and deployment
-
-Use schema `1.7` `activationAnalysis` as the source manifest contract and mechanical target-declaration evidence. Follow [Activation contracts](activation-contracts.md) for protocol and file activation. Notifications, background work, app services, secondary windows, and package identity still have desktop-specific entry paths and lifetime semantics. A normal primary-window launch or a mechanically verified manifest declaration does not verify these contracts.
+Packaged and unpackaged desktop apps have different identity and deployment assumptions. Notifications, background work, app services, and secondary windows need their desktop entry paths and lifetime behavior preserved; a successful primary-window launch does not exercise them. For protocol and file associations, read [Activation routing](activation-contracts.md).
 
 ## Media, composition, and hosted controls
 
-Media, WebView/editor hosts, composition surfaces, and other native-backed controls often combine package dependencies with thread, lifetime, and teardown contracts. A replacement must preserve consumed callbacks, content/state synchronization, and disposal order. Disabling the feature or providing a type-shaped host is not equivalence.
+Media, WebView/editor hosts, composition surfaces, and other native-backed controls combine package dependencies with window, thread, and teardown ownership. Preserve consumed callbacks, content/state synchronization, and disposal order when replacing the host.

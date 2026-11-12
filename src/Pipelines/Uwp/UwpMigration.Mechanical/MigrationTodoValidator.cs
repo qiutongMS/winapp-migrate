@@ -22,10 +22,12 @@ internal static class MigrationTodoValidator
     private static readonly HashSet<string> CompletionVerificationKinds =
         new(
             [
-                "state-assertion",
-                "state-set",
+                "surface-check",
                 "build-attestation",
+                "target-uwp-compatibility",
                 "report-collection-status",
+                "dependency-contract-review",
+                "activation-contract-review",
                 "report-field",
                 "todo-resolution-evidence"
             ],
@@ -33,7 +35,27 @@ internal static class MigrationTodoValidator
 
     internal static void ValidateAndNormalize(List<MigrationTodo>? todos)
     {
+        ThrowIfInvalid(Validate(todos));
+        foreach (var todo in todos!)
+        {
+            Normalize(todo);
+        }
+    }
+
+    internal static void ValidatePersisted(List<MigrationTodo>? todos)
+    {
         var issues = Validate(todos);
+        foreach (var todo in todos ?? [])
+        {
+            if (todo is not null && todo.Guidance?.CompletionChecks is not { Count: > 0 })
+                issues.Add(new("missing-completion-contract",
+                    $"TODO '{todo.Id}' requires current structured completion checks; persisted contracts cannot be inferred."));
+        }
+        ThrowIfInvalid(issues);
+    }
+
+    private static void ThrowIfInvalid(List<ValidationIssue> issues)
+    {
         if (issues.Count > 0)
         {
             throw new InvalidDataException(
@@ -42,11 +64,6 @@ internal static class MigrationTodoValidator
                     " ",
                     issues.Select(issue =>
                         $"[{issue.Code}] {issue.Message}")));
-        }
-
-        foreach (var todo in todos!)
-        {
-            Normalize(todo);
         }
     }
 
@@ -144,7 +161,7 @@ internal static class MigrationTodoValidator
         {
             issues.Add(new(
                 "invalid-todo-collection",
-                $"TODO '{owner}' has a null affectedStates or affectedFeatures collection."));
+                $"TODO '{owner}' has a null affectedSurfaces or affectedFeatures collection."));
         }
         ValidateTouchSet(todo.TouchSet, owner, issues);
         ValidateGuidanceShape(todo.Guidance, owner, issues);
@@ -275,6 +292,11 @@ internal static class MigrationTodoValidator
                 string.IsNullOrWhiteSpace(check.Target) ||
                 string.IsNullOrWhiteSpace(check.Expected) ||
                 check.AssertionIds is null ||
+                check.VerificationKind == "surface-check" &&
+                    (check.Expected != "passed" ||
+                     check.AssertionIds.Count == 0 ||
+                     check.AssertionIds.Any(id =>
+                         id is not ("target-reachable" or "uia-structure-match"))) ||
                 check.AssertionIds.Any(string.IsNullOrWhiteSpace) ||
                 check.AssertionIds.Distinct(StringComparer.Ordinal).Count() !=
                     check.AssertionIds.Count))
@@ -404,9 +426,10 @@ internal static class MigrationTodoValidator
                             $"{todo.Id.ToLowerInvariant()}-state-{guidance.CompletionChecks.Count + 1}",
                         Summary =
                             $"State '{stateId}' preserves the TODO source invariant.",
-                        VerificationKind = "state-assertion",
+                        VerificationKind = "surface-check",
                         Target = stateId,
-                        Expected = "passed"
+                        Expected = "passed",
+                        AssertionIds = ["target-reachable", "uia-structure-match"]
                     });
                 }
             }

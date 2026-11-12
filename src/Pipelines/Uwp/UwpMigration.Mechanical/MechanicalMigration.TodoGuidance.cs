@@ -115,9 +115,10 @@ public static partial class MechanicalMigration
                             Id = "app-resource-replay-passed",
                             Summary =
                                 "The canonical application launch state verifies required resource lookup.",
-                            VerificationKind = "state-assertion",
+                            VerificationKind = "surface-check",
                             Target = "app-launch",
-                            Expected = "passed"
+                            Expected = "passed",
+                            AssertionIds = ["target-reachable", "uia-structure-match"]
                         }
                     ]
                 }
@@ -234,9 +235,10 @@ public static partial class MechanicalMigration
                             Id = "startup-replay-passed",
                             Summary =
                                 "The canonical application launch state verifies the target startup invariant.",
-                            VerificationKind = "state-assertion",
+                            VerificationKind = "surface-check",
                             Target = "app-launch",
-                            Expected = "passed"
+                            Expected = "passed",
+                            AssertionIds = ["target-reachable", "uia-structure-match"]
                         }
                     ]
                 }
@@ -466,12 +468,13 @@ public static partial class MechanicalMigration
                     [
                         new()
                         {
-                            Id = "dependency-decisions-complete",
+                            Id = "dependency-contract-review",
                             Summary =
-                                "Every inventoried dependency has a target compatibility decision.",
-                            VerificationKind = "report-collection-status",
+                                "Review the target implementation of each consumed source dependency contract.",
+                            VerificationKind = "dependency-contract-review",
                             Target = "dependencyAnalysis",
-                            Expected = "resolved"
+                            Expected =
+                                "The selected target dependency, adapter, or port preserves consumed members, events, errors, and ownership behavior; source declarations remain unchanged."
                         },
                         new()
                         {
@@ -682,23 +685,23 @@ public static partial class MechanicalMigration
                     [
                         new()
                         {
-                            Id = "activation-contracts-verified",
+                            Id = "activation-contract-review",
                             Summary =
-                                "All mechanically migrated activation contracts remain verified.",
-                            VerificationKind = "report-field",
-                            Target = "mechanicalVerification.activationContracts.reviewRequiredContracts",
-                            Expected = "0"
+                                "Review desktop declarations and activation routing against the source contracts.",
+                            VerificationKind = "activation-contract-review",
+                            Target = "activationAnalysis",
+                            Expected =
+                                "Every source capability and extension has a target declaration, explicit equivalent, or evidence-backed exclusion; each activation category delivers its payload to the intended destination with the source repeat-activation and error behavior."
                         },
-                        .. affectedStates.Select((stateId, index) =>
-                            new MigrationCompletionCheck
-                            {
-                                Id = $"activation-state-replay-{index + 1}",
-                                Summary =
-                                    $"Activation state '{stateId}' passes canonical replay.",
-                                VerificationKind = "state-assertion",
-                                Target = stateId,
-                                Expected = "passed"
-                            })
+                        new()
+                        {
+                            Id = "target-build-passed",
+                            Summary =
+                                "The analyzer-enabled target build succeeds after manifest migration.",
+                            VerificationKind = "build-attestation",
+                            Target = "target-build",
+                            Expected = "passed"
+                        }
                     ]
                 }
             };

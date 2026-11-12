@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/microsoft/winapp-migrate/surface-plan-v3.schema.json",
+  "title": "UWP migration UI surface plan",
+  "type": "object",
+  "required": ["schemaVersion", "surfaces"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "3.0" },
+    "surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/surface" }
+    }
+  },
+  "$defs": {
+    "navigationAction": {
+      "type": "object",
+      "required": ["id", "probeIndex", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "probeIndex": { "type": "integer", "minimum": 0 },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "navigation": {
+      "type": "object",
+      "required": ["requiredActions", "treeProbeIndex"],
+      "additionalProperties": false,
+      "properties": {
+        "requiredActions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/navigationAction" }
+        },
+        "treeProbeIndex": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "required": ["status", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "verificationLevel": { "type": ["string", "null"] },
+        "status": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "treeEvidence": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "attestation": { "type": ["string", "null"] }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "disposition",
+        "sourceDefinitions",
+        "criticality",
+        "navigation",
+        "source",
+        "target",
+        "comparison"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": ["window", "page", "dialog", "flyout", "user-control"]
+        },
+        "disposition": { "enum": ["required", "excluded"] },
+        "exclusionReason": { "type": ["string", "null"] },
+        "sourceDefinitions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "slice": { "type": ["string", "null"] },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "criticality": { "const": "required" },
+        "featurePaths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "navigation": {
+          "oneOf": [
+            { "$ref": "#/$defs/navigation" },
+            { "type": "null" }
+          ]
+        },
+        "source": { "$ref": "#/$defs/observation" },
+        "target": { "$ref": "#/$defs/observation" },
+        "comparison": { "$ref": "#/$defs/comparison" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "disposition": { "const": "excluded" } }
+          },
+          "then": {
+            "required": ["exclusionReason"],
+            "properties": {
+              "exclusionReason": { "type": "string", "minLength": 1 },
+              "navigation": { "type": "null" },
+              "source": {
+                "properties": { "status": { "const": "excluded" } }
+              },
+              "target": {
+                "properties": { "status": { "const": "excluded" } }
+              },
+              "comparison": {
+                "properties": { "status": { "const": "excluded" } }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "disposition": { "const": "required" } }
+          },
+          "then": {
+            "properties": {
+              "navigation": { "$ref": "#/$defs/navigation" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

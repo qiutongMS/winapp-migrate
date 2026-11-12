@@ -52,7 +52,6 @@ internal sealed class MigrateCommand : Command
             "create",
             $"Create a new WinUI 3 project from UWP source, apply deterministic mechanical transforms, and emit migration-report schema {MigrationReport.CurrentSchemaVersion}.")
     {
-        Aliases.Add("migrate");
         SourceArgument.AcceptExistingOnly();
         Arguments.Add(SourceArgument);
         Options.Add(OutputOption);

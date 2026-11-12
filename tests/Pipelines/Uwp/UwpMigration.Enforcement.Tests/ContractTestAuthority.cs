@@ -24,13 +24,11 @@ internal static class ContractTestAuthority
         plan.SchemaVersion = StatePlanDocument.CurrentSchemaVersion;
         foreach (var state in plan.States)
         {
+            if (state.SourceDefinitions.Count == 0)
+                state.SourceDefinitions.Add("MainPage.xaml");
             state.Verification ??= new StateVerificationContract
             {
-                RequiredActions = state.Actions.Select((_, index) =>
-                    new RequiredStateAction(index == 0 ? "observe-main" : $"action-{index}", ["inspect"])).ToList(),
-                Steps = state.Actions.Select((_, index) =>
-                    new RequiredStateStep("action", index == 0 ? "observe-main" : $"action-{index}"))
-                    .Concat(state.Assertions.Select(assertion => new RequiredStateStep("assertion", assertion.Id))).ToList()
+                TreeProbeIndex = 0
             };
         }
         var document = new RequiredStateContractDocument

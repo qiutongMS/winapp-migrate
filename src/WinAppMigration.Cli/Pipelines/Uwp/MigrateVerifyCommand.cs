@@ -230,6 +230,9 @@ internal sealed class MigrateVerifyCommand : Command
                 $"Legacy namespace residuals: {verification.LegacyNamespaceResiduals.Count}; " +
                 $"project items: {verification.ProjectItems.MigratedItems}/{verification.ProjectItems.SourceItems}; " +
                 $"unclassified source files: {verification.Inventory.UnclassifiedFiles.Count}.");
+            foreach (var issue in verification.IncompatibleUwpResiduals)
+                Console.Out.WriteLine(
+                    $"{issue.Location.Path}:{issue.Location.Line}: [{issue.RuleId}] {issue.Reason} {issue.RequiredResolution}");
             Console.Out.WriteLine(
                 $"Activation contracts: {verification.ActivationContracts.VerifiedContracts}/" +
                 $"{verification.ActivationContracts.MigratedContracts} verified; " +

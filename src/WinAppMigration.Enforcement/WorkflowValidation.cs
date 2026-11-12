@@ -1,87 +1,31 @@
 // Copyright (c) Microsoft Corporation and Contributors. All rights reserved.
 // Licensed under the MIT License.
 
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
-
 namespace WinAppMigration.Enforcement;
 
 public static class WorkflowValidation
 {
-    public static string PolicyFingerprint(EnforcementPolicy policy) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            JsonSerializer.Serialize(policy, EnforcementStore.JsonOptions)))).ToLowerInvariant();
-
-    public static string? PolicyError(EnforcementPolicy? policy)
-    {
-        if (policy is null || policy.SchemaVersion != EnforcementPolicy.CurrentSchemaVersion)
-            return "Policy must use enforcement policy schema 1.0.";
-        if (policy.TotalHardMinutes is < 1 or > 10080 ||
-            policy.ExtensionMinutes is < 1 or > 60 ||
-            policy.MaximumProgressExtensionsPerUnit is < 0 or > 1)
-            return "Policy total hard minutes must be 1..10080, extension minutes 1..60, and maximumProgressExtensionsPerUnit 0..1.";
-        foreach (var stage in Enum.GetValues<WorkflowStage>())
-        {
-            var budget = policy.For(stage);
-            if (budget is null || budget.SoftMinutes < 1 ||
-                budget.HardMinutes < budget.SoftMinutes || budget.HardMinutes > 1440 ||
-                budget.HardMinutes > policy.TotalHardMinutes || !CountsValid(budget.Operations, 10000))
-                return $"Policy {stage} requires 1 <= softMinutes <= hardMinutes <= min(1440, totalHardMinutes) and operation ceilings 0..10000.";
-            if (Enum.GetValues<WorkflowOperation>().Any(operation =>
-                !WorkflowOperations.IsCompatible(stage, operation) && budget.Operations.For(operation) != 0))
-                return $"Policy {stage} must have zero ceilings for incompatible operations.";
-        }
-        return null;
-    }
-
     public static string? ProgressError(
-        WorkflowProgress? progress, EnforcementPolicy policy, DateTimeOffset now)
+        WorkflowProgress? progress, DateTimeOffset now)
     {
         if (progress is null) return null;
         if (progress.SchemaVersion != WorkflowProgress.CurrentSchemaVersion)
-            return $"Workflow progress schema {progress.SchemaVersion} must be explicitly imported to schema {WorkflowProgress.CurrentSchemaVersion} before evaluation.";
-        return ProgressStructureError(progress, policy, now, allowLegacyAuthorization: false);
-    }
-
-    public static string? Schema20ImportError(
-        WorkflowProgress progress, EnforcementPolicy policy, DateTimeOffset now)
-    {
-        if (progress.SchemaVersion != "2.0")
-            return $"Expected workflow progress schema 2.0, found {progress.SchemaVersion}.";
-        return ProgressStructureError(progress, policy, now, allowLegacyAuthorization: true);
-    }
-
-    private static string? ProgressStructureError(
-        WorkflowProgress progress, EnforcementPolicy policy, DateTimeOffset now,
-        bool allowLegacyAuthorization)
-    {
+            return $"Unsupported workflow progress schema {progress.SchemaVersion}; only {WorkflowProgress.CurrentSchemaVersion} is supported. Preserve the original artifacts.";
         if (!Enum.IsDefined(progress.Stage) ||
-            string.IsNullOrWhiteSpace(progress.PolicyFingerprint) ||
             string.IsNullOrWhiteSpace(progress.LastTargetFingerprint) ||
             progress.LastObservedAt == default || progress.LastObservedAt > now ||
             progress.StartedAt is null || progress.StartedAt == default(DateTimeOffset) || progress.StartedAt > now ||
             progress.OperationsStartedAt > progress.LastObservedAt || progress.OperationsStartedAt < progress.StartedAt ||
             progress.ActiveSliceId is not null && string.IsNullOrWhiteSpace(progress.ActiveSliceId) ||
             progress.Units is null || progress.Events is null || progress.Operations is null ||
-            progress.Debt is null || progress.CompletedSliceIds is null ||
+            progress.CompletedSliceIds is null ||
             progress.UnresolvedRequiredStates is null || progress.Slices is null ||
             progress.LastObservedAt < progress.StartedAt || now < progress.LastObservedAt)
             return "Workflow progress has an unsupported schema or invalid fields/timestamps.";
-        if (allowLegacyAuthorization && progress.OperationsStartedAt is not null &&
-            progress.PolicyFingerprint != PolicyFingerprint(policy))
-            return "Enforcement policy is immutable once workflow operations have started.";
         if (progress.Units.Any(unit => unit is null || !Enum.IsDefined(unit.Stage) ||
                 (unit.Stage != WorkflowStage.SemanticConvergence && unit.SliceId is not null) ||
                 !CountsValid(unit.Operations, int.MaxValue) ||
                 unit.StartedAt is null || unit.StartedAt < progress.StartedAt || unit.StartedAt > now ||
-                unit.ExtensionGrantedAt > progress.LastObservedAt || unit.ExtensionGrantedAt < unit.StartedAt ||
-                unit.ExtensionGrantedAt is not null && (!allowLegacyAuthorization ||
-                    policy.MaximumProgressExtensionsPerUnit == 0) ||
-                unit.BlockedAt > progress.LastObservedAt || unit.BlockedAt < unit.StartedAt ||
-                (unit.BlockedAt is not null) != !string.IsNullOrWhiteSpace(unit.BlockedReason) ||
-                !allowLegacyAuthorization &&
-                    (unit.BlockedAt is not null || unit.BlockedReason is not null) ||
                 unit.Epochs is null || unit.Epochs.Count == 0 ||
                 unit.Epochs.Any(epoch => epoch is null ||
                     string.IsNullOrWhiteSpace(epoch.TargetFingerprint) ||
@@ -92,7 +36,7 @@ public static class WorkflowValidation
                 unit.Epochs.Zip(unit.Epochs.Skip(1)).Any(pair =>
                     pair.First.ExitedAt is null || pair.First.ExitedAt > pair.Second.EnteredAt)) ||
             progress.Units.GroupBy(unit => (unit.Stage, unit.SliceId)).Any(group => group.Count() > 1))
-            return "Workflow progress contains invalid or duplicate workflow units or retired authorization state.";
+            return "Workflow progress contains invalid or duplicate workflow units.";
         var epochs = progress.Units.SelectMany(unit => unit.Epochs).OrderBy(epoch => epoch.EnteredAt)
             .ThenBy(epoch => epoch.ExitedAt ?? DateTimeOffset.MaxValue).ToArray();
         if (epochs.Count(epoch => epoch.ExitedAt is null) > 1 ||
@@ -112,12 +56,7 @@ public static class WorkflowValidation
             return "Workflow slice resolution or evidence generation is invalid.";
         if (progress.Disposition is null)
             return $"Workflow progress schema {progress.SchemaVersion} requires a run disposition.";
-        var dispositionError =
-            allowLegacyAuthorization &&
-            LegacyRetiredAuthorizationDispositionIsValid(
-                progress.Disposition)
-                ? null
-                : DispositionError(progress.Disposition);
+        var dispositionError = DispositionError(progress.Disposition);
         if (dispositionError is not null)
             return dispositionError;
         if (progress.Disposition is { Terminal: true } && epochs.Any(epoch => epoch.ExitedAt is null))
@@ -128,11 +67,9 @@ public static class WorkflowValidation
                     "diagnosis-completed" or "slice-completed" or "discriminating-evidence" or
                     "source-oracle-completed" or "mechanical-stabilized" or "bootstrap-completed")) ||
             progress.Operations.Any(item => item is null || !Enum.IsDefined(item.Stage) ||
-                !WorkflowOperations.IsCompatible(item.Stage, item.Kind) || string.IsNullOrWhiteSpace(item.TargetFingerprint) ||
-                item.RecordedAt == default || item.RecordedAt > progress.LastObservedAt) ||
-            progress.Debt.Any(item => item is null || string.IsNullOrWhiteSpace(item.SliceId) ||
-                string.IsNullOrWhiteSpace(item.Reason)))
-            return "Workflow progress contains invalid progress events, operations, or debt.";
+                !Enum.IsDefined(item.Kind) || string.IsNullOrWhiteSpace(item.TargetFingerprint) ||
+                item.RecordedAt == default || item.RecordedAt > progress.LastObservedAt))
+            return "Workflow progress contains invalid progress events or operations.";
         foreach (var unit in progress.Units)
         {
             foreach (var operation in Enum.GetValues<WorkflowOperation>())
@@ -151,31 +88,9 @@ public static class WorkflowValidation
             (progress.StartedAt is null || progress.OperationsStartedAt is null) ||
             progress.Operations.Any(operation => !progress.Units.Any(unit =>
                 unit.Stage == operation.Stage && unit.SliceId == operation.SliceId)))
-            return "Workflow operations require a start time and matching budget units.";
+            return "Workflow operations require a start time and matching workflow units.";
         return null;
     }
-
-    private static bool LegacyRetiredAuthorizationDispositionIsValid(
-        RunDisposition? disposition) =>
-        disposition is
-        {
-            Terminal: true,
-            Retryable: false,
-            Finalization: "blocked",
-            AllowedOperations.Count: 0
-        } &&
-        (disposition is
-        {
-            Kind: "total-budget-exhausted",
-            ReasonCode: "total-hard-limit"
-        } ||
-         disposition is
-         {
-             Kind: "blocked-required",
-             ReasonCode: "unit-hard-limit" or
-                    "operation-ceiling" or
-                    "required-work-blocked"
-         });
 
     public static string? DispositionError(RunDisposition? disposition)
     {
@@ -183,19 +98,22 @@ public static class WorkflowValidation
         var expected = disposition.Kind switch
         {
             "continue" => (false, true, "not-ready"),
-            "pause-replan" => (false, true, "not-ready"),
-            "continue-with-debt" => (false, true, "debt"),
             "complete" => (true, false, "complete"),
-            "blocked-required" => (false, true, "blocked"),
-            "total-budget-exhausted" => (true, false, "blocked"),
             "infrastructure-failure" => (true, true, "failed"),
             _ => ((bool, bool, string)?)null
         };
-        return expected is null || string.IsNullOrWhiteSpace(disposition.ReasonCode) ||
+        var reasonValid = (disposition.Kind, disposition.ReasonCode) switch
+        {
+            ("continue", "workflow-active" or "closure-evidence-reopened") => true,
+            ("complete", "closure-passed") => true,
+            ("infrastructure-failure", "invalid-enforcement-artifacts" or "process-invocation-failed") => true,
+            _ => false
+        };
+        return expected is null || !reasonValid ||
             disposition.Terminal != expected.Value.Item1 || disposition.Retryable != expected.Value.Item2 ||
             disposition.Finalization != expected.Value.Item3 || disposition.AllowedOperations is null ||
             disposition.AllowedOperations.Any(operation => !Enum.IsDefined(operation)) ||
-            (disposition.Terminal || disposition.Kind == "pause-replan") &&
+            disposition.Terminal &&
                 disposition.AllowedOperations.Count > 0 ||
             disposition.AllowedOperations.Distinct().Count() != disposition.AllowedOperations.Count
             ? "Workflow run disposition has invalid kind, reason code, terminal, retryable, operations, or finalization semantics."

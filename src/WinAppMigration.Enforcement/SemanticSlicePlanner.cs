@@ -28,29 +28,42 @@ public static class SemanticSlicePlanner
                 state.Dependencies is null ||
                 state.Dependencies.Any(string.IsNullOrWhiteSpace) ||
                 state.Source is null || state.Target is null || state.Comparison is null ||
-                state.Source.Evidence is null || state.Target.Evidence is null ||
-                state.Assertions is null)
+                state.Source.Evidence is null || state.Target.Evidence is null)
             {
-                reason = $"State {state.Id} has invalid slice, criticality, dependency, observation status, or assertion metadata.";
+                reason = $"Surface {state.Id} has invalid slice, criticality, dependency, observation status, or check metadata.";
                 return false;
+            }
+            if (state.Disposition == "excluded")
+            {
+                if (state.Source.Status != "excluded" ||
+                    state.Target.Status != "excluded" ||
+                    state.Comparison.Status != "excluded")
+                {
+                    reason = $"Excluded surface {state.Id} must remain excluded in every observation phase.";
+                    return false;
+                }
+                continue;
             }
             if (state.Source.Status is not ("not-run" or "captured" or "blocked" or "unverified"))
             {
-                reason = $"State {state.Id} source status {state.Source.Status} is invalid; use captured, blocked, or unverified (not-run only before an attempt).";
+                reason = $"Surface {state.Id} source status {state.Source.Status} is invalid; use captured, blocked, or unverified (not-run only before an attempt).";
                 return false;
             }
             if (state.Target.Status is not ("not-run" or "passed" or "blocked" or "unverified" or "failed"))
             {
-                reason = $"State {state.Id} target status {state.Target.Status} is invalid; use passed, blocked, unverified, or failed (not-run only before an attempt).";
+                reason = $"Surface {state.Id} target status {state.Target.Status} is invalid; use passed, blocked, unverified, or failed (not-run only before an attempt).";
                 return false;
             }
             if (state.Comparison.Status is not ("not-run" or "verified" or "blocked" or "unverified" or "failed"))
             {
-                reason = $"State {state.Id} comparison status {state.Comparison.Status} is invalid; use verified, blocked, unverified, or failed (not-run only before an attempt).";
+                reason = $"Surface {state.Id} comparison status {state.Comparison.Status} is invalid; use verified, blocked, unverified, or failed (not-run only before an attempt).";
                 return false;
             }
         }
-        var groups = plan.States.GroupBy(SliceId, StringComparer.Ordinal).ToArray();
+        var groups = plan.States
+            .Where(state => state.Disposition == "required")
+            .GroupBy(SliceId, StringComparer.Ordinal)
+            .ToArray();
         var dependencies = groups.ToDictionary(
             group => group.Key,
             group => group.SelectMany(state => state.Dependencies)
@@ -60,7 +73,7 @@ public static class SemanticSlicePlanner
         {
             if (group.Select(state => state.Criticality).Distinct().Count() != 1)
             {
-                reason = $"All states in slice {group.Key} must have the same criticality.";
+                reason = $"All surfaces in slice {group.Key} must have the same criticality.";
                 return false;
             }
             if (dependencies[group.Key].Any(dependency => !dependencies.ContainsKey(dependency)))
@@ -92,12 +105,12 @@ public static class SemanticSlicePlanner
     public static bool SourceReady(
         DirectoryInfo root, StatePlanDocument plan, out string reason)
     {
-        foreach (var state in plan.States.Where(state => state.Criticality == StateCriticality.Required))
+        foreach (var state in plan.States.Where(state => state.Disposition == "required"))
         {
             if (state.Source.Status != "captured" ||
                 !EvidenceExists(root, state.Source.Evidence, null, out _))
             {
-                reason = $"Required state {state.Id} needs captured source-oracle evidence before parity can be verified and strict closure can pass.";
+                reason = $"Required surface {state.Id} needs captured source-oracle evidence before parity can be verified and strict closure can pass.";
                 return false;
             }
         }
@@ -109,7 +122,8 @@ public static class SemanticSlicePlanner
         DirectoryInfo root, StatePlanDocument plan, ReplayAttestation? freshReplay,
         WorkflowProgress? progress = null, DateTimeOffset? now = null, IWindowOwnerResolver? windowOwnerResolver = null)
     {
-        return plan.States.GroupBy(SliceId, StringComparer.Ordinal)
+        return plan.States.Where(state => state.Disposition == "required")
+            .GroupBy(SliceId, StringComparer.Ordinal)
             .Select(group =>
             {
                 var states = group.ToArray();
@@ -134,28 +148,26 @@ public static class SemanticSlicePlanner
     }
 
     public static SemanticSlice? Select(
-        IReadOnlyList<SemanticSlice> slices, IReadOnlyList<WorkflowDebt> debt) =>
+        IReadOnlyList<SemanticSlice> slices) =>
         slices.FirstOrDefault(slice => !slice.Resolved &&
-            (slice.Criticality == StateCriticality.Required || !debt.Any(item => item.SliceId == slice.Id)) &&
             slice.Dependencies.All(dependency => slices.Any(
-                candidate => candidate.Id == dependency && candidate.Resolved &&
-                    !debt.Any(item => item.SliceId == dependency))));
+                candidate => candidate.Id == dependency && candidate.Resolved)));
 
     private static string? StateReason(
         DirectoryInfo root, MigrationState state, ReplayAttestation? replay, DateTimeOffset now, IWindowOwnerResolver? windowOwnerResolver)
     {
         if (state.Source.Status != "captured")
-            return $"State {state.Id} source status {state.Source.Status} is not captured.";
+            return $"Surface {state.Id} source status {state.Source.Status} is not captured.";
         if (!EvidenceExists(root, state.Source.Evidence, null, out var sourceReason))
-            return $"State {state.Id} source: {sourceReason}";
+            return $"Surface {state.Id} source: {sourceReason}";
         if (state.Target.Status != "passed")
-            return $"State {state.Id} target status {state.Target.Status} is not closed.";
+            return $"Surface {state.Id} target status {state.Target.Status} is not closed.";
         if (state.Comparison.Status != "verified")
-            return $"State {state.Id} comparison status {state.Comparison.Status} is not closed; use verified, blocked, unverified, or failed.";
+            return $"Surface {state.Id} comparison status {state.Comparison.Status} is not closed; use verified, blocked, unverified, or failed.";
         if (replay is null)
-            return $"State {state.Id} requires a fresh canonical replay.";
+            return $"Surface {state.Id} requires a fresh canonical replay.";
         if (!EvidenceExists(root, state.Target.Evidence, replay.StartedAt, out var reason))
-            return $"State {state.Id}: {reason}";
+            return $"Surface {state.Id}: {reason}";
         return StateClosureProtocol.Verify(root, state, replay, now, out var closureReason, windowOwnerResolver)
             ? null : closureReason;
     }
@@ -163,7 +175,7 @@ public static class SemanticSlicePlanner
     private static bool EvidenceExists(
         DirectoryInfo root, List<string> paths, DateTimeOffset? after, out string reason)
     {
-        reason = "Captured source and passed target states require evidence.";
+        reason = "Captured source and passed target surfaces require evidence.";
         if (paths.Count == 0) return false;
         foreach (var relativePath in paths)
         {

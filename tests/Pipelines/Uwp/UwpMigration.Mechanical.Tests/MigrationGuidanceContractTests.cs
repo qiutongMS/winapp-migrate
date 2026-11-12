@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using UwpMigration.Contracts;
 
 namespace UwpMigration.Mechanical.Tests;
@@ -81,9 +82,10 @@ public class MigrationGuidanceContractTests
                             {
                                 Id = "test-check",
                                 Summary = "The state assertion passes.",
-                                VerificationKind = "state-assertion",
+                                VerificationKind = "surface-check",
                                 Target = "test-state",
-                                Expected = "passed"
+                                Expected = "passed",
+                                AssertionIds = ["target-reachable", "uia-structure-match"]
                             }
                         ]
                     }
@@ -124,7 +126,7 @@ public class MigrationGuidanceContractTests
             new[] { "The behavior is verified." },
             guidance.CompletionConditions);
         Assert.AreEqual(
-            "state-assertion",
+            "surface-check",
             guidance.CompletionChecks.Single().VerificationKind);
         Assert.AreEqual(
             "UWMIG999",
@@ -132,38 +134,73 @@ public class MigrationGuidanceContractTests
     }
 
     [TestMethod]
-    public void Schema14Todo_DeserializesWithoutGuidance()
+    [DataRow("state-set")]
+    [DataRow("missing-checks")]
+    [DataRow("missing-check-ids")]
+    public void TodoContract_RejectsRetiredOrIncompleteCompletionProtocol(string mutation)
     {
-        const string json = """
-            {
-              "schemaVersion": "1.4",
-              "source": { "root": "source" },
-              "target": { "root": "target" },
-              "todos": [
-                {
-                  "id": "UWMIG005",
-                  "category": "dispatcher",
-                  "priority": "required",
-                  "status": "accepted",
-                  "summary": "Preserved summary",
-                  "reason": "Preserved reason",
-                  "locations": [{ "path": "Page.xaml.cs", "line": 21 }]
-                }
-              ]
-            }
-            """;
+        var todo = CurrentSurfaceTodo();
+        if (mutation == "state-set")
+        {
+            todo.Guidance!.CompletionChecks[0].VerificationKind = "state-set";
+            todo.Guidance.CompletionChecks[0].Target = "affectedStates";
+        }
+        if (mutation == "missing-checks")
+            todo.Guidance!.CompletionChecks.Clear();
+        if (mutation == "missing-check-ids")
+            todo.Guidance!.CompletionChecks[0].AssertionIds.Clear();
 
-        var report = JsonSerializer.Deserialize(
-            json,
-            MigrateJsonContext.Default.MigrationReport)!;
-
-        Assert.AreEqual("1.4", report.SchemaVersion);
-        var todo = report.Todos.Single();
-        Assert.AreEqual("accepted", todo.Status);
-        Assert.AreEqual("Preserved reason", todo.Reason);
-        Assert.AreEqual(21, todo.Locations.Single().Line);
-        Assert.IsNull(todo.Guidance);
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            MigrationTodoValidator.ValidatePersisted([todo]));
     }
+
+    [TestMethod]
+    [DataRow("affectedStates")]
+    [DataRow("assertionIds")]
+    public void TodoContract_RejectsRetiredJsonNames(string property)
+    {
+        var report = new MigrationReport
+        {
+            Source = new MigrationProject { Root = "source" },
+            Target = new MigrationProject { Root = "target" },
+            Todos = [CurrentSurfaceTodo()]
+        };
+        var node = JsonNode.Parse(JsonSerializer.Serialize(
+            report, MigrateJsonContext.Default.MigrationReport))!;
+        if (property == "affectedStates")
+            node["todos"]![0]![property] = new JsonArray("main");
+        else
+            node["todos"]![0]!["guidance"]!["completionChecks"]![0]![property] =
+                new JsonArray("target-reachable");
+        Assert.ThrowsExactly<JsonException>(() => JsonSerializer.Deserialize(
+            node.ToJsonString(), MigrateJsonContext.Default.MigrationReport));
+    }
+
+    private static MigrationTodo CurrentSurfaceTodo() => new()
+    {
+        Id = "UWMIG-CURRENT",
+        Category = "test",
+        Priority = "required",
+        Summary = "Preserve the main surface.",
+        Reason = "The main surface is inventoried.",
+        AffectedStates = ["main"],
+        Guidance = new MigrationRepairGuidance
+        {
+            ReasonCode = "test",
+            CompletionChecks =
+            [
+                new()
+                {
+                    Id = "main-parity",
+                    Summary = "The main surface preserves its tree.",
+                    VerificationKind = "surface-check",
+                    Target = "main",
+                    Expected = "passed",
+                    AssertionIds = ["target-reachable", "uia-structure-match"]
+                }
+            ]
+        }
+    };
 
     [TestMethod]
     public async Task ReportStoreRejectsSchema16()

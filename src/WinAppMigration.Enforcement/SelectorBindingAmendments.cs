@@ -84,7 +84,7 @@ public static class SelectorBindingAmendments
         var action = state.Verification?.RequiredActions
             .SingleOrDefault(candidate => candidate.Id == actionId)
             ?? throw new InvalidDataException(
-                $"State {state.Id} has no required action {actionId}.");
+                $"Surface {state.Id} has no required action {actionId}.");
         var existing = await LoadAsync(root, requiredHash, cancellationToken);
         var anchorName = AnchorName(root);
         if (existing is null &&
@@ -261,7 +261,7 @@ public static class SelectorBindingAmendments
                 .SingleOrDefault(candidate =>
                     candidate.Id == amendment.ActionId)
                 ?? throw new InvalidDataException(
-                    $"Selector binding references unknown required action {amendment.ActionId} in state {state.Id}.");
+                    $"Selector binding references unknown required action {amendment.ActionId} in surface {state.Id}.");
             ValidateSelectorOnlyChange(
                 action.Command,
                 amendment.ReplacementCommand);

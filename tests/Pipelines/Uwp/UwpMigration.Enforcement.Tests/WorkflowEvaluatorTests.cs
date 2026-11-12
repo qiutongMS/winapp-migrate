@@ -138,13 +138,9 @@ public sealed partial class EnforcementEvaluatorTests
         using var fixture = new EvaluatorFixture();
         var snapshot = EnforcementEvaluator.Evaluate(ExpiredInput(fixture, minutes));
         Assert.AreEqual("state", snapshot.Frontier?.Kind);
-        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
-        Assert.IsFalse(snapshot.Budget!.MeasuredProgress);
-        Assert.AreEqual(minutes, snapshot.Budget.ElapsedMinutes);
-        Assert.AreEqual(minutes, snapshot.Budget.TotalElapsedMinutes);
-        Assert.IsNull(snapshot.Budget.SoftDeadline);
-        Assert.IsNull(snapshot.Budget.HardDeadline);
-        Assert.IsNull(snapshot.Budget.TotalHardDeadline);
+        Assert.IsFalse(snapshot.Telemetry!.MeasuredProgress);
+        Assert.AreEqual(minutes, snapshot.Telemetry.ElapsedMinutes);
+        Assert.AreEqual(minutes, snapshot.Telemetry.TotalElapsedMinutes);
         Assert.IsFalse(snapshot.Disposition!.Terminal);
     }
 
@@ -153,11 +149,8 @@ public sealed partial class EnforcementEvaluatorTests
     {
         using var fixture = new EvaluatorFixture();
         var input = ExpiredInput(fixture, 16);
-        input.Policy.SemanticConvergence.HardMinutes = 40;
         var observed = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.AreEqual("within-budget", observed.Budget?.Decision);
-        Assert.AreEqual(0, observed.Budget!.ExtensionsUsed);
-        Assert.IsTrue(observed.Budget.MeasuredProgress);
+        Assert.IsTrue(observed.Telemetry!.MeasuredProgress);
         Assert.AreEqual("build", observed.Frontier?.Kind);
     }
 
@@ -175,9 +168,7 @@ public sealed partial class EnforcementEvaluatorTests
             Diagnosis = Diagnosis(recorded.AddSeconds(1))
         });
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
-        Assert.AreEqual(0, snapshot.Budget!.ExtensionsUsed);
-        Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
+        Assert.AreEqual("state", snapshot.Frontier?.Kind);
         Assert.IsTrue(snapshot.Workflow!.Events.Any(item => item.Kind == "diagnosis-completed"));
     }
 
@@ -186,14 +177,10 @@ public sealed partial class EnforcementEvaluatorTests
     {
         using var fixture = new EvaluatorFixture();
         var input = SemanticInput(fixture) with { TargetFingerprint = "corrected" };
-        input.Policy.SemanticConvergence.Operations.Builds = 0;
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
         Assert.AreEqual("build", snapshot.Frontier?.Kind);
         Assert.IsFalse(snapshot.Disposition!.Terminal);
-        Assert.AreEqual(0, snapshot.Budget!.Operations.Builds);
-        Assert.AreEqual(0, snapshot.Budget.OperationCeilings.Builds);
-        Assert.AreEqual(2, snapshot.Budget.OperationCeilings.Replays);
+        Assert.AreEqual(0, snapshot.Telemetry!.Operations.Builds);
     }
 
     [TestMethod]
@@ -217,6 +204,7 @@ public sealed partial class EnforcementEvaluatorTests
         dependent.Dependencies = ["prerequisite"];
         var prerequisite = State("prerequisite");
         input.StatePlan.States.Add(prerequisite);
+        AnchorPlan(input);
         var first = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual("prerequisite", first.ActiveSlice);
         CollectionAssert.AreEqual(new[] { "prerequisite" }, first.ActiveStateIds);
@@ -249,36 +237,14 @@ public sealed partial class EnforcementEvaluatorTests
         var input = SemanticInput(fixture);
         input.StatePlan!.States[0].Target.Status = "blocked";
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("required-blocked", snapshot.Frontier?.Kind);
+        Assert.AreEqual("state", snapshot.Frontier?.Kind);
         Assert.AreEqual("blocked", snapshot.Status);
         Assert.AreEqual("verified", input.StatePlan.States[0].Comparison.Status);
         Assert.AreEqual("blocked", input.StatePlan.States[0].Target.Status);
     }
 
     [TestMethod]
-    public void Slices_OptionalDebtDoesNotBlockIndependentSliceOrSatisfyDependencies()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = SemanticInput(fixture);
-        var optional = input.StatePlan!.States[0];
-        optional.Criticality = StateCriticality.Optional;
-        optional.Target.Status = "blocked";
-        input.StatePlan.States.Add(State("independent"));
-        var dependent = State("dependent");
-        dependent.Dependencies = ["state-1"];
-        input.StatePlan.States.Add(dependent);
-        var deferred = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("continue-with-debt", deferred.Status);
-        var next = EnforcementEvaluator.Evaluate(input with { Progress = deferred.Workflow });
-        Assert.AreEqual("independent", next.ActiveSlice);
-        AttestState(input, input.StatePlan.States[1]);
-        var blocked = EnforcementEvaluator.Evaluate(input with { Progress = next.Workflow });
-        Assert.IsNull(blocked.ActiveSlice);
-        Assert.AreEqual("required-blocked", blocked.Frontier?.Kind);
-    }
-
-    [TestMethod]
-    public void Diagnosis_EarlierUnresolvedRuntimeFailureCannotBeHiddenByLaterDiagnosis()
+    public void Diagnosis_NotesDoNotReplaceCurrentSurfaceVerification()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -294,12 +260,12 @@ public sealed partial class EnforcementEvaluatorTests
             RecordedAt = recorded.AddSeconds(1), Diagnosis = Diagnosis(input.GeneratedAt)
         });
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
-        Assert.AreEqual("older-unresolved", snapshot.Frontier?.Signature);
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.IsNull(snapshot.Frontier);
     }
 
     [TestMethod]
-    public void Diagnosis_CompleteDiagnosisRequiresChangeThenBuild()
+    public void Diagnosis_TargetChangesRequireFreshBuildRatherThanANewDiagnosis()
     {
         using var fixture = new EvaluatorFixture();
         var input = SemanticInput(fixture);
@@ -309,7 +275,7 @@ public sealed partial class EnforcementEvaluatorTests
             RecordedAt = input.GeneratedAt.AddSeconds(-1), Diagnosis = Diagnosis(input.GeneratedAt)
         });
         var diagnosed = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("change-required", diagnosed.Frontier?.Kind);
+        Assert.AreEqual("state", diagnosed.Frontier?.Kind);
         var corrected = EnforcementEvaluator.Evaluate(input with
         {
             TargetFingerprint = "corrected", Progress = diagnosed.Workflow
@@ -329,7 +295,7 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual(WorkflowStage.Closure, completed.Stage);
         Assert.AreNotEqual("blocked-required", completed.Disposition?.Kind);
         Assert.AreNotEqual("total-budget-exhausted", completed.Disposition?.Kind);
-        Assert.IsTrue(completed.Workflow!.Units.All(unit => unit.BlockedAt is null));
+        Assert.IsTrue(completed.Workflow!.Units.Any(unit => unit.Stage == WorkflowStage.Closure));
     }
 
     [TestMethod]
@@ -339,7 +305,7 @@ public sealed partial class EnforcementEvaluatorTests
         var input = ExpiredInput(fixture, 16);
         input.StatePlan!.States.Add(State("second"));
         var observed = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.AreEqual(0, observed.Budget!.ExtensionsUsed);
+        Assert.AreEqual(16, observed.Telemetry!.ElapsedMinutes);
         input.StatePlan.States[0].Target.Status = "passed";
         var next = EnforcementEvaluator.Evaluate(input with { Progress = observed.Workflow });
         Assert.AreEqual("second", next.ActiveSlice);
@@ -348,22 +314,20 @@ public sealed partial class EnforcementEvaluatorTests
             Progress = next.Workflow, TargetFingerprint = "another-correction",
             GeneratedAt = input.GeneratedAt.AddMinutes(16)
         });
-        Assert.AreEqual("within-budget", observedAgain.Budget?.Decision);
-        Assert.AreEqual(0, observedAgain.Budget!.ExtensionsUsed);
-        Assert.IsTrue(observedAgain.Budget.MeasuredProgress);
-        Assert.IsTrue(observedAgain.Workflow!.Units.All(unit => unit.ExtensionGrantedAt is null));
-        Assert.IsNull(WorkflowValidation.ProgressError(observedAgain.Workflow, input.Policy, input.GeneratedAt.AddMinutes(16)));
+        Assert.AreEqual(16, observedAgain.Telemetry!.ElapsedMinutes);
+        Assert.IsTrue(observedAgain.Telemetry.MeasuredProgress);
+        Assert.IsNull(WorkflowValidation.ProgressError(observedAgain.Workflow, input.GeneratedAt.AddMinutes(16)));
     }
 
     [TestMethod]
-    public void Slices_OpenFindingReopensOnlyItsSliceBeforeClosure()
+    public void Slices_BusinessFindingDoesNotReopenVerifiedSurfaceWork()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
         var second = State("second");
-        second.Target.Status = "passed";
-        second.Comparison.Status = "verified";
         input.StatePlan!.States.Add(second);
+        AttestState(input);
+        AttestState(input, second);
         input = input with
         {
             FindingLedger = new SemanticFindingLedger
@@ -379,9 +343,10 @@ public sealed partial class EnforcementEvaluatorTests
             }
         };
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual(WorkflowStage.SemanticConvergence, snapshot.Stage);
-        Assert.AreEqual("second", snapshot.ActiveSlice);
-        Assert.AreEqual("finding", snapshot.Frontier?.Kind);
+        Assert.AreEqual(WorkflowStage.Closure, snapshot.Stage);
+        Assert.IsNull(snapshot.ActiveSlice);
+        Assert.AreEqual("report-sync", snapshot.Frontier?.Kind);
+        Assert.AreEqual("open", snapshot.Findings.Single().Status);
     }
 
     [TestMethod]
@@ -399,7 +364,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Diagnosis_ClosureRuntimeFailureReopensSemanticSlice()
+    public void Diagnosis_UnscopedFailureHistoryDoesNotOverrideVerifiedSurfaceEvidence()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput() with
@@ -413,114 +378,45 @@ public sealed partial class EnforcementEvaluatorTests
             StateId = "state-1", SliceId = "state-1", RecordedAt = input.GeneratedAt
         });
         var snapshot = EnforcementEvaluator.Evaluate(input with { Progress = closure.Workflow });
-        Assert.AreEqual(WorkflowStage.SemanticConvergence, snapshot.Stage);
-        Assert.AreEqual("state-1", snapshot.ActiveSlice);
-        Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
-    }
-
-    [TestMethod]
-    [DataRow("total-low")]
-    [DataRow("total-high")]
-    [DataRow("extension-low")]
-    [DataRow("extension-high")]
-    [DataRow("extension-count-low")]
-    [DataRow("extension-count-high")]
-    [DataRow("soft-low")]
-    [DataRow("hard-high")]
-    [DataRow("hard-above-total")]
-    [DataRow("operation-high")]
-    public void Policy_AllNumericRangesAreValidated(string mutation)
-    {
-        var policy = EnforcementPolicy.Balanced();
-        switch (mutation)
-        {
-            case "total-low": policy.TotalHardMinutes = 0; break;
-            case "total-high": policy.TotalHardMinutes = 10081; break;
-            case "extension-low": policy.ExtensionMinutes = 0; break;
-            case "extension-high": policy.ExtensionMinutes = 61; break;
-            case "extension-count-low": policy.MaximumProgressExtensionsPerUnit = -1; break;
-            case "extension-count-high": policy.MaximumProgressExtensionsPerUnit = 2; break;
-            case "soft-low": policy.SourceOracle.SoftMinutes = 0; break;
-            case "hard-high": policy.SourceOracle.HardMinutes = 1441; break;
-            case "hard-above-total": policy.TotalHardMinutes = 20; break;
-            case "operation-high": policy.SourceOracle.Operations.UiActions = 10001; break;
-            default: Assert.Fail("Unknown test mutation."); break;
-        }
-        Assert.IsNotNull(WorkflowValidation.PolicyError(policy));
-    }
-
-    [TestMethod]
-    [DataRow(WorkflowStage.SourceOracle, 0, 0, 0, 0, 0)]
-    [DataRow(WorkflowStage.MechanicalStabilization, 3, 0, 0, 0, 0)]
-    [DataRow(WorkflowStage.TargetBootstrap, 0, 2, 1, 1, 0)]
-    [DataRow(WorkflowStage.SemanticConvergence, 3, 2, 1, 1, 40)]
-    [DataRow(WorkflowStage.Closure, 1, 1, 0, 0, 10)]
-    public void Policy_BalancedCeilingsAreStageSpecific(
-        WorkflowStage stage, int builds, int replays, int diagnostics, int hypotheses, int ui)
-    {
-        var policy = EnforcementPolicy.Balanced();
-        var counts = policy.For(stage).Operations;
-        Assert.AreEqual(builds, counts.Builds);
-        Assert.AreEqual(replays, counts.Replays);
-        Assert.AreEqual(diagnostics, counts.DiagnosticRuns);
-        Assert.AreEqual(hypotheses, counts.Hypotheses);
-        Assert.AreEqual(ui, counts.UiActions);
-        foreach (var operation in Enum.GetValues<WorkflowOperation>())
-            Assert.AreEqual(counts.For(operation) > 0, WorkflowOperations.IsCompatible(stage, operation));
-        Assert.IsNull(WorkflowValidation.PolicyError(policy));
+        Assert.AreEqual(WorkflowStage.Closure, snapshot.Stage);
+        Assert.IsNull(snapshot.ActiveSlice);
+        Assert.AreEqual("report-sync", snapshot.Frontier?.Kind);
     }
 
     [TestMethod]
     [DataRow(WorkflowStage.SourceOracle)]
     [DataRow(WorkflowStage.MechanicalStabilization)]
     [DataRow(WorkflowStage.TargetBootstrap)]
+    [DataRow(WorkflowStage.SemanticConvergence)]
     [DataRow(WorkflowStage.Closure)]
-    public void Operations_IncompatibleKindsCannotBeEnabledByCustomCeilings(WorkflowStage stage)
+    public void Operations_StagesDoNotAuthorizeOperations(WorkflowStage stage)
     {
         using var fixture = new EvaluatorFixture();
         var input = SemanticInput(fixture);
         var snapshot = EnforcementEvaluator.Evaluate(input);
         snapshot.Workflow!.Stage = stage;
-        foreach (var operation in Enum.GetValues<WorkflowOperation>().Where(kind =>
-            !WorkflowOperations.IsCompatible(stage, kind)))
+        foreach (var operation in Enum.GetValues<WorkflowOperation>())
         {
-            input.Policy.For(stage).Operations.Increment(operation);
-            StringAssert.Contains(WorkflowValidation.PolicyError(input.Policy)!, "zero ceilings");
-            Assert.IsFalse(WorkflowOperations.TryBegin(input, snapshot, operation, [], null, out var reason));
-            StringAssert.Contains(reason, "not permitted");
+            Assert.IsTrue(WorkflowOperations.TryBegin(input, snapshot, operation, [], null, out var reason), reason);
         }
-        Assert.IsEmpty(snapshot.Workflow.Operations);
+        Assert.HasCount(Enum.GetValues<WorkflowOperation>().Length, snapshot.Workflow.Operations);
     }
 
     [TestMethod]
     [DataRow(WorkflowOperation.DiagnosticRun)]
     [DataRow(WorkflowOperation.Hypothesis)]
-    public void Operations_BootstrapDiagnosisRequiresRuntimeFailure(WorkflowOperation operation)
+    public void Operations_DiagnosticsDoNotRequireARecordedRuntimeFailure(WorkflowOperation operation)
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput() with { Replay = null };
         var snapshot = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual(WorkflowStage.TargetBootstrap, snapshot.Stage);
-        Assert.IsFalse(WorkflowOperations.TryBegin(input, snapshot, operation, [], null, out var reason));
-        StringAssert.Contains(reason, "require a bootstrap runtime failure");
-        Assert.IsEmpty(snapshot.Workflow!.Operations);
+        Assert.IsTrue(WorkflowOperations.TryBegin(input, snapshot, operation, [], null, out var reason), reason);
+        Assert.AreEqual(operation, snapshot.Workflow!.Operations.Single().Kind);
     }
 
     [TestMethod]
-    public void Budget_DisabledExtensionsAreValidatedPerUnit()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = ExpiredInput(fixture, 16);
-        input.Policy.MaximumProgressExtensionsPerUnit = 0;
-        var snapshot = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.AreEqual("within-budget", snapshot.Budget?.Decision);
-        var unit = snapshot.Workflow!.Units.Single();
-        unit.ExtensionGrantedAt = input.GeneratedAt;
-        Assert.IsNotNull(WorkflowValidation.ProgressError(snapshot.Workflow, input.Policy, input.GeneratedAt));
-    }
-
-    [TestMethod]
-    public void Diagnosis_FailedReplayWithoutLedgerStillRequiresSourceFirstDiagnosis()
+    public void Diagnosis_FailedReplayRequiresASuccessfulReplayNotAMandatoryDiagnosis()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -528,7 +424,7 @@ public sealed partial class EnforcementEvaluatorTests
         input.Replay.Signature = "runtime-failure";
         SealCanonicalFixture(input);
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
+        Assert.AreEqual("replay", snapshot.Frontier?.Kind);
         Assert.AreEqual("runtime-failure", snapshot.Frontier?.Signature);
         Assert.IsEmpty(input.Attempts.Attempts);
     }
@@ -555,8 +451,16 @@ public sealed partial class EnforcementEvaluatorTests
 
     private static MigrationState State(string id) => new()
     {
-        Id = id, Actions = ["Observe"], ExpectedOutcome = "Expected state",
-        Source = new StateObservation { Status = "captured", Evidence = ["evidence.txt"] },
+        Id = id,
+        Kind = "page",
+        SourceDefinitions = [$"{id}.xaml"],
+        Verification = new StateVerificationContract { TreeProbeIndex = 0 },
+        Source = new StateObservation
+        {
+            Status = "captured",
+            Evidence = ["evidence.txt"],
+            TreeEvidence = "evidence.txt"
+        },
         Target = new StateObservation { Status = "unverified", Evidence = ["evidence.txt"] },
         Comparison = new StateComparison { Status = "unverified" }
     };

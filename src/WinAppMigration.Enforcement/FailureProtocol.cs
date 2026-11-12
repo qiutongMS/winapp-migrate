@@ -26,31 +26,4 @@ public static class FailureProtocol
     private static bool EvidenceExists(DirectoryInfo root, string relativePath) =>
         EnforcementStore.TryResolveContainedPath(root, relativePath, out var path, out _) && File.Exists(path);
 
-    public static EnforcementFrontier? FindChangeRequired(EnforcementEvaluationInput input)
-    {
-        var diagnosed = input.Attempts.Attempts.FirstOrDefault(attempt =>
-            attempt.TargetFingerprint == input.TargetFingerprint &&
-            EnforcementEvaluator.DiagnosisIsComplete(input.TargetRoot, attempt));
-        if (diagnosed is not null)
-            return ChangeRequired(diagnosed.Signature, diagnosed.StateId, diagnosed.SliceId,
-                "Completed source-first diagnosis requires a target fingerprint change before another build, replay, or hypothesis.");
-        var failed = input.Attempts.Attempts.FirstOrDefault(attempt =>
-            attempt.Kind == "build" && attempt.TargetFingerprint == input.TargetFingerprint &&
-            (input.Build is not { Success: true } || input.Build.TargetFingerprint != input.TargetFingerprint ||
-                input.Build.CompletedAt < attempt.RecordedAt));
-        if (failed is not null)
-            return ChangeRequired(failed.Signature, failed.StateId, failed.SliceId,
-                "A failed build cannot repeat for an unchanged target fingerprint. Correct the target before building again.");
-        if (input.Build is { Success: false } && input.Build.TargetFingerprint == input.TargetFingerprint)
-            return ChangeRequired(input.Build.Signature, null, null,
-                "A failed build cannot repeat for an unchanged target fingerprint.");
-        return null;
-    }
-
-    private static EnforcementFrontier ChangeRequired(
-        string? signature, string? state, string? slice, string reason) => new()
-    {
-        Kind = "change-required", Signature = signature, Id = state, SliceId = slice,
-        Reason = reason, AttemptsRemaining = 0
-    };
 }

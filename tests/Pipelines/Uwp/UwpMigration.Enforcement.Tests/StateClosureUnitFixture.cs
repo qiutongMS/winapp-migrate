@@ -17,15 +17,13 @@ public sealed partial class EnforcementEvaluatorTests
         EnforcementStore.WriteTextAtomicAsync(root, sourceTree, tree).GetAwaiter().GetResult();
         if (!state.Source.Evidence.Contains(sourceTree, StringComparer.Ordinal))
             state.Source.Evidence.Add(sourceTree);
-        state.Assertions =
-        [
-            new()
-            {
-                Id = "main-name", Kind = "ui-property-equals-source", ProbeIndex = 0,
-                SourceEvidence = sourceTree, AutomationId = "main", Property = "name"
-            }
-        ];
-        state.Verification = null;
+        state.Source.TreeEvidence = sourceTree;
+        if (state.SourceDefinitions.Count == 0)
+            state.SourceDefinitions = ["MainPage.xaml"];
+        state.Verification = new StateVerificationContract
+        {
+            TreeProbeIndex = 0
+        };
         input.RequiredContractHash = ContractTestAuthority.Prepare(root, input.StatePlan!);
         var replay = input.Replay!;
         SealCanonicalFixture(input);
@@ -60,7 +58,7 @@ public sealed partial class EnforcementEvaluatorTests
             ? JsonSerializer.Deserialize<WorkflowProgress>(File.ReadAllText(progressPath), EnforcementStore.JsonOptions)!
             : new WorkflowProgress
             {
-                PolicyFingerprint = "unit-fixture", LastTargetFingerprint = replay.TargetFingerprint,
+                LastTargetFingerprint = replay.TargetFingerprint,
                 LastObservedAt = input.GeneratedAt
             };
         progress.Operations.Add(new WorkflowOperationRecord
@@ -78,13 +76,24 @@ public sealed partial class EnforcementEvaluatorTests
         var attestation = StateClosureProtocol.Derive(root, state, replay, [probe.ArtifactPath], input.GeneratedAt, input.WindowOwnerResolver);
         StateClosureSeal.Sign(attestation);
         state.Target.Status = "passed";
-        state.Target.VerificationLevel = StateVerificationLevel.ParityVerified;
+        state.Target.VerificationLevel =
+            StateVerificationLevel.SurfaceParityVerified;
         state.Target.Evidence = attestation.Evidence;
+        state.Target.TreeEvidence = attestation.TargetTreeEvidence;
         state.Target.Attestation = StateClosureProtocol.AttestationPath(state.Id);
         state.Comparison.Status = "verified";
         EnforcementStore.WriteAtomicAsync(root, state.Target.Attestation, attestation).GetAwaiter().GetResult();
         foreach (var path in attestation.Evidence)
             File.SetLastWriteTimeUtc(System.IO.Path.Combine(root.FullName, path), input.GeneratedAt.UtcDateTime);
+    }
+
+    private static void AnchorPlan(EnforcementEvaluationInput input)
+    {
+        input.RequiredContractHash =
+            ContractTestAuthority.Prepare(
+                input.TargetRoot,
+                input.StatePlan!);
+        SealCanonicalFixture(input);
     }
 
     private static void SealCanonicalFixture(EnforcementEvaluationInput input)
@@ -107,7 +116,7 @@ public sealed partial class EnforcementEvaluatorTests
         var (progress, _) = EnforcementStore.TryLoadAsync<WorkflowProgress>(root, EnforcementStore.ProgressPath).GetAwaiter().GetResult();
         progress ??= new WorkflowProgress
         {
-            PolicyFingerprint = "unit-fixture", LastTargetFingerprint = input.TargetFingerprint,
+            LastTargetFingerprint = input.TargetFingerprint,
             LastObservedAt = input.GeneratedAt
         };
         foreach (var item in new[]

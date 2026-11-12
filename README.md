@@ -57,46 +57,35 @@ activation declarations, safe filesystem handling, deterministic XAML and C#
 transforms, residual findings, target-project graph verification, MSBuild item
 evaluation, and the six explicit project-item decision strategies.
 
-Schema 1.7 also emits structured TODO guidance: authoritative detection facts
-remain separate from provisional classification, strategies are
-non-exhaustive, completion checks and touch/conflict sets are typed, and TODO
-origin distinguishes mechanically predicted from runtime-discovered migration
-work. Invalid TODO IDs, origins, discoveries, or classifications fail closed. See
-[Migration TODO execution contract](plugins/winapp-migrate/skills/uwp-to-winapp/references/migration-todo-contract.md).
+Schema 1.7 also emits structured TODO guidance: authoritative detection facts remain separate from provisional classification, strategies are non-exhaustive, completion checks and touch/conflict sets are typed, and TODO origin distinguishes mechanically predicted from runtime-discovered migration work. Invalid TODO IDs, origins, discoveries, or classifications fail closed. See [the migration TODO workflow](plugins/winapp-migrate/skills/uwp-to-winapp/SKILL.md#4-implement-migration-todos).
 
 ```text
 winapp-migrate uwp create <source> --output <target>
-winapp-migrate uwp migrate <source> --output <target>
 winapp-migrate uwp verify <target>
 winapp-migrate uwp decide-project-item <target> <item> <strategy> <rationale>
 winapp-migrate uwp todo assess <target> [todo-id]
 winapp-migrate uwp todo status <target>
-winapp-migrate uwp todo bind-state <target> <todo-id> --state <state-id> --assertion <assertion-id> --check-id <id> --summary <proof>
+winapp-migrate uwp todo bind-surface <target> <todo-id> --surface <surface-id> --check <surface-check-id> --check-id <id> --summary <proof>
 winapp-migrate uwp todo select-approach <target> <todo-id> <approach-key> --reason <rationale>
 winapp-migrate uwp todo record <target> <todo-id> --outcome <implemented|failed> --summary <text>
-winapp-migrate uwp todo record-development <target> --state <state-id> --summary <text> --evidence <probe.json>
 winapp-migrate uwp todo discover <target> <todo-id> --category <category> --priority <priority> --summary <text> --reason <text> --phase <phase> --signature <signature> --evidence <path>
 winapp-migrate uwp source run <target>
 winapp-migrate uwp source diagnose <target>
 winapp-migrate uwp source capture <target> -- <winapp-ui-arguments>
 winapp-migrate uwp closure assess <target>
-winapp-migrate uwp closure seal-contract <target> [--extend] [--upgrade-plan]
-winapp-migrate uwp closure rebind-selector <target> --state <state-id> --action <action-id> --reason <text> -- <replacement-ui-command>
+winapp-migrate uwp closure seal-contract <target> [--extend]
+winapp-migrate uwp closure rebind-selector <target> --surface <surface-id> --action <action-id> --reason <text> -- <replacement-ui-command>
 winapp-migrate uwp closure attest <target>
 winapp-migrate uwp closure diagnose <target>
 winapp-migrate uwp closure capture <target> -- <winapp-ui-arguments>
-winapp-migrate uwp closure capture <target> --state <state-id> -- <winapp-ui-arguments>
-winapp-migrate uwp closure record-state <target> --state <state-id> --probe <probe.json> [--probe <probe.json>...]
+winapp-migrate uwp closure capture <target> --surface <surface-id> -- <winapp-ui-arguments>
+winapp-migrate uwp closure record-surface <target> --surface <surface-id> --probe <probe.json> [--probe <probe.json>...]
 winapp-migrate uwp closure record-failure <target> <build|runtime> <signature> --evidence <path>
 winapp-migrate uwp closure record-diagnosis <target> <signature> --source-location <path:line> --target-location <path:line> --source-invariant <text> --hypothesis <text> --test <text> --evidence <path>
-winapp-migrate uwp closure finalize <target>
+winapp-migrate uwp closure finalize <target> --strict
 ```
 
-`uwp create` / `uwp migrate` also accept `--package-identity <guid>` to
-override template-generated package identity values and `--portable-report`
-to record `target.root` as `.`. Together these options let callers stabilize
-the package identity and relocate the target directory without rewriting
-product artifacts after the migration completes.
+`uwp create` also accepts `--package-identity <guid>` to override template-generated package identity values and `--portable-report` to record `target.root` as `.`. Together these options let callers stabilize the package identity and relocate the target directory without rewriting product artifacts after the migration completes.
 
 `source run` resolves and builds the exact source project from
 `migration-report.json`, records the Visual Studio MSBuild command, selected
@@ -112,70 +101,20 @@ code, XAML, project, or resource change rejects later capture.
 Other source UI actions require `-w` or `--window` with an HWND authorized by
 the current source run.
 
-TODO implementation receipts do not require a build and are not invalidated by
-unrelated target changes. Rejected approaches retain their stable signature,
-evidence, and retry condition; selecting the same approach again requires
-explicit retry evidence. State-bound development results advance an implemented
-TODO to `development-validated` only while every state assigned by its
-completion checks remains fresh for the current target fingerprint. State-plan
-`todoIds` are compatibility metadata and do not participate in ownership or
-state contract fingerprints. State-backed checks name exact assertion IDs.
-The product derives development outcomes from trusted current probes:
-assertion parity is `passed`, a conclusive mismatch is `failed`, and tool,
-environment, safety, or evidence uncertainty is `human-validation-required`.
-The latter emits structured human steps and never authorizes canonical
-closure. Changes matching a TODO touch set make its prior results `stale`
-without discarding implementation; downstream states also include upstream
-owners' touch sets, while unrelated file changes retain the passed development
-result. `todo status` combines the authoritative closure workflow stage,
-budget, last observation, frontier, and disposition with TODO/state counts,
-the incremental development frontier, current action, latest TODO failure,
-and next checkpoint. Build and runtime failures remain in the existing
-closure attempt and semantic-finding protocols rather than a parallel TODO
-ledger. Canonical `record-state` is gated until every required TODO is
-`development-validated` for its current scope.
+TODO assessments separate `implementationStatus`, `verificationStatus`, and `verificationScope`. Implementation and optional strategy receipts are bookkeeping, not proof or permission to capture a surface. Only explicit completion checks define verification scope: project checks use current project/build evidence; surface checks map exact required surfaces to `target-reachable` and/or `uia-structure-match`. Project-only TODOs need no surface binding. Business obligations remain explicit human-validation items rather than invented homepage bindings or hidden UI acceptance gates. One shared current signed surface proof serves every mapped TODO; there is no development pass, readiness milestone, or duplicate TODO verification receipt. Rejected approaches retain their signature/evidence/retry condition, and reselecting one requires retry evidence without restricting build or replay. `todo status` combines workflow history and telemetry with implementation progress, current scoped verification, failures, and human handoffs.
 
-`closure attest` invokes `winapp run` first with `--no-launch --json`, then with
-`--no-build --detach --json` after a successful analyzer-enabled build. It
-persists versioned attestations under `.migration-evidence/enforcement`,
-groups build diagnostics, and refuses to repeat a failed build for an
-unchanged target fingerprint. A repeated replay requires fresh discriminating
-evidence: use `--force-replay --discriminating-evidence <target-relative-file>`;
-configuration, architecture, runtime, framework, and repeatable MSBuild
-properties are forwarded identically to build and replay. The closure gateway does not
-infer semantic success from a build or process launch: state evidence,
-semantic findings, and the report summary must independently satisfy the
-closure gates.
+`closure attest` invokes `winapp run` first with `--no-launch --json`, then with `--no-build --detach --json` after a successful analyzer-enabled build. It persists versioned attestations under `.migration-evidence/enforcement` and groups diagnostics. Explicit build/replay retries require no diagnosis, target change, intent file, or retry budget. Use `--force-replay` to relaunch a current successfully built target; earlier process-bound surface proof becomes stale. Configuration, architecture, runtime, framework, and repeatable MSBuild properties are forwarded identically to build and replay. A successful build or launch alone never proves UI parity.
 
-`closure diagnose` preserves controlled foreground debug output as a
-fingerprint-bound development probe that cannot satisfy canonical closure
-gates. A runtime
-failure opens a diagnosis frontier that requires fresh source/target locations,
-the preserved source invariant, one falsifiable hypothesis, one discriminating
-test, and target-contained evidence before another build or replay. Target UI
-automation must use `closure capture`, which requires a fresh canonical replay.
-Snapshot commands emit bounded receipts by default and accept `--full` for the
-durable workflow history. `closure capture` persists raw output and an immutable
-per-probe manifest while returning a bounded receipt; `--raw-output` restores
-inline forwarding. During closure, one fresh state-intent evidence file may
-authorize a sequence of distinct UI commands for the same fingerprint and
-canonical replay, while an immediate exact repeat is rejected.
-Before source capture or the first assessment, establish a schema `2.0`
-required contract with `closure seal-contract`. The independently anchored
-required hash freezes action/assertion IDs, definitions and order; only
-append-only pre-start extensions are allowed. Mutable captured legacy plans
-are provisional, not verified. `UWMIG016` identifies storage-picker flows that
-must model picker open, select/cancel, and app-state restoration before sealing.
-After sealing, `closure rebind-selector` may repair only a required action's
-locator while preserving its verb, payload, order, assertions, outcome, and
-required hash. The signed, rollback-resistant amendment invalidates earlier
-target probes for that state. See [required contracts and ROI verification](plugins/winapp-migrate/skills/uwp-to-winapp/references/state-verification-contracts.md).
+`closure diagnose` optionally preserves foreground debug output as a fingerprint-bound diagnostic probe, never canonical build or parity proof. Recorded failures and diagnoses preserve attribution but do not authorize later operations. Target UI automation uses `closure capture` after a fresh canonical replay; repeated inspection is permitted. Snapshot receipts explicitly report `verificationScope: "ui-surface-parity"`, current surface results, findings, and `humanValidationItems`; `--full` includes durable history. Capture persists raw output and an immutable per-probe manifest; `--raw-output` forwards the original output. Optional `--discriminating-evidence` files are diagnostic notes, not intent or retry prerequisites.
 
-To close a state, declare its machine-checkable `assertions` and ordered
-required action witnesses before capture,
-use `capture --state <id>` for every probe in its ordered sequence, then pass
-the canonical target-relative receipt paths to `record-state`. State-bound
-inspect, screenshot, and action commands require exactly one explicit
+Before source capture or workflow operations, establish a schema `3.0` surface inventory with `closure seal-contract`. An earlier status query does not prevent initial sealing; actual source/evidence activity and independently anchored operation history still do. The independently anchored required hash freezes required/excluded accounting, source definitions, navigation commands, probe indexes, and ordering; only append-only pre-start extensions are allowed. `closure rebind-selector` may repair only a navigation action's locator while preserving its verb, payload, order, and required hash. The signed, rollback-resistant amendment invalidates earlier target probes for that surface. See [the surface plan and capture guide](plugins/winapp-migrate/skills/uwp-to-winapp/references/ui-surface-parity.md).
+
+For temporary `closure attest` diagnostics, set `WINAPP_MIGRATE_TRACE=1`. The command prints its JSONL log path to stderr and writes flushed events under `.migration-evidence/enforcement/diagnostics`. Events distinguish lock acquisition, workspace loading/fingerprinting, build/replay, child exit, stdout/stderr draining, snapshot writes, CLI serialization/return, and process exit. Child waits emit five-second heartbeats with exit/stream state. Logs contain timing and process metadata, not captured output, and are diagnostic only; they do not change acceptance, timeouts, JSON stdout, or evidence freshness. Unset the variable to disable them.
+
+To close a surface, use `capture --surface <id>` for its sealed navigation
+sequence and final complete `inspect --json`, then pass the canonical
+target-relative receipt paths to `record-surface`. Surface-bound inspect and
+navigation commands require exactly one explicit
 `-w/--window`. Windows checks that HWND's owner against the canonical replay
 process identity (**PID plus process start time**) before and after the command.
 The only delegated exception is Windows `PickerHost`: its executable must be
@@ -186,83 +125,52 @@ unrelated-process, untrusted lookalike, and reused-PID HWNDs are rejected.
 Replay identity comes from the OS through the resolver, never a caller-provided
 timestamp; legacy PID-only replay/probe receipts must be re-attested/recaptured.
 Use **unbound** `capture -- list-windows --json` for discovery. The product
-checks receipt seals, workflow membership, raw-output hashes, state/source
+checks receipt seals, workflow membership, raw-output hashes, surface/source
 contract identity, the recorded HWND/process/command binding, success, and
 current fingerprint/replay freshness. It derives
-`passed`/`verified` and writes a sealed state attestation; editing those status
+`passed`/`verified` and writes a sealed surface attestation; editing those status
 strings or receipt markers alone cannot establish closure.
 Closure trust uses the persistent named Windows user CNG key
 `WinAppMigration.StateClosure.v1`. Verification loads its public key
 independently, requires the artifact key to match, and authenticates operation
 IDs/digests, build/replay attestations and raw outputs, probe receipts, and
-state attestations before full re-derivation. An attacker-supplied key cannot
+surface attestations before full re-derivation. An attacker-supplied key cannot
 establish that local provenance. These seals provide **same-user tamper-evidence**,
 not an OS security boundary against arbitrary malicious code running as that
 user (which can use the user's signing key).
 
-Portable checks against an embedded key establish signature integrity only,
-not locally trusted provenance or closure success. A required contract must
-also have been established for the current workspace before source/workflow
-activity; copying a signed contract or bundle does not create that association.
-Another user/machine does not inherit the local trust anchor. Closure
-verification re-resolves every app-owned HWND and process start time:
-`record-state`, `finalize`, and assessments fail closed when that window/process
-is gone or reused. A delegated PickerHost that closes during select/cancel is
-verified from its signed pre/post owner-chain receipt instead. Historical
-signature integrity is not a substitute for required live app-window
-verification. Legacy unsigned/unbound operation chains require
-re-attestation/recapture.
+Portable checks against an embedded key establish signature integrity only, not locally trusted provenance or closure success. A required contract must also have been established for the current workspace before source/workflow activity; copying a signed contract or bundle does not create that association. Another user/machine does not inherit the local trust anchor. Closure verification re-resolves every app-owned HWND and process start time: `record-surface`, `finalize`, and assessments fail closed when that window/process is gone or reused. A delegated PickerHost that closes during select/cancel is verified from its signed pre/post owner-chain receipt instead. Historical signature integrity is not a substitute for required live app-window verification. Unsupported or unsigned operation histories fail closed; they cannot be reconstructed, reset, or used to sign a new accepted history.
 
 Window and output options accept WinApp's separated, `=`, and `:` forms
 with either alias (for example `-w 42`, `--window=42`, `-w:42`,
-`-o path`, `--output=path`, `-o:path`). Every successful screenshot must
-produce a fresh valid PNG that is snapshotted and hashed in its probe receipt;
-exit zero without that evidence is rejected.
+`-o path`, `--output=path`, `-o:path`). Screenshots may be captured for diagnostics but do not participate in UI
+Surface Parity closure.
 The pinned WinApp CLI defaults to `screenshot.png` in its process working
-directory. A state-bound screenshot without `-o/--output` runs inside its
+directory. A surface-bound screenshot without `-o/--output` runs inside its
 sealed per-probe working directory, so the real default works without
 overwriting target assets or changing the target fingerprint. Explicit output
 paths remain target-relative (or contained absolute paths); unbound captures
 retain WinApp's default in the target directory.
 
-The assertion contract compares mapped source observations with genuine
-`inspect` trees or single-property `get-property --json` results. Selection and
-keyboard focus require `get-property`; they are not inspect fields. The
-selector and native `--property` name must match the assertion contract.
-The returned `elementId` must be a nonempty string, but may be a generated
-runtime slug rather than the requested AutomationId; the sealed command and
-HWND/process/replay binding establish the target, not returned-ID equality.
-The known `element` member is accepted and validated as WinApp's typed
-`UiElement` detail, without permitting verdict fields or malformed collections.
-Native `"True"`/`"False"` strings and expansion enums normalize to their
-typed inspect equivalents; invented verdict fields are never assertions.
-Visual parity requires an immutable semantic ROI contract and a supported
-paired source/target comparison. Informative chrome cannot rescue a blank
-semantic content region, and restoration requires an explicit return action plus its
-post-return comparison. Timing, lifecycle and unmodeled prose claims are not inferred.
-Unsupported assertions remain unverified. Low-information PNGs are classified
-rather than treated as visual proof. Legal 16-bit/interlaced images whose
-information content is not analyzed are `ValidUnclassified`, not corrupt:
-they may supplement verified nonvisual assertions but never prove visual
-information or parity. Corrupt PNGs remain invalid. Verified nonvisual assertions can close
-without a screenshot, and intentional restoration similarity is not rejected.
+UI Surface Parity compares complete semantic UIA trees per window: type,
+AutomationId, semantic name/value, hierarchy, visibility, and stable state
+properties. It ignores coordinates, dimensions, selectors, and runtime
+identity. Screenshots remain diagnostic only. Property assertions, pixel
+comparisons, behavior transitions, restoration, timing, lifecycle, pointer
+input, accessibility quality, and business logic do not participate in this
+closure contract.
 `finalize` reuses the canonical evidence materializer and synchronizes mapped
-TODOs and report summaries. Findings resolve only when all their mapped
-`completionAssertions` are satisfied; prose-only findings remain open.
-State attestations contain product-derived source/target evidence hash
-manifests. Every assessment re-derives those manifests and requires canonical
-screenshot/JSON copies to match the selected original evidence byte-for-byte.
-Replacing a canonical file—even with another valid image/tree—or injecting an
-unbound optional screenshot invalidates completion without changing application
-fingerprints. Finalize restores canonical copies; caller-authored hashes do not
-authorize them.
-Report synchronization also compares every source/target state's ID, status,
+TODOs and report summaries. Findings resolve only when all their mapped fixed
+surface checks are satisfied; prose-only findings remain open.
+Surface attestations contain product-derived source/target tree hash manifests.
+Every assessment re-derives those manifests and requires canonical JSON copies
+to match the selected original evidence byte-for-byte. Replacing a canonical
+tree invalidates completion without changing application fingerprints.
+Caller-authored hashes do not authorize replacement evidence.
+Report synchronization also compares every source/target surface's ID, status,
 and reason with the derived plan. Matching aggregate statuses or IDs alone
 cannot hide failed/blocked or contradictory per-state observations.
-`evidence-valid`, `contract-satisfied`, and `parity-verified` are distinct
-product-rederived levels. Only parity-verified states can complete mapped
-TODOs/findings or final closure.
-See [the assertion contract and recording protocol](plugins/winapp-migrate/skills/uwp-to-winapp/references/behavioral-validation.md).
+`evidence-valid`, `surface-reachable`, and `surface-parity-verified` are distinct product-derived levels. A TODO/finding mapped only to reachability can satisfy that narrower check despite a tree mismatch; app acceptance always requires full parity for every required surface. Unattempted or invalidated evidence is `not-run`, a confirmed mismatch/unreachable result is repairable failure, and an attempted comparison without trustworthy complete trees is `human-validation-required`. See [UI Surface Parity](plugins/winapp-migrate/skills/uwp-to-winapp/references/ui-surface-parity.md).
 The gateway resolves WinApp CLI from `--winapp`,
 `WINAPP_MIGRATE_WINAPP_PATH`, or PATH, in that order, so raw `winapp.exe` need
 not be exposed to the migration agent.
@@ -275,52 +183,23 @@ target operations must use their respective product gateways; hosts and
 benchmarks remain responsible only for observing whether this product
 boundary was loaded and obeyed.
 
-The former `uwp enforce`, `run`, `ui`, and `sync-report` names remain
-compatibility aliases. `configure` and `wait` are deprecated compatibility
-commands; policy limits and elapsed time no longer control closure.
+Only the documented current commands and artifact protocols are supported. Historical command aliases, policy configuration, and closure waiting APIs are not available.
 
 ### Durable migration closure
 
-`closure assess` resumes the persisted five-stage controller:
-`source-oracle`, `mechanical-stabilization`, `target-bootstrap`,
-`semantic-convergence`, and `closure`. Snapshot `phase` and `stage` are the
-controller's stage, while `frontier.kind` explains the next action. A semantic
-correction requires a new build/replay **within semantic-convergence**, not a
-restart of mechanical work. Semantic resolution is independent of evidence
-freshness: a target change makes resolved slices' evidence stale, but the
-semantic scheduler stays on unresolved dependency-ready work. Stale resolved
-slices still satisfy semantic dependencies (deferred debt does not). Closure
-selects stale resolved slices for revalidation; an actual failed comparison,
-runtime regression, or open semantic finding can reopen semantic work before
-the run becomes terminal.
-For a fresh workflow, source readiness enters mechanical stabilization even
-when report mechanical verification has passed. A fresh analyzer-attested
-build enters target bootstrap, and a fresh replay enters semantic convergence
-or closure. Before semantic convergence, a target change requiring a new build
-returns to mechanical stabilization.
+`closure assess` derives the next evidence frontier from current mechanical checks, analyzer build, canonical launch, required surfaces, fixed finding checks, and report synchronization. The historical stages `source-oracle`, `mechanical-stabilization`, `target-bootstrap`, `semantic-convergence`, and `closure` remain progress telemetry; they neither authorize operations nor override missing evidence. Target changes require fresh build/replay evidence without erasing implementation history. Slice dependencies remain implementation guidance, not extra acceptance conditions.
 
-Progress schema `3.0` is atomically persisted as
-`.migration-evidence/enforcement/progress.json`. Schema `2.0` imports preserve
-operation records, evidence events, slices, fingerprints, and activation
-epochs while clearing retired extension, blocked-budget, and time/count
-terminal state. Safe schema `1.0` histories also import; ambiguous histories
-fail closed without rewriting the original artifact.
+`uwp verify` also checks current target C#, XAML, and project files for known incompatible UWP contracts, including `Window.Current`, UWP window/dispatcher APIs, view-bound calls, unsupported XAML controls, and UWP project settings. Findings include rule IDs, paths, lines, and required resolutions in `mechanicalVerification.incompatibleUwpResiduals` and repair TODO `UWMIG017`. Verification fails until the findings are repaired; marking a TODO complete cannot clear them. `closure` independently repeats this check against current files, so an older passing report cannot authorize acceptance. This belongs to mechanical/build compatibility within the existing first acceptance criterion, not a fifth criterion.
 
-Elapsed time and aggregate operation totals remain observable telemetry but
-never authorize, cancel, defer, or terminate otherwise valid work. There is no
-product wall-clock deadline, progress extension, or fixed per-stage operation
-ceiling. Progressive target changes may use as many informative gateway
-operations as needed. Host wall time, idle timeout, turns, and tokens belong to
-the calling host or benchmark.
+`uwp create` records these remaining semantic migration tasks without refusing to create the initial workspace. Initial mechanical creation is not final compatibility acceptance. Comments, string examples, build/evidence directories, and `.uwp-source` are excluded from the new API checks; valid desktop WinRT APIs are not banned wholesale. In particular, HWND-initialized `Windows.UI.Popups.MessageDialog` remains supported. These checks cover known incompatible contracts, not all possible runtime behavior; the analyzer-enabled build and required surface evidence remain necessary.
 
-The gateway still rejects waste deterministically: an unchanged failed target
-cannot rebuild; repeated replay needs fresh discriminating evidence; evidence
-content cannot be reused by touching or renaming it; and diagnosis/hypothesis
-cannot repeat for the same signature and target fingerprint. Stage
-compatibility also remains fixed: mechanical stabilization permits build only,
-bootstrap requires a runtime
-failure before diagnosis, and closure replay/UI requires explicit fresh
-evidence.
+Successful source and surface-bound target `inspect --json` captures automatically attempt an advisory screenshot of the same HWND, with a five-second timeout and process-identity checks. Each probe retains its image or an explicit missing-image reason in `comparison-capture.json`. Open `.migration-evidence/comparison/index.html` after assessment or surface recording to view paired screenshots, UIA links, capture provenance, and the existing per-surface result. Pairing requires matching raw UIA bytes and, for targets, the current replay and target fingerprint; stale or ambiguous images are not substituted. Screenshot or index failures do not change acceptance, and no pixel comparison or extra verification step is introduced.
+
+Progress schema `3.0` is atomically persisted as `.migration-evidence/enforcement/progress.json`. Only schema `3.0` is accepted; older or malformed histories fail closed without rewriting artifacts. Missing progress after operations have started also fails closed, including when the independent operation-chain anchor is the only remaining record. There is no history import, reconstruction, or retired-authorization recovery. Reports remain schema `1.7`, TODO progress and surface plans use their independent schemas `3.0`, and closure evidence and the execution guard use their independent schemas `1.0`.
+
+Elapsed time and aggregate operation totals remain observable in snapshot `telemetry` but never authorize, cancel, defer, or terminate otherwise valid work. There is no product wall-clock deadline, progress extension, or fixed per-stage operation ceiling. Progressive target changes may use as many informative gateway operations as needed. Host wall time, idle timeout, turns, and tokens belong to the calling host or benchmark.
+
+The gateway preserves signed operation history, anti-rollback anchors, provenance, fingerprints, raw-output hashes, and process/window ownership. Optional diagnosis/hypothesis records remain deduplicated for the same failure tuple. These authenticity constraints do not impose stage authorization, retry budgets, mandatory diagnosis, target-change gates, or intent-file ceremonies. An unchanged and still-valid probe sequence can reuse its original signed surface proof instead of generating another receipt.
 
 Build and replay outputs are classified as canonical attestations. Diagnostic
 and UI outputs are classified as development probes. Both carry target
@@ -329,17 +208,11 @@ satisfy build, replay, parity, or finalization gates. Raw WinApp CLI output cann
 artifact. Source baseline capture uses `uwp source`; target closure uses
 `uwp closure`.
 
-State-plan schema `2.0` retains `slice`, `dependencies` (slice IDs),
-and `criticality` (`required` or `optional`) on each state. Defaults are the
-state ID and required work, respectively. States sharing a slice must share
-criticality; their dependencies are combined and must reference existing
-slices without cycles. The first dependency-ready semantically unresolved slice
-is reported as the active recommendation, but callers may explicitly capture
-or record any state in the sealed plan. Required source observations need
-captured evidence for parity and strict closure, but unavailable source
-observations remain explicit debt rather than blocking target implementation,
-build, replay, or diagnosis. Required blocked/unverified states do not satisfy
-closure.
+Surface-plan schema `3.0` accounts for every source definition as a required
+or explicitly excluded surface. Required surfaces may retain `slice` and
+`dependencies` for implementation ordering, but their criticality is always
+required. Callers may explicitly capture any declared surface. Unavailable
+source trees remain explicit human-validation work and cannot satisfy closure.
 
 Snapshots (`state.json`, snapshot schema `1.0`) add `disposition`, also persisted
 in progress, with stable `kind`, `reasonCode`, `terminal`, `retryable`,
@@ -348,31 +221,12 @@ in progress, with stable `kind`, `reasonCode`, `terminal`, `retryable`,
 | Kind | Terminal | Retryable | Finalization |
 | --- | --- | --- | --- |
 | continue | no | yes | not-ready |
-| continue-with-debt | no | yes | debt |
 | complete (all closure gates passed) | yes | no | complete |
-| blocked-required (required dependency or evidence is genuinely blocked) | no | yes | blocked |
 | infrastructure-failure (invalid artifacts or process invocation failure) | yes | yes | failed |
 
-`allowedOperations` lists stage-compatible operation kinds; evidence,
-freshness, diagnosis, and provenance prerequisites still apply. Active
-frontiers remain guidance rather than operation authorization. Only terminal
-dispositions list no operations. A `complete` disposition is retained only
-while the entire current-target build/replay freshness chain, state
-attestations, findings, and report closure remain valid. Target changes or
-stale/missing canonical artifacts automatically reopen invalid completion;
-an old replay cannot preserve success. Other terminal dispositions remain
-immutable. All operational entry points reject a currently terminal run before invoking external tools;
-`assess` remains observational. Infrastructure `retryable` classifies the
-failure, not permission to retry the same terminal run. This release does not
-provide a terminal-run reset or snapshot-management facility. Perform final
-falsification before synchronizing the report into terminal completion.
+`allowedOperations` lists candidate operation kinds, not stage permissions; each gateway still checks its actual artifact, build/replay, and provenance prerequisites. Frontiers are guidance. Terminal dispositions list no operations. A `complete` disposition is retained only while the current build/replay freshness chain, surface attestations, mapped fixed checks, and report closure remain valid; stale evidence reopens it. Other terminal dispositions remain immutable and operations reject them before external tools run. `assess` is observational. Infrastructure `retryable` classifies failure, not permission to reset a terminal run; no reset or snapshot-management facility is provided.
 
-An active runtime failure exposes `diagnosis-required`. A diagnosis is bound
-to its signature, state/slice, and failing target fingerprint; it cannot be
-overwritten or repeated for the same signature/fingerprint. After diagnosis,
-`change-required` prevents another build/replay until the target changes.
-Repeated debug/hypothesis work and replay without new discriminating evidence
-are refused. `--force-replay` and `--max-attempts` bypass none of these guards.
+Only fixed machine-verifiable checks determine UI acceptance. Unmapped or out-of-scope business findings and TODOs remain explicit diagnostics/human handoffs rather than hidden blockers or automatically verified work. There is no `--max-attempts` option, development-readiness command, or required terminal TODO milestone.
 
 The UWP report remains explicitly versioned as schema 1.7. A future WPF
 pipeline will start with its own pipeline schema; it will not reinterpret the

@@ -12,21 +12,35 @@ public static class MigrationArtifactClass
     public const string Producer = "winapp-migrate";
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class StatePlanDocument
 {
-    public const string CurrentSchemaVersion = "2.0";
+    public const string CurrentSchemaVersion = "3.0";
 
-    [JsonPropertyName("schemaVersion")]
+    [JsonRequired, JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
 
-    [JsonPropertyName("states")]
+    [JsonRequired, JsonPropertyName("surfaces")]
     public List<MigrationState> States { get; set; } = [];
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class MigrationState
 {
     [JsonPropertyName("id")]
     public required string Id { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "page";
+
+    [JsonPropertyName("disposition")]
+    public string Disposition { get; set; } = "required";
+
+    [JsonPropertyName("exclusionReason")]
+    public string? ExclusionReason { get; set; }
+
+    [JsonPropertyName("sourceDefinitions")]
+    public List<string> SourceDefinitions { get; set; } = [];
 
     [JsonPropertyName("slice")]
     public string? Slice { get; set; }
@@ -41,22 +55,7 @@ public sealed class MigrationState
     [JsonPropertyName("featurePaths")]
     public List<string> FeaturePaths { get; set; } = [];
 
-    [JsonPropertyName("todoIds")]
-    public List<string> TodoIds { get; set; } = [];
-
-    [JsonPropertyName("preconditions")]
-    public List<string> Preconditions { get; set; } = [];
-
-    [JsonPropertyName("actions")]
-    public List<string> Actions { get; set; } = [];
-
-    [JsonPropertyName("expectedOutcome")]
-    public required string ExpectedOutcome { get; set; }
-
-    [JsonPropertyName("assertions")]
-    public List<StateAssertion> Assertions { get; set; } = [];
-
-    [JsonPropertyName("verification")]
+    [JsonPropertyName("navigation")]
     public StateVerificationContract? Verification { get; set; }
 
     [JsonPropertyName("source")]
@@ -79,6 +78,9 @@ public sealed class StateObservation
     [JsonPropertyName("evidence")]
     public List<string> Evidence { get; set; } = [];
 
+    [JsonPropertyName("treeEvidence")]
+    public string? TreeEvidence { get; set; }
+
     [JsonPropertyName("reason")]
     public string? Reason { get; set; }
 
@@ -95,6 +97,7 @@ public sealed class StateComparison
     public string? Reason { get; set; }
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class SemanticFindingLedger
 {
     public const string CurrentSchemaVersion = "1.0";
@@ -106,6 +109,7 @@ public sealed class SemanticFindingLedger
     public List<SemanticFinding> Findings { get; set; } = [];
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class SemanticFinding
 {
     [JsonPropertyName("id")]
@@ -117,7 +121,7 @@ public sealed class SemanticFinding
     [JsonPropertyName("featurePaths")]
     public List<string> FeaturePaths { get; set; } = [];
 
-    [JsonPropertyName("stateIds")]
+    [JsonPropertyName("surfaceIds")]
     public List<string> StateIds { get; set; } = [];
 
     [JsonPropertyName("todoIds")]
@@ -147,116 +151,49 @@ public sealed class SemanticFinding
     [JsonPropertyName("validationEvidence")]
     public List<string> ValidationEvidence { get; set; } = [];
 
-    [JsonPropertyName("completionAssertions")]
+    [JsonPropertyName("completionChecks")]
     public List<FindingCompletionAssertion> CompletionAssertions { get; set; } = [];
-}
-
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed class StateAssertion
-{
-    [JsonPropertyName("id")]
-    public required string Id { get; set; }
-
-    [JsonPropertyName("kind")]
-    public required string Kind { get; set; }
-
-    [JsonPropertyName("probeIndex")]
-    public int ProbeIndex { get; set; }
-
-    [JsonPropertyName("sourceEvidence")]
-    public required string SourceEvidence { get; set; }
-
-    [JsonPropertyName("automationId")]
-    public string AutomationId { get; set; } = string.Empty;
-
-    [JsonPropertyName("property")]
-    public string Property { get; set; } = string.Empty;
-
-    [JsonPropertyName("selector")]
-    public string? Selector { get; set; }
-
-    [JsonPropertyName("region")]
-    public VisualRegion? Region { get; set; }
-    [JsonPropertyName("sourceRegion")]
-    public VisualRegion? SourceRegion { get; set; }
-    [JsonPropertyName("boundsEvidence")]
-    public string? BoundsEvidence { get; set; }
-    [JsonPropertyName("boundsProbeIndex")]
-    public int? BoundsProbeIndex { get; set; }
-    [JsonPropertyName("boundsAfterProbeIndex")]
-    public int? BoundsAfterProbeIndex { get; set; }
-    [JsonPropertyName("sourceCaptureEvidence")]
-    public string? SourceCaptureEvidence { get; set; }
-    [JsonPropertyName("sufficiency")]
-    public VisualSufficiency? Sufficiency { get; set; }
-    [JsonPropertyName("comparison")]
-    public string Comparison { get; set; } = "pixel-exact";
-    [JsonPropertyName("maximumMeanError")]
-    public double MaximumMeanError { get; set; }
-}
-
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record VisualRegion(
-    [property: JsonPropertyName("x")] double X,
-    [property: JsonPropertyName("y")] double Y,
-    [property: JsonPropertyName("width")] double Width,
-    [property: JsonPropertyName("height")] double Height);
-
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed class VisualSufficiency
-{
-    [JsonPropertyName("minimumContentFraction")]
-    public double MinimumContentFraction { get; set; } = 0.02;
-    [JsonPropertyName("minimumDistinctColors")]
-    public int MinimumDistinctColors { get; set; } = 2;
-    [JsonPropertyName("minimumSamplePixels")]
-    public int MinimumSamplePixels { get; set; } = 64;
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class StateVerificationContract
 {
-    [JsonPropertyName("kind")]
-    public string Kind { get; set; } = "nonvisual";
     [JsonPropertyName("requiredActions")]
     public List<RequiredStateAction> RequiredActions { get; set; } = [];
-    [JsonPropertyName("steps")]
-    public List<RequiredStateStep> Steps { get; set; } = [];
-    [JsonPropertyName("restorations")]
-    public List<RequiredRestoration> Restorations { get; set; } = [];
+
+    [JsonPropertyName("treeProbeIndex")]
+    public int TreeProbeIndex { get; set; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RequiredStateAction(
     [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("probeIndex")] int ProbeIndex,
     [property: JsonPropertyName("command")] List<string> Command);
 
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record RequiredStateStep(
-    [property: JsonPropertyName("kind")] string Kind,
-    [property: JsonPropertyName("id")] string Id);
+public static class SurfaceCheckIds
+{
+    public const string TargetReachable = "target-reachable";
+    public const string StructureMatch = "uia-structure-match";
 
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record RequiredRestoration(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("baselineAssertionId")] string BaselineAssertionId,
-    [property: JsonPropertyName("returnActionId")] string ReturnActionId,
-    [property: JsonPropertyName("restoredAssertionId")] string RestoredAssertionId);
+    public static IReadOnlyList<string> All { get; } =
+        [TargetReachable, StructureMatch];
+}
 
 public static class StateVerificationLevel
 {
     public const string EvidenceValid = "evidence-valid";
-    public const string ContractSatisfied = "contract-satisfied";
-    public const string ParityVerified = "parity-verified";
+    public const string SurfaceReachable = "surface-reachable";
+    public const string SurfaceParityVerified = "surface-parity-verified";
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class FindingCompletionAssertion
 {
-    [JsonPropertyName("stateId")]
+    [JsonPropertyName("surfaceId")]
     public required string StateId { get; set; }
 
-    [JsonPropertyName("assertionId")]
+    [JsonPropertyName("checkId")]
     public required string AssertionId { get; set; }
 }
 
@@ -672,13 +609,23 @@ public sealed class UiDevelopmentProbe
     public required string StandardErrorPath { get; set; }
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class EnforcementSnapshot
 {
+    [JsonPropertyName("verificationScope")]
+    public string VerificationScope { get; init; } = "ui-surface-parity";
+
+    [JsonPropertyName("humanValidationItems")]
+    public List<HumanValidationItem> HumanValidationItems { get; set; } = [];
+
+    [JsonPropertyName("findings")]
+    public List<SemanticFinding> Findings { get; set; } = [];
+
     [JsonPropertyName("stateVerifications")]
     public List<StateVerificationSummary> StateVerifications { get; set; } = [];
     public const string CurrentSchemaVersion = "1.0";
 
-    [JsonPropertyName("schemaVersion")]
+    [JsonRequired, JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     [JsonPropertyName("generatedAt")]
@@ -696,8 +643,8 @@ public sealed class EnforcementSnapshot
     [JsonPropertyName("activeStateIds")]
     public List<string> ActiveStateIds { get; set; } = [];
 
-    [JsonPropertyName("budget")]
-    public WorkflowBudgetSnapshot? Budget { get; set; }
+    [JsonPropertyName("telemetry")]
+    public WorkflowTelemetrySnapshot? Telemetry { get; set; }
 
     [JsonPropertyName("workflow")]
     public WorkflowProgress? Workflow { get; set; }
@@ -756,12 +703,13 @@ public sealed class EnforcementFrontier
     [JsonPropertyName("signature")]
     public string? Signature { get; set; }
 
-    [JsonPropertyName("attemptsRemaining")]
-    public int? AttemptsRemaining { get; set; }
 }
 
 public sealed record PipelineValidationState(string Id, string? Status, string? Reason);
-public sealed record StateVerificationSummary(string Id, string Level, string Reason);
+public sealed record StateVerificationSummary(string Id, string Level, string Reason)
+{
+    public string Result { get; init; } = SurfaceVerificationResult.Pending;
+}
 
 public sealed record PipelineValidationSummary(
     string SourceStatus,
@@ -775,8 +723,31 @@ public sealed record PipelineValidationSummary(
     public IReadOnlyList<PipelineValidationState> TargetObservations { get; init; } = [];
 }
 
+public sealed class HumanValidationItem
+{
+    [JsonPropertyName("todoId")]
+    public string? TodoId { get; set; }
+    [JsonPropertyName("checkId")]
+    public required string CheckId { get; set; }
+    [JsonPropertyName("surfaceId")]
+    public string? StateId { get; set; }
+    [JsonPropertyName("checkIds")]
+    public List<string> AssertionIds { get; set; } = [];
+    [JsonPropertyName("behavior")]
+    public required string Behavior { get; set; }
+    [JsonPropertyName("actions")]
+    public List<string> Actions { get; set; } = [];
+    [JsonPropertyName("expectedOutcome")]
+    public required string ExpectedOutcome { get; set; }
+    [JsonPropertyName("reason")]
+    public required string Reason { get; set; }
+    [JsonPropertyName("evidence")]
+    public List<string> Evidence { get; set; } = [];
+}
+
 public sealed record EnforcementEvaluationInput
 {
+    public IReadOnlyList<HumanValidationItem> HumanValidationItems { get; init; } = [];
     public string? RequiredContractHash { get; set; }
     public string? RequiredContractError { get; init; }
     public IWindowOwnerResolver? WindowOwnerResolver { get; init; }
@@ -795,12 +766,10 @@ public sealed record EnforcementEvaluationInput
     public ReplayAttestation? Replay { get; init; }
     public DiagnosticRunAttestation? Diagnostic { get; init; }
     public AttemptLedger Attempts { get; init; } = new();
-    public EnforcementPolicy Policy { get; init; } = EnforcementPolicy.Balanced();
     public WorkflowProgress? Progress { get; init; }
     public RunDisposition? PersistedDisposition { get; init; }
     public required PipelineValidationSummary ReportValidation { get; init; }
     public required bool ReportClosureReady { get; init; }
     public required string ReportClosureReason { get; init; }
-    public int MaximumSignatureAttempts { get; init; } = 2;
     public DateTimeOffset GeneratedAt { get; init; } = DateTimeOffset.UtcNow;
 }

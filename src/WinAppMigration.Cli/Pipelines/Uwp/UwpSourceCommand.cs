@@ -190,7 +190,7 @@ internal sealed class UwpSourceCommand : Command
     {
         var target = new Argument<DirectoryInfo>("target")
         {
-            Description = "Migrated target directory containing migration-report.json and the source-oracle state plan.",
+            Description = "Migrated target directory containing migration-report.json and the source surface plan.",
             Arity = ArgumentArity.ExactlyOne
         };
         target.AcceptExistingOnly();

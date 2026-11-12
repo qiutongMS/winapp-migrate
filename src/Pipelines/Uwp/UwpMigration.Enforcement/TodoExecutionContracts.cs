@@ -3,18 +3,19 @@
 
 using System.Text.Json.Serialization;
 using UwpMigration.Contracts;
+using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement;
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class TodoExecutionProgressDocument
 {
-    public const string CurrentSchemaVersion = "2.4";
+    public const string CurrentSchemaVersion = "3.0";
 
-    [JsonPropertyName("schemaVersion")]
+    [JsonRequired, JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
 
-    [JsonPropertyName("todos")]
+    [JsonRequired, JsonPropertyName("todos")]
     public List<TodoExecutionProgress> Todos { get; set; } = [];
 }
 
@@ -64,18 +65,6 @@ public sealed class TodoExecutionEvent
     [JsonPropertyName("retryCondition")]
     public string? RetryCondition { get; set; }
 
-    [JsonPropertyName("stateId")]
-    public string? StateId { get; set; }
-
-    [JsonPropertyName("targetFingerprint")]
-    public string? TargetFingerprint { get; set; }
-
-    [JsonPropertyName("scopeFingerprint")]
-    public string? ScopeFingerprint { get; set; }
-
-    [JsonPropertyName("validationReason")]
-    public string? ValidationReason { get; set; }
-
     [JsonPropertyName("evidence")]
     public List<string> Evidence { get; set; } = [];
 
@@ -116,14 +105,14 @@ public sealed class TodoExecutionAssessment
     [JsonPropertyName("implementationStatus")]
     public required string ImplementationStatus { get; set; }
 
-    [JsonPropertyName("developmentStatus")]
-    public required string DevelopmentStatus { get; set; }
+    [JsonPropertyName("verificationStatus")]
+    public required string VerificationStatus { get; set; }
 
-    [JsonPropertyName("developmentStates")]
-    public List<TodoDevelopmentStateAssessment> DevelopmentStates { get; set; } = [];
+    [JsonPropertyName("verificationScope")]
+    public string VerificationScope { get; init; } = "declared-project-and-ui-surface-checks";
 
-    [JsonPropertyName("readyForCanonical")]
-    public bool ReadyForCanonical { get; set; }
+    [JsonPropertyName("surfaces")]
+    public List<TodoSurfaceAssessment> Surfaces { get; set; } = [];
 
     [JsonPropertyName("currentApproachKey")]
     public string? CurrentApproachKey { get; set; }
@@ -141,7 +130,7 @@ public sealed class TodoExecutionAssessment
     public List<RejectedApproach> RejectedApproaches { get; set; } = [];
 
     [JsonPropertyName("humanValidationItems")]
-    public List<TodoHumanValidationItem> HumanValidationItems { get; set; } = [];
+    public List<HumanValidationItem> HumanValidationItems { get; set; } = [];
 
     [JsonPropertyName("nextOperation")]
     public required string NextOperation { get; set; }
@@ -150,15 +139,15 @@ public sealed class TodoExecutionAssessment
     public required string NextCommand { get; set; }
 }
 
-public sealed class TodoDevelopmentStateAssessment
+public sealed class TodoSurfaceAssessment
 {
-    [JsonPropertyName("stateId")]
+    [JsonPropertyName("surfaceId")]
     public required string StateId { get; set; }
 
     [JsonPropertyName("status")]
     public required string Status { get; set; }
 
-    [JsonPropertyName("assertionIds")]
+    [JsonPropertyName("checkIds")]
     public List<string> AssertionIds { get; set; } = [];
 
     [JsonPropertyName("reason")]
@@ -185,17 +174,14 @@ public sealed class TodoStatusSummary
     [JsonPropertyName("todos")]
     public required MigrationTodoProgressSummary Todos { get; set; }
 
-    [JsonPropertyName("states")]
+    [JsonPropertyName("surfaces")]
     public List<MigrationStateProgress> States { get; set; } = [];
 
-    [JsonPropertyName("frontierStateIds")]
+    [JsonPropertyName("frontierSurfaceIds")]
     public List<string> FrontierStateIds { get; set; } = [];
 
     [JsonPropertyName("totalAttempts")]
     public int TotalAttempts { get; set; }
-
-    [JsonPropertyName("readyForCanonical")]
-    public bool ReadyForCanonical { get; set; }
 
     [JsonPropertyName("currentAction")]
     public required string CurrentAction { get; set; }
@@ -207,7 +193,7 @@ public sealed class TodoStatusSummary
     public string? LatestFailureSignature { get; set; }
 
     [JsonPropertyName("humanValidationItems")]
-    public List<TodoHumanValidationItem> HumanValidationItems { get; set; } = [];
+    public List<HumanValidationItem> HumanValidationItems { get; set; } = [];
 }
 
 public sealed class MigrationTodoProgressSummary
@@ -221,14 +207,11 @@ public sealed class MigrationTodoProgressSummary
     [JsonPropertyName("implemented")]
     public int Implemented { get; set; }
 
-    [JsonPropertyName("developmentValidated")]
-    public int DevelopmentValidated { get; set; }
+    [JsonPropertyName("pendingVerification")]
+    public int PendingVerification { get; set; }
 
-    [JsonPropertyName("blocked")]
-    public int Blocked { get; set; }
-
-    [JsonPropertyName("stale")]
-    public int Stale { get; set; }
+    [JsonPropertyName("failed")]
+    public int Failed { get; set; }
 
     [JsonPropertyName("humanValidationRequired")]
     public int HumanValidationRequired { get; set; }
@@ -239,7 +222,7 @@ public sealed class MigrationTodoProgressSummary
 
 public sealed class MigrationStateProgress
 {
-    [JsonPropertyName("stateId")]
+    [JsonPropertyName("surfaceId")]
     public required string StateId { get; set; }
 
     [JsonPropertyName("status")]
@@ -248,39 +231,9 @@ public sealed class MigrationStateProgress
     [JsonPropertyName("todoIds")]
     public List<string> TodoIds { get; set; } = [];
 
-    [JsonPropertyName("dependencyStateIds")]
+    [JsonPropertyName("dependencySurfaceIds")]
     public List<string> DependencyStateIds { get; set; } = [];
 
     [JsonPropertyName("failureSignature")]
     public string? FailureSignature { get; set; }
-}
-
-public sealed class TodoHumanValidationItem
-{
-    [JsonPropertyName("todoId")]
-    public required string TodoId { get; set; }
-
-    [JsonPropertyName("checkId")]
-    public required string CheckId { get; set; }
-
-    [JsonPropertyName("stateId")]
-    public required string StateId { get; set; }
-
-    [JsonPropertyName("assertionIds")]
-    public List<string> AssertionIds { get; set; } = [];
-
-    [JsonPropertyName("behavior")]
-    public required string Behavior { get; set; }
-
-    [JsonPropertyName("actions")]
-    public List<string> Actions { get; set; } = [];
-
-    [JsonPropertyName("expectedOutcome")]
-    public required string ExpectedOutcome { get; set; }
-
-    [JsonPropertyName("reason")]
-    public required string Reason { get; set; }
-
-    [JsonPropertyName("evidence")]
-    public List<string> Evidence { get; set; } = [];
 }

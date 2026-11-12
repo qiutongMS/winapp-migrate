@@ -91,6 +91,9 @@ internal static class TodoExecutionProgressStore
             throw new InvalidDataException(
                 $"todo-progress.json schemaVersion '{document.SchemaVersion}' is not supported.");
         }
+        if (document.Todos is null || document.Todos.Any(item => item is null ||
+                item.Events is null || item.Events.Any(entry => entry is null || entry.Evidence is null)))
+            throw new InvalidDataException("todo-progress.json requires non-null TODOs, events, and evidence collections.");
         var duplicate = document.Todos
             .GroupBy(item => item.TodoId, StringComparer.Ordinal)
             .FirstOrDefault(group =>
@@ -110,26 +113,17 @@ internal static class TodoExecutionProgressStore
                     .Distinct()
                     .Count() != progress.Events.Count ||
                 progress.Events.Any(item =>
-                    string.IsNullOrWhiteSpace(item.Kind) ||
+                    item.Kind is not (
+                        TodoExecutionService.ApproachSelected or
+                        TodoExecutionService.Implementation or
+                        TodoExecutionService.ApproachRejected) ||
                     string.IsNullOrWhiteSpace(item.Outcome) ||
                     string.IsNullOrWhiteSpace(item.Summary) ||
                     item.RecordedAt == default ||
+                    item.Kind == TodoExecutionService.Implementation &&
+                        item.Outcome is not ("passed" or "failed") ||
                     item.Kind == TodoExecutionService.ApproachRejected &&
-                    (string.IsNullOrWhiteSpace(item.ApproachKey) ||
-                     string.IsNullOrWhiteSpace(item.FailureSignature) ||
-                     string.IsNullOrWhiteSpace(item.RetryCondition) ||
-                     item.Evidence.Count == 0) ||
-                    item.Kind ==
-                        TodoExecutionService.DevelopmentStateVerification &&
-                    (item.Outcome is not
-                        ("passed" or "failed" or "inconclusive") ||
-                     string.IsNullOrWhiteSpace(item.StateId) ||
-                     string.IsNullOrWhiteSpace(item.TargetFingerprint) ||
-                     string.IsNullOrWhiteSpace(item.ValidationReason) ||
-                     item.Outcome is not "inconclusive" &&
-                     item.Evidence.Count == 0 ||
-                     item.Outcome == "failed" &&
-                     string.IsNullOrWhiteSpace(item.FailureSignature))))
+                        string.IsNullOrWhiteSpace(item.ApproachKey)))
             {
                 throw new InvalidDataException(
                     $"todo-progress.json contains invalid event history for TODO '{progress.TodoId}'.");

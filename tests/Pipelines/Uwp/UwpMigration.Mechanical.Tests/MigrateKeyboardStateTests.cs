@@ -862,7 +862,8 @@ public partial class MigrateCommandTests
             TestContext.CancellationToken);
 
         var (firstExit, firstOutput) = await InvokeVerifyAsync(target);
-        Assert.AreEqual(0, firstExit, firstOutput);
+        Assert.AreEqual(1, firstExit, firstOutput);
+        StringAssert.Contains(firstOutput, "UWPC002");
         using var firstReport = await ReadReportAsync(target);
         var firstTodo = firstReport.RootElement.GetProperty("todos")
             .EnumerateArray()
@@ -871,7 +872,7 @@ public partial class MigrateCommandTests
         var firstLocations = firstTodo.GetProperty("locations").GetRawText();
 
         var (secondExit, secondOutput) = await InvokeVerifyAsync(target);
-        Assert.AreEqual(0, secondExit, secondOutput);
+        Assert.AreEqual(1, secondExit, secondOutput);
         using var report = await ReadReportAsync(target);
         var matchingTodos = report.RootElement.GetProperty("todos")
             .EnumerateArray()

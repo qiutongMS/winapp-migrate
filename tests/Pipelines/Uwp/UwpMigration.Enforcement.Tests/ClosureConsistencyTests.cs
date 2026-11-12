@@ -8,8 +8,6 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class RunnerAcceptanceTests
 {
     [TestMethod]
-    [DataRow("source", ".png")]
-    [DataRow("target", ".png")]
     [DataRow("source", "-ui.json")]
     [DataRow("target", "-ui.json")]
     public async Task CanonicalConsistency_ReplacedValidCanonicalCopiesInvalidateCompletion(string side, string suffix)
@@ -17,10 +15,12 @@ public sealed partial class RunnerAcceptanceTests
         using var fixture = await CompletedConsistencyFixtureAsync();
         var fingerprint = await TargetFingerprint.ComputeAsync(fixture.Root);
         var path = $".migration-evidence/{side}/state-1{suffix}";
-        if (suffix == ".png")
-            await File.WriteAllBytesAsync(fixture.Path(path), PngTestData.Create(size: 72));
-        else
-            await File.WriteAllTextAsync(fixture.Path(path), ClosureTree.Replace("Ready", "Other content", StringComparison.Ordinal));
+        await File.WriteAllTextAsync(
+            fixture.Path(path),
+            ClosureTree.Replace(
+                "Ready",
+                "Other content",
+                StringComparison.Ordinal));
         Assert.AreEqual(fingerprint, await TargetFingerprint.ComputeAsync(fixture.Root));
 
         var changed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
@@ -32,43 +32,6 @@ public sealed partial class RunnerAcceptanceTests
         StringAssert.Contains(changed.Gates.Single(gate => gate.Id == "report-closure").Reason, "evidence hashes");
         Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared)).Status,
             "Finalize must restore copies from the original derived evidence, not bless the edited copies.");
-    }
-
-    [TestMethod]
-    public async Task CanonicalConsistency_PropertyCopiesAreHashBoundDespiteValidPropertyShape()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var observation = PropertyObservation("IsSelected", "True");
-        await PlanPropertyAsync(fixture, "isSelected", observation);
-        var probe = await CaptureClosureProbeAsync(fixture, new EnforcementProcessResult(0, observation, ""),
-            arguments: ["get-property", "main", "-p", "IsSelected", "-w", "42", "--json"]);
-        await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
-        Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared)).Status);
-        await File.WriteAllTextAsync(fixture.Path(".migration-evidence/target/state-1-ui.json"),
-            PropertyObservation("IsSelected", "False"));
-
-        var changed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-
-        Assert.AreEqual("blocked", changed.Gates.Single(gate => gate.Id == "report-closure").Status);
-        Assert.AreNotEqual("complete", changed.Disposition?.Kind);
-    }
-
-    [TestMethod]
-    public async Task CanonicalConsistency_UnboundOptionalScreenshotCannotBeInjected()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var probe = await CaptureClosureProbeAsync(fixture);
-        await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
-        await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        const string screenshot = ".migration-evidence/target/state-1.png";
-        Assert.IsFalse(File.Exists(fixture.Path(screenshot)));
-        await File.WriteAllBytesAsync(fixture.Path(screenshot), PngTestData.Create());
-
-        var changed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-
-        Assert.AreEqual("blocked", changed.Gates.Single(gate => gate.Id == "report-closure").Status);
-        Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared)).Status);
-        Assert.IsFalse(File.Exists(fixture.Path(screenshot)));
     }
 
     [TestMethod]
@@ -125,7 +88,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreNotEqual("passed", changed.Status);
         Assert.AreNotEqual("complete", changed.Disposition?.Kind);
         Assert.AreEqual("blocked", changed.Gates.Single(gate => gate.Id == "report-sync").Status);
-        StringAssert.Contains(changed.Gates.Single(gate => gate.Id == "report-sync").Reason, "per-state status/reason");
+        StringAssert.Contains(changed.Gates.Single(gate => gate.Id == "report-sync").Reason, "per-surface status/reason");
         Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared)).Status);
     }
 

@@ -934,7 +934,7 @@ public static partial class MechanicalMigration
                             [
                                 "Resolve the HWND from the WinUI Window that initiated the picker.",
                                 "Initialize and invoke the picker without substituting an arbitrary active window.",
-                                "Model picker open, selection, cancellation, and return to the app as ordered required actions."
+                                "Keep picker ownership and result handling in the migrated implementation."
                             ],
                             Preconditions =
                             [
@@ -943,21 +943,21 @@ public static partial class MechanicalMigration
                             Risks =
                             [
                                 "Using the wrong HWND can attach the system picker to another window or break modality.",
-                                "Validating only the returned file omits cancellation and app-state restoration behavior."
+                                "Picker selection and cancellation behavior require explicit human or specialized validation outside UI Surface Parity."
                             ]
                         }
                     ],
                     ForbiddenShortcuts =
                     [
-                        "Do not remove the picker flow from the state plan because PickerHost runs in another process.",
+                        "Do not remove the app-owned surface that launches the picker because PickerHost runs in another process.",
                         "Do not authorize arbitrary external-process windows as migration evidence.",
-                        "Do not seal the required contract before the picker open, select/cancel, and return states are represented."
+                        "Do not represent picker selection, cancellation, or restoration as machine-verified UI Surface Parity."
                     ],
                     CompletionConditions =
                     [
-                        "The state plan is updated before seal-contract with picker open, selection, cancellation, and app restoration steps.",
-                        "Source and target evidence includes the trusted owner-bound system picker window where it is observable.",
-                        "Target evidence verifies both successful selection and cancellation without weakening app-window identity checks."
+                        "The app-owned launch surface is inventoried before seal-contract.",
+                        "The target initializes PickerHost with the correct app-window owner.",
+                        "Selection and cancellation behavior are reported as separate human or specialized validation work."
                     ]
                 }
             });

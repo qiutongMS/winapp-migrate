@@ -3,6 +3,7 @@
 
 using System.CommandLine;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using UwpMigration.Contracts;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using WinAppMigration.Enforcement;
@@ -12,1172 +13,558 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class RunnerAcceptanceTests
 {
     [TestMethod]
-    public async Task TodoExecution_ImplementationSurvivesUnrelatedTargetChanges()
+    [DataRow("saved")]
+    [DataRow("missing")]
+    [DataRow("invalid")]
+    public async Task SurfaceComparison_ExportsPairedEvidenceWithoutAddingAnAcceptanceGate(string screenshot)
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        var implemented = await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        Assert.AreEqual("implemented", implemented.ImplementationStatus);
-        Assert.AreEqual(
-            "record-development-state",
-            implemented.NextOperation);
-
-        await File.WriteAllTextAsync(
-            fixture.Path("unrelated-todo-change.txt"),
-            "// another TODO changed the target");
-        var resumed = (await TodoExecutionService.AssessAsync(
-            fixture.Root,
-            "UWMIG014")).Single();
-
-        Assert.AreEqual("implemented", resumed.ImplementationStatus);
-        Assert.AreEqual(
-            "preserve-native-items",
-            resumed.AcceptedApproachKey);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_RejectedApproachRequiresRetryEvidence()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Try preserving native item presentation.");
-        var rejected = await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "failed",
-            "The selected-state contract remained missing.",
-            "selected-state-missing",
-            "The selector exposes explicit selected-state handling.",
-            ["selector-failure.json"]);
-
-        Assert.AreEqual("pending", rejected.ImplementationStatus);
-        Assert.AreEqual("select-approach", rejected.NextOperation);
-        Assert.AreEqual(
-            "selected-state-missing",
-            rejected.RejectedApproaches.Single().FailureSignature);
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            TodoExecutionService.SelectApproachAsync(
-                fixture.Root,
-                "UWMIG014",
-                "preserve-native-items",
-                "Repeat the same rejected approach."));
-
-        var retried = await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Retry after adding explicit selected-state handling.",
-            ["selector-contract-changed.json"]);
-
-        Assert.AreEqual(2, retried.Attempt);
-        Assert.AreEqual(
-            "preserve-native-items",
-            retried.CurrentApproachKey);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_IgnoresStateTodoMappingMetadata()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        var todo = Uwmig014();
-        todo.AffectedStates = ["another-state"];
-        report.Todos.Add(todo);
-        await fixture.SaveReportAsync(report);
-        var (plan, planError) =
-            await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                fixture.Root,
-                report.Validation.StatePlan);
-        Assert.IsNull(planError);
-        plan!.States.Single().TodoIds.Add("UWMIG014");
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root,
-            report.Validation.StatePlan,
-            plan);
-
-        var assessment = (await TodoExecutionService.AssessAsync(
-            fixture.Root,
-            "UWMIG014")).Single();
-
-        Assert.AreEqual("not-ready", assessment.DevelopmentStatus);
-        CollectionAssert.AreEqual(
-            new[] { "state-1" },
-            assessment.DevelopmentStates
-                .Select(state => state.StateId)
-                .ToArray());
-    }
-
-    [TestMethod]
-    public async Task StateTodoIdsDoNotChangeTheSealedContractFingerprint()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var plan = await fixture.LoadAsync<StatePlanDocument>(
-            ".migration-evidence/state-plan.json");
-        var state = plan.States.Single();
-        var before = StateClosureProtocol.ContractFingerprint(
-            fixture.Root,
-            state);
-
-        state.TodoIds.Add("LEGACY-METADATA");
-        var after = StateClosureProtocol.ContractFingerprint(
-            fixture.Root,
-            state);
-
-        Assert.AreEqual(before, after);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_BehaviorFailureRejectsImplementedApproach()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-
-        var reopened = await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "failed",
-            "Behavior verification showed selected items lost their visual state.",
-            "selected-visual-state-missing",
-            "The approach explicitly preserves selected visual state.",
-            ["states/selected-item-failure.json"]);
-
-        Assert.AreEqual("pending", reopened.ImplementationStatus);
-        Assert.AreEqual("select-approach", reopened.NextOperation);
-        Assert.IsNull(reopened.CurrentApproachKey);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_GlobalClosureVerifiesMappedTodo()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-
-        var process = SuccessfulLaunch();
-        var closure = new UwpEnforceCommand(process);
-        var attest = closure.Parse(
-            ["attest", fixture.Root.FullName]);
-        Assert.AreEqual(
-            0,
-            await attest.InvokeAsync(
-                attest.InvocationConfiguration,
-                CancellationToken.None));
-
-        await fixture.VerifyStateAsync();
-        await TodoExecutionService.RecordStateVerificationAsync(
-            fixture.Root,
-            "state-1");
-        var finalize = closure.Parse(
-            ["finalize", fixture.Root.FullName, "--strict"]);
-        Assert.AreEqual(
-            0,
-            await finalize.InvokeAsync(
-                finalize.InvocationConfiguration,
-                CancellationToken.None));
-
-        var finalized = await fixture.LoadReportAsync();
-        Assert.AreEqual(
-            "verified",
-            finalized.Todos.Single(todo => todo.Id == "UWMIG014").Status);
-        var progress = await fixture.LoadAsync<TodoExecutionProgressDocument>(
-            EnforcementStore.TodoProgressPath);
-        var events = progress.Todos.Single(todo =>
-                todo.TodoId == "UWMIG014")
-            .Events.Select(item => item.Kind)
-            .ToArray();
-        CollectionAssert.Contains(events, TodoExecutionService.Implementation);
-        CollectionAssert.Contains(events, TodoExecutionService.StateVerification);
-        CollectionAssert.Contains(events, TodoExecutionService.TodoVerified);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_DevelopmentPassCreatesIntermediateStatus()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        var (plan, planError) =
-            await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                fixture.Root,
-                report.Validation.StatePlan);
-        Assert.IsNull(planError);
-        plan!.States.Single().TodoIds.Add("UWMIG014");
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root,
-            report.Validation.StatePlan,
-            plan);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        var probe = await CaptureClosureProbeAsync(fixture);
-
-        var assessment = (await
-            TodoExecutionService.RecordDevelopmentStateAsync(
-                fixture.Root,
-                "state-1",
-                "The mapped exploratory state passed.",
-                evidence: [probe.ArtifactPath],
-                windowOwnerResolver:
-                    TestWindowOwnerResolver.Shared)).Single();
-
-        Assert.AreEqual(
-            "implemented",
-            assessment.ImplementationStatus);
-        Assert.AreEqual(
-            "development-validated",
-            assessment.DevelopmentStatus);
-        Assert.IsTrue(assessment.ReadyForCanonical);
-        Assert.AreEqual(
-            "passed",
-            assessment.DevelopmentStates.Single().Status);
-        Assert.AreEqual(
-            "await-canonical-verification",
-            assessment.NextOperation);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_TargetChangeMakesDevelopmentPassStale()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        await File.WriteAllTextAsync(
-            fixture.Path("todo-relevant.txt"),
-            "before");
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        var (plan, planError) =
-            await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                fixture.Root,
-                report.Validation.StatePlan);
-        Assert.IsNull(planError);
-        plan!.States.Single().TodoIds.Add("UWMIG014");
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root,
-            report.Validation.StatePlan,
-            plan);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        var probe = await CaptureClosureProbeAsync(fixture);
-        await TodoExecutionService.RecordDevelopmentStateAsync(
-            fixture.Root,
-            "state-1",
-            "The mapped exploratory state passed.",
-            evidence: [probe.ArtifactPath],
-            windowOwnerResolver: TestWindowOwnerResolver.Shared);
-
-        await File.WriteAllTextAsync(
-            fixture.Path("todo-relevant.txt"),
-            "after");
-        var assessment = (await TodoExecutionService.AssessAsync(
-            fixture.Root,
-            "UWMIG014")).Single();
-
-        Assert.AreEqual("stale", assessment.DevelopmentStatus);
-        Assert.IsFalse(assessment.ReadyForCanonical);
-        Assert.AreEqual(
-            "stale",
-            assessment.DevelopmentStates.Single().Status);
-        Assert.AreEqual(
-            "refresh-development-validation",
-            assessment.NextOperation);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_UnrelatedChangePreservesDevelopmentPass()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        await File.WriteAllTextAsync(
-            fixture.Path("todo-relevant.txt"),
-            "unchanged");
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        var probe = await CaptureClosureProbeAsync(fixture);
-        await TodoExecutionService.RecordDevelopmentStateAsync(
-            fixture.Root,
-            "state-1",
-            "The mapped exploratory state passed.",
-            evidence: [probe.ArtifactPath],
-            windowOwnerResolver: TestWindowOwnerResolver.Shared);
-
-        await File.WriteAllTextAsync(
-            fixture.Path("unrelated-after-development.txt"),
-            "unrelated");
-        var assessment = (await TodoExecutionService.AssessAsync(
-            fixture.Root,
-            "UWMIG014")).Single();
-
-        Assert.AreEqual(
-            "development-validated",
-            assessment.DevelopmentStatus);
-        Assert.IsTrue(assessment.ReadyForCanonical);
-        Assert.AreEqual(
-            "passed",
-            assessment.DevelopmentStates.Single().Status);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_UpstreamChangeStalesDownstreamState()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        await File.WriteAllTextAsync(
-            fixture.Path("upstream.txt"),
-            "before");
-        await File.WriteAllTextAsync(
-            fixture.Path("downstream.txt"),
-            "unchanged");
-        var report = await fixture.LoadReportAsync();
-        var upstreamTodo = Uwmig014();
-        upstreamTodo.Id = "TODO-UPSTREAM";
-        upstreamTodo.AffectedStates = ["state-1"];
-        upstreamTodo.TouchSet.Paths = ["upstream.txt"];
-        var downstreamTodo = Uwmig014();
-        downstreamTodo.Id = "TODO-DOWNSTREAM";
-        downstreamTodo.AffectedStates = ["state-2"];
-        downstreamTodo.TouchSet.Paths = ["downstream.txt"];
-        downstreamTodo.Guidance!.CompletionChecks.Single().Target =
-            "state-2";
-        report.Todos.AddRange([upstreamTodo, downstreamTodo]);
-        await fixture.SaveReportAsync(report);
-        var (plan, planError) =
-            await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                fixture.Root,
-                report.Validation.StatePlan);
-        Assert.IsNull(planError);
-        plan!.States[0].Slice = "upstream";
-        var downstreamState = JsonSerializer.Deserialize<MigrationState>(
-            JsonSerializer.Serialize(
-                plan.States[0],
-                EnforcementStore.JsonOptions),
-            EnforcementStore.JsonOptions)!;
-        downstreamState.Id = "state-2";
-        downstreamState.Slice = "downstream";
-        downstreamState.Dependencies = ["upstream"];
-        downstreamState.TodoIds = [];
-        plan.States.Add(downstreamState);
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root,
-            report.Validation.StatePlan,
-            plan);
-        foreach (var todoId in new[]
-        {
-            "TODO-UPSTREAM",
-            "TODO-DOWNSTREAM"
-        })
-        {
-            await TodoExecutionService.SelectApproachAsync(
-                fixture.Root,
-                todoId,
-                "preserve-native-items",
-                "Preserve the state contract.");
-            await TodoExecutionService.RecordImplementationAsync(
-                fixture.Root,
-                todoId,
-                "implemented",
-                "Implemented the state contract.");
-        }
-        var upstreamProbe = await CaptureClosureProbeAsync(
-            fixture,
-            stateId: "state-1");
-        await TodoExecutionService.RecordDevelopmentStateAsync(
-            fixture.Root,
-            "state-1",
-            "The upstream state passed.",
-            evidence: [upstreamProbe.ArtifactPath],
-            windowOwnerResolver: TestWindowOwnerResolver.Shared);
-        var downstreamProbe = await CaptureClosureProbeAsync(
-            fixture,
-            stateId: "state-2");
-        await TodoExecutionService.RecordDevelopmentStateAsync(
-            fixture.Root,
-            "state-2",
-            "The downstream state passed.",
-            evidence: [downstreamProbe.ArtifactPath],
-            windowOwnerResolver: TestWindowOwnerResolver.Shared);
-
-        await File.WriteAllTextAsync(
-            fixture.Path("upstream.txt"),
-            "after");
-        var assessment = (await TodoExecutionService.AssessAsync(
-            fixture.Root,
-            "TODO-DOWNSTREAM")).Single();
-
-        Assert.AreEqual("stale", assessment.DevelopmentStatus);
-        Assert.AreEqual(
-            "stale",
-            assessment.DevelopmentStates.Single().Status);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_DevelopmentFailureBlocksMappedTodo()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        var (plan, planError) =
-            await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                fixture.Root,
-                report.Validation.StatePlan);
-        Assert.IsNull(planError);
-        plan!.States.Single().TodoIds.Add("UWMIG014");
-        await EnforcementStore.WriteAtomicAsync(
-            fixture.Root,
-            report.Validation.StatePlan,
-            plan);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        var deferred = (await
-            TodoExecutionService.RecordDevelopmentStateAsync(
-                fixture.Root,
-                "state-1",
-                "Could not safely operate the external dialog.",
-                inconclusiveReason:
-                    "System dialog automation is safety denied.")).Single();
-        Assert.AreEqual(
-            "human-validation-required",
-            deferred.DevelopmentStatus);
-        Assert.IsEmpty(
-            deferred.HumanValidationItems.Single().Evidence);
-        StringAssert.Contains(
-            deferred.HumanValidationItems.Single().Reason,
-            "safety denied");
-
-        var probe = await CaptureClosureProbeAsync(
-            fixture,
-            new EnforcementProcessResult(
-                0,
-                ClosureTree.Replace(
-                    "Ready",
-                    "Selected state missing",
-                    StringComparison.Ordinal),
-                ""));
-
-        var assessment = (await
-            TodoExecutionService.RecordDevelopmentStateAsync(
-                fixture.Root,
-                "state-1",
-                "Selected state is missing.",
-                [probe.ArtifactPath],
-                windowOwnerResolver:
-                    TestWindowOwnerResolver.Shared)).Single();
-
-        Assert.AreEqual("blocked", assessment.DevelopmentStatus);
-        Assert.IsFalse(assessment.ReadyForCanonical);
-        Assert.AreEqual(
-            "blocked",
-            assessment.DevelopmentStates.Single().Status);
-        Assert.IsNotNull(
-            assessment.DevelopmentStates.Single().FailureSignature);
-        Assert.AreEqual(
-            "resolve-development-blocker",
-            assessment.NextOperation);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_InconclusiveAutomationEmitsHumanValidation()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        var probe = await CaptureClosureProbeAsync(
-            fixture,
-            new EnforcementProcessResult(
-                5,
-                "",
-                "The requested automation is unavailable."));
-
-        var assessment = (await
-            TodoExecutionService.RecordDevelopmentStateAsync(
-                fixture.Root,
-                "state-1",
-                "Attempted the mapped state validation.",
-                [probe.ArtifactPath],
-                windowOwnerResolver:
-                    TestWindowOwnerResolver.Shared)).Single();
-
-        Assert.AreEqual(
-            "human-validation-required",
-            assessment.DevelopmentStatus);
-        Assert.IsFalse(assessment.ReadyForCanonical);
-        Assert.AreEqual(
-            "complete-human-validation",
-            assessment.NextOperation);
-        var item = assessment.HumanValidationItems.Single();
-        Assert.AreEqual("uwmig014-main-name", item.CheckId);
-        Assert.AreEqual("state-1", item.StateId);
-        CollectionAssert.AreEqual(
-            new[] { "main-name" },
-            item.AssertionIds);
-        StringAssert.Contains(item.Reason, "exited with code 5");
-
-        var status = await TodoExecutionService.StatusAsync(
-            fixture.Root,
-            await TargetFingerprint.ComputeAsync(fixture.Root));
-        Assert.AreEqual(1, status.Todos.HumanValidationRequired);
-        Assert.HasCount(1, status.HumanValidationItems);
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            TodoExecutionService.EnsureReadyForCanonicalAsync(
-                fixture.Root));
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_CanonicalGateRequiresDevelopmentValidation()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-
-        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            TodoExecutionService.EnsureReadyForCanonicalAsync(
-                fixture.Root));
-
-        StringAssert.Contains(
-            error.Message,
-            "UWMIG014=not-run");
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_ProjectClosureChecksDoNotRequireUiStateMapping()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(new MigrationTodo
-        {
-            Id = "UWMIG-BUILD",
-            Category = "project-dependencies",
-            Priority = "required",
-            Summary = "Complete the target project graph.",
-            Reason = "The TODO is proven by product-owned project closure.",
-            AffectedStates = ["target-build"],
-            Guidance = new MigrationRepairGuidance
-            {
-                ReasonCode = "project-closure",
-                CompletionChecks =
-                [
-                    new()
-                    {
-                        Id = "target-build-passed",
-                        Summary = "The current target build passes.",
-                        VerificationKind = "build-attestation",
-                        Target = "target-build",
-                        Expected = "passed"
-                    }
-                ]
-            }
-        });
-        await fixture.SaveReportAsync(report);
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
-            fixture.Root,
-            new UwpEnforcementOptions());
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG-BUILD",
-            "resolve-from-source-contract",
-            "Complete the target project graph.");
-        var implemented = await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG-BUILD",
-            "implemented",
-            "Completed the target project graph.");
-
-        Assert.AreEqual(
-            "development-validated",
-            implemented.DevelopmentStatus);
-        Assert.IsEmpty(implemented.DevelopmentStates);
-        await TodoExecutionService.EnsureReadyForCanonicalAsync(
-            fixture.Root);
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_ProjectClosureChecksMustActuallyPass()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        File.Delete(fixture.Path(EnforcementStore.BuildAttestationPath));
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(new MigrationTodo
+            fixture.Root, new UwpEnforcementOptions());
+        var process = new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, ""))
         {
-            Id = "UWMIG-BUILD",
-            Category = "project-dependencies",
-            Priority = "required",
-            Summary = "Complete the target project graph.",
-            Reason = "The TODO is proven by product-owned project closure.",
-            Guidance = new MigrationRepairGuidance
+            SaveComparisonScreenshots = screenshot != "missing",
+            ComparisonScreenshotContent = screenshot == "invalid" ? [1, 2, 3] : null
+        };
+        var probe = await new UwpEnforcementRunner(process, windowOwnerResolver: TestWindowOwnerResolver.Shared)
+            .InvokeUiAsync(fixture.Root, "winapp", ["inspect", "--json", "-w", "42"], [], "state-1");
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var sourceTree = plan.States.Single().Source.TreeEvidence!;
+        const string sourceImage = ".migration-evidence/source/gateway/comparison-source.png";
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.Path(sourceImage))!);
+        await File.WriteAllBytesAsync(fixture.Path(sourceImage), PngTestData.Create());
+        await EnforcementStore.WriteAtomicAsync(fixture.Root,
+            ".migration-evidence/source/gateway/comparison-capture.json", new
             {
-                ReasonCode = "project-closure",
-                CompletionChecks =
-                [
-                    new()
-                    {
-                        Id = "target-build-passed",
-                        Summary = "The current target build passes.",
-                        VerificationKind = "build-attestation",
-                        Target = "target-build",
-                        Expected = "passed"
-                    }
-                ]
-            }
-        });
-        await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG-BUILD",
-            "resolve-from-source-contract",
-            "Complete the target project graph.");
-        var implemented = await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG-BUILD",
-            "implemented",
-            "Completed the target project graph.");
+                side = "source", treePath = sourceTree,
+                treeSha256 = StateClosureProtocol.FileHash(fixture.Root, sourceTree),
+                screenshotPath = sourceImage,
+                screenshotSha256 = StateClosureProtocol.FileHash(fixture.Root, sourceImage),
+                status = "saved", runId = "source-run", fingerprint = "source-fingerprint"
+            });
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
 
-        Assert.AreEqual("not-run", implemented.DevelopmentStatus);
-        Assert.AreEqual(
-            "satisfy-project-closure-checks",
-            implemented.NextOperation);
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            TodoExecutionService.EnsureReadyForCanonicalAsync(fixture.Root));
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        var html = await File.ReadAllTextAsync(fixture.Path(".migration-evidence/comparison/index.html"));
+
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.HasCount(1, process.ScreenshotCalls);
+        StringAssert.Contains(html, "Before (UWP)");
+        StringAssert.Contains(html, "After (WinUI)");
+        StringAssert.Contains(html, "state-1");
+        StringAssert.Contains(html, "UIA tree");
+        StringAssert.Contains(html, "source-run");
+        if (screenshot == "saved")
+        {
+            StringAssert.Contains(html, "comparison.png");
+            await File.AppendAllTextAsync(process.ScreenshotCalls.Single()[^1], "tampered");
+            var current = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+            Assert.AreEqual("passed", current.Status);
+            html = await File.ReadAllTextAsync(fixture.Path(".migration-evidence/comparison/index.html"));
+        }
+        StringAssert.Contains(html, "Screenshot unavailable or stale");
     }
 
     [TestMethod]
-    public async Task TodoExecution_BindStateReplacesGenericResolutionCheck()
+    public async Task TodoExecution_CurrentUwpResidueBlocksAcceptanceDespitePassedReportAndTodo()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var report = await fixture.LoadReportAsync();
-        var todo = Uwmig014();
-        todo.AffectedStates = [];
-        todo.Guidance!.CompletionChecks = [];
+        var todo = ProjectTodo();
+        todo.Status = "verified";
+        todo.Guidance!.CompletionChecks.Add(new MigrationCompletionCheck
+        {
+            Id = "target-compatibility",
+            Summary = "No incompatible UWP contract remains in current target files.",
+            VerificationKind = "target-uwp-compatibility", Target = "target-source", Expected = "passed"
+        });
         report.Todos.Add(todo);
         await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
+        var probe = await CaptureClosureProbeAsync(fixture);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared)).Status);
+        await File.WriteAllTextAsync(fixture.Path("Compatibility.cs"), "var window = Window.Current;");
+
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+
+        Assert.AreNotEqual("passed", snapshot.Status);
+        var gate = snapshot.Gates.Single(item => item.Id == "mechanical");
+        Assert.AreEqual("blocked", gate.Status);
+        StringAssert.Contains(gate.Reason, "UWPC003 Compatibility.cs:1");
+        Assert.AreEqual("pending", assessment.VerificationStatus);
+        Assert.AreEqual("passed", (await fixture.LoadReportAsync()).MechanicalVerification.Status);
+        File.Delete(fixture.Path("Compatibility.cs"));
+        Assert.AreEqual("passed", (await UwpEnforcementRunner.AssessAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared)).Gates.Single(item => item.Id == "mechanical").Status);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_ImplementationDoesNotRequireAStrategyOrProveAcceptance()
+    {
+        using var fixture = await TodoFixtureAsync();
         var implemented = await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        Assert.AreEqual("unmapped", implemented.DevelopmentStatus);
-
-        await TodoExecutionService.BindStateAsync(
-            fixture.Root,
-            "UWMIG014",
-            "state-1",
-            "uwmig014-navigation-state",
-            "The main navigation state proves selector behavior.",
-            ["main-name"]);
-        var bound = (await TodoExecutionService.AssessAsync(
-            fixture.Root,
-            "UWMIG014")).Single();
-
-        Assert.AreEqual("not-run", bound.DevelopmentStatus);
-        CollectionAssert.AreEqual(
-            new[] { "state-1" },
-            bound.DevelopmentStates.Select(item => item.StateId).ToArray());
-        var persisted = (await fixture.LoadReportAsync())
-            .Todos.Single(item => item.Id == "UWMIG014");
-        Assert.IsFalse(persisted.Guidance!.CompletionChecks.Any(check =>
-            check.VerificationKind == "todo-resolution-evidence"));
-        Assert.IsTrue(persisted.Guidance.CompletionChecks.Any(check =>
-            check.Id == "uwmig014-navigation-state" &&
-            check.Target == "state-1" &&
-            check.AssertionIds.SequenceEqual(["main-name"])));
+            fixture.Root, "UWMIG014", "implemented", "Preserved the source item presentation.");
+        Assert.AreEqual("implemented", implemented.ImplementationStatus);
+        Assert.AreEqual("pending", implemented.VerificationStatus);
+        Assert.AreEqual("record-surface", implemented.NextOperation);
+        await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
+        var current = (await TodoExecutionService.AssessAsync(fixture.Root, "UWMIG014")).Single();
+        Assert.AreEqual("implemented", current.ImplementationStatus);
+        Assert.AreEqual("pending", current.VerificationStatus);
     }
 
     [TestMethod]
-    public async Task TodoExecution_StatusExposesPhaseAndFrontier()
+    public async Task TodoExecution_CliSurfaceProofIsSharedWithoutAdditionalTodoReceipts()
     {
-        using var fixture = await RunnerFixture.CreateAsync();
-        await File.WriteAllTextAsync(
-            fixture.Path("todo-relevant.txt"),
-            "current");
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-
-        var initial = await TodoExecutionService.StatusAsync(
-            fixture.Root,
-            await TargetFingerprint.ComputeAsync(fixture.Root));
-        Assert.AreEqual("implementation", initial.Phase);
-        Assert.AreEqual(1, initial.Todos.PendingImplementation);
-        CollectionAssert.Contains(
-            initial.FrontierStateIds,
-            "state-1");
-
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Preserve native item presentation.");
+        using var fixture = await TodoFixtureAsync();
         await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the selector fallback.");
-        var development = await TodoExecutionService.StatusAsync(
-            fixture.Root,
-            await TargetFingerprint.ComputeAsync(fixture.Root));
-        Assert.AreEqual(
-            "development-validation",
-            development.Phase);
-        Assert.AreEqual(1, development.Todos.Implemented);
-        StringAssert.Contains(
-            development.NextCheckpoint,
-            "state-1");
-
+            fixture.Root, "UWMIG014", "implemented", "Preserved source item presentation.");
         var probe = await CaptureClosureProbeAsync(fixture);
-        await TodoExecutionService.RecordDevelopmentStateAsync(
-            fixture.Root,
-            "state-1",
-            "The state passed development validation.",
-            evidence: [probe.ArtifactPath],
-            windowOwnerResolver: TestWindowOwnerResolver.Shared);
-        var ready = await TodoExecutionService.StatusAsync(
-            fixture.Root,
-            await TargetFingerprint.ComputeAsync(fixture.Root));
-
-        Assert.AreEqual("ready-for-canonical", ready.Phase);
-        Assert.IsTrue(ready.ReadyForCanonical);
-        Assert.IsEmpty(ready.FrontierStateIds);
-        Assert.AreEqual(1, ready.Todos.DevelopmentValidated);
+        var command = new UwpEnforceCommand(new FakeProcessRunner(), TestWindowOwnerResolver.Shared);
+        var parsed = command.Parse([
+            "record-surface", fixture.Root.FullName, "--surface", "state-1", "--probe", probe.ArtifactPath]);
+        Assert.AreEqual(0, await parsed.InvokeAsync(parsed.InvocationConfiguration, CancellationToken.None));
+        var proofPath = StateClosureProtocol.AttestationPath("state-1");
+        var originalProof = await File.ReadAllTextAsync(fixture.Path(proofPath));
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, "UWMIG014", TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("implemented", assessment.ImplementationStatus);
+        Assert.AreEqual("verified", assessment.VerificationStatus);
+        Assert.AreEqual("verified", assessment.Surfaces.Single().Status);
+        Assert.IsEmpty(assessment.HumanValidationItems);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        Assert.AreEqual(originalProof, await File.ReadAllTextAsync(fixture.Path(proofPath)));
+        var progress = await fixture.LoadAsync<TodoExecutionProgressDocument>(EnforcementStore.TodoProgressPath);
+        Assert.AreEqual(TodoExecutionService.Implementation, progress.Todos.Single().Events.Single().Kind);
+        Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared)).Status);
+        Assert.AreEqual("verified", (await fixture.LoadReportAsync()).Todos.Single().Status);
     }
 
     [TestMethod]
-    public async Task TodoExecution_DiscoveredTodoPersistsInReport()
+    [DataRow("source")]
+    [DataRow("target")]
+    [DataRow("replay")]
+    [DataRow("output")]
+    public async Task TodoExecution_CurrentEvidenceChangesInvalidateVerificationNotImplementation(string change)
     {
-        using var fixture = await RunnerFixture.CreateAsync();
-
-        var discovered = await TodoExecutionService.DiscoverAsync(
-            fixture.Root,
-            "UWDISC001",
-            "runtime-navigation",
-            "required",
-            "Restore navigation after startup.",
-            "Runtime evidence exposed a migration obligation not predicted mechanically.",
-            "runtime",
-            "navigation-null-frame",
-            ["runtime/navigation-null-frame.json"],
-            ["MainWindow.xaml.cs"],
-            ["state-1"],
-            ["navigation"],
-            ["MainWindow.xaml.cs"],
-            ["startup-navigation"]);
-
-        Assert.AreEqual("discovered", discovered.Origin);
-        var report = await fixture.LoadReportAsync();
-        Assert.AreEqual("1.7", report.SchemaVersion);
-        var persisted = report.Todos.Single(todo =>
-            todo.Id == "UWDISC001");
-        Assert.AreEqual("runtime", persisted.Discovery!.Phase);
-        Assert.AreEqual(
-            "navigation-null-frame",
-            persisted.Discovery.Signature);
-    }
-
-    [TestMethod]
-    public async Task Cli_TodoCommandsExposeNewWorkflow()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        var command = new UwpTodoCommand(
-            TestWindowOwnerResolver.Shared);
-
-        var bind = command.Parse(
-            [
-                "bind-state",
-                fixture.Root.FullName,
-                "UWMIG014",
-                "--state",
-                "state-1",
-                "--assertion",
-                "main-name",
-                "--check-id",
-                "uwmig014-cli-state",
-                "--summary",
-                "The main state proves selector behavior."
-            ]);
-        Assert.AreEqual(
-            0,
-            await bind.InvokeAsync(
-                bind.InvocationConfiguration,
-                CancellationToken.None));
-
-        var select = command.Parse(
-            [
-                "select-approach",
-                fixture.Root.FullName,
-                "UWMIG014",
-                "preserve-native-items",
-                "--reason",
-                "Preserve native item presentation."
-            ]);
-        Assert.AreEqual(
-            0,
-            await select.InvokeAsync(
-                select.InvocationConfiguration,
-                CancellationToken.None));
-
-        var record = command.Parse(
-            [
-                "record",
-                fixture.Root.FullName,
-                "UWMIG014",
-                "--outcome",
-                "implemented",
-                "--summary",
-                "Implemented the selector fallback."
-            ]);
-        Assert.AreEqual(
-            0,
-            await record.InvokeAsync(
-                record.InvocationConfiguration,
-                CancellationToken.None));
-
-        var probe = await CaptureClosureProbeAsync(fixture);
-        var development = command.Parse(
-            [
-                "record-development",
-                fixture.Root.FullName,
-                "--state",
-                "state-1",
-                "--summary",
-                "The mapped exploratory state passed.",
-                "--evidence",
-                probe.ArtifactPath
-            ]);
-        Assert.AreEqual(
-            0,
-            await development.InvokeAsync(
-                development.InvocationConfiguration,
-                CancellationToken.None));
-
-        var assess = command.Parse(
-            ["assess", fixture.Root.FullName, "UWMIG014"]);
-        Assert.AreEqual(
-            0,
-            await assess.InvokeAsync(
-                assess.InvocationConfiguration,
-                CancellationToken.None));
-        var status = command.Parse(
-            [
-                "status",
-                fixture.Root.FullName
-            ]);
-        Assert.AreEqual(
-            0,
-            await status.InvokeAsync(
-                status.InvocationConfiguration,
-                CancellationToken.None));
-
-        var discover = command.Parse(
-            [
-                "discover",
-                fixture.Root.FullName,
-                "UWDISC002",
-                "--category",
-                "runtime-navigation",
-                "--priority",
-                "required",
-                "--summary",
-                "Restore runtime navigation.",
-                "--reason",
-                "Runtime evidence exposed omitted migration work.",
-                "--phase",
-                "runtime",
-                "--signature",
-                "navigation-frame-null",
-                "--evidence",
-                "runtime/navigation-frame-null.json"
-            ]);
-        Assert.AreEqual(
-            0,
-            await discover.InvokeAsync(
-                discover.InvocationConfiguration,
-                CancellationToken.None));
-    }
-
-    [TestMethod]
-    public async Task TodoExecution_NewAttemptRequiresFreshDevelopmentEvidence()
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        await File.WriteAllTextAsync(
-            fixture.Path("todo-relevant.txt"),
-            "current");
-        var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
-        await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Try the native-item strategy.");
+        using var fixture = await TodoFixtureAsync();
         await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the first strategy.");
+            fixture.Root, "UWMIG014", "implemented", "Preserved source item presentation.");
         var probe = await CaptureClosureProbeAsync(fixture);
-        await TodoExecutionService.RecordDevelopmentStateAsync(
-            fixture.Root,
-            "state-1",
-            "The first strategy passed development validation.",
-            evidence: [probe.ArtifactPath],
-            windowOwnerResolver: TestWindowOwnerResolver.Shared);
-        await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "failed",
-            "Later behavior invalidated the first strategy.",
-            "native-items-late-failure",
-            "Use a different template fallback.",
-            [probe.ArtifactPath]);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "provide-non-null-default-template",
-            "Try a non-null default template.");
-        var secondAttempt =
-            await TodoExecutionService.RecordImplementationAsync(
-                fixture.Root,
-                "UWMIG014",
-                "implemented",
-                "Implemented the second strategy.");
-
-        Assert.AreEqual("not-run", secondAttempt.DevelopmentStatus);
-        Assert.IsFalse(secondAttempt.ReadyForCanonical);
-        Assert.AreEqual(
-            "not-run",
-            secondAttempt.DevelopmentStates.Single().Status);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        if (change == "target")
+            await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
+        if (change == "source")
+        {
+            var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+            await File.AppendAllTextAsync(fixture.Path(plan.States[0].Source.TreeEvidence!), " ");
+        }
+        if (change == "output")
+            await File.AppendAllTextAsync(fixture.Path(probe.StandardOutputPath), " ");
+        if (change == "replay")
+            await new UwpEnforcementRunner(new FakeProcessRunner(ReplaySuccess())).RunAsync(
+                fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, "UWMIG014", TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("implemented", assessment.ImplementationStatus);
+        Assert.AreEqual("pending", assessment.VerificationStatus);
+        Assert.IsEmpty(assessment.HumanValidationItems);
     }
 
     [TestMethod]
-    public async Task TodoExecution_SharedStateSkipsDeferredAndTerminalOwners()
+    [DataRow("mismatch", "failed")]
+    [DataRow("unparseable", "human-validation-required")]
+    public async Task TodoExecution_ConclusiveFailureAndAttemptedInconclusiveAreDistinct(string capture, string expected)
+    {
+        using var fixture = await TodoFixtureAsync();
+        await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, "UWMIG014", "implemented", "Preserved source item presentation.");
+        var output = capture == "mismatch"
+            ? ClosureTree.Replace("Ready", "Changed", StringComparison.Ordinal)
+            : "No comparable UIA tree was returned.";
+        var probe = await CaptureClosureProbeAsync(fixture, new EnforcementProcessResult(0, output, ""));
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, "UWMIG014", TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual(expected, assessment.VerificationStatus);
+        Assert.AreEqual(expected, assessment.Surfaces.Single().Status);
+        Assert.AreEqual(capture == "unparseable" ? 1 : 0, assessment.HumanValidationItems.Count);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_UntestedSurfaceIsPendingRatherThanHumanValidation()
+    {
+        using var fixture = await TodoFixtureAsync();
+        await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, "UWMIG014", "implemented", "Preserved source item presentation.");
+        var assessment = (await TodoExecutionService.AssessAsync(fixture.Root, "UWMIG014")).Single();
+        Assert.AreEqual("pending", assessment.VerificationStatus);
+        Assert.IsEmpty(assessment.HumanValidationItems);
+        var status = await TodoExecutionService.StatusAsync(
+            fixture.Root, await TargetFingerprint.ComputeAsync(fixture.Root), TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("verification", status.Phase);
+        Assert.AreEqual(1, status.Todos.PendingVerification);
+        CollectionAssert.AreEqual(new[] { "state-1" }, status.FrontierStateIds);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_ProjectOnlyScopeDoesNotRequireSurfaceBinding()
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        await File.WriteAllTextAsync(
-            fixture.Path("todo-relevant.txt"),
-            "current");
         var report = await fixture.LoadReportAsync();
-        report.Todos.Add(Uwmig014());
+        report.Todos.Add(ProjectTodo());
+        await fixture.SaveReportAsync(report);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        var assessment = await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, "UWMIG-BUILD", "implemented", "Completed the target project graph.");
+        Assert.AreEqual("verified", assessment.VerificationStatus);
+        Assert.IsEmpty(assessment.Surfaces);
+        Assert.IsEmpty(assessment.HumanValidationItems);
+    }
+
+    [TestMethod]
+    [DataRow("missing")]
+    [DataRow("stale")]
+    [DataRow("modified-output")]
+    public async Task TodoExecution_ProjectVerificationRequiresCurrentAuthenticatedBuild(string change)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        report.Todos.Add(ProjectTodo());
+        await fixture.SaveReportAsync(report);
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        var build = await fixture.LoadAsync<BuildAttestation>(EnforcementStore.BuildAttestationPath);
+        if (change == "missing")
+            File.Delete(fixture.Path(EnforcementStore.BuildAttestationPath));
+        if (change == "stale")
+            await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
+        if (change == "modified-output")
+            await File.AppendAllTextAsync(fixture.Path(build.StandardOutputPath), "tampered");
+        var assessment = (await TodoExecutionService.AssessAsync(fixture.Root, "UWMIG-BUILD")).Single();
+        Assert.AreEqual("pending", assessment.VerificationStatus);
+        Assert.IsEmpty(assessment.Surfaces);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_BusinessHandoffDoesNotBecomeAHiddenSurfaceGate()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
         report.Todos.Add(new MigrationTodo
         {
-            Id = "UWMIG-OPTIONAL",
-            Category = "optional-behavior",
-            Priority = "optional",
-            Summary = "Optional work shares the main state.",
-            Reason = "The optional work is intentionally deferred.",
-            AffectedStates = ["state-1"]
-        });
-        report.Todos.Add(new MigrationTodo
-        {
-            Id = "UWMIG-VERIFIED",
-            Category = "verified-behavior",
-            Priority = "required",
-            Status = "verified",
-            Summary = "Completed work shares the main state.",
-            Reason = "The work was already canonically verified.",
-            AffectedStates = ["state-1"]
+            Id = "UWMIG-FILE", Category = "file-picker", Priority = "required",
+            Summary = "Preserve file reading and cancellation behavior.",
+            Reason = "UI surface parity cannot prove file contents or cancellation semantics."
         });
         await fixture.SaveReportAsync(report);
-        await TodoExecutionService.SelectApproachAsync(
-            fixture.Root,
-            "UWMIG014",
-            "preserve-native-items",
-            "Implement the required owner.");
         await TodoExecutionService.RecordImplementationAsync(
-            fixture.Root,
-            "UWMIG014",
-            "implemented",
-            "Implemented the required owner.");
+            fixture.Root, "UWMIG-FILE", "implemented", "Implemented the source file operation.");
         var probe = await CaptureClosureProbeAsync(fixture);
-        var assessments =
-            await TodoExecutionService.RecordDevelopmentStateAsync(
-                fixture.Root,
-                "state-1",
-                "The shared state passed development validation.",
-                evidence: [probe.ArtifactPath],
-                windowOwnerResolver:
-                    TestWindowOwnerResolver.Shared);
-
-        Assert.AreEqual(
-            "development-validated",
-            assessments.Single(item =>
-                item.Todo.Id == "UWMIG014").DevelopmentStatus);
-        Assert.AreEqual(
-            "not-ready",
-            assessments.Single(item =>
-                item.Todo.Id == "UWMIG-OPTIONAL").DevelopmentStatus);
-        Assert.AreEqual(
-            "verified",
-            assessments.Single(item =>
-                item.Todo.Id == "UWMIG-VERIFIED").DevelopmentStatus);
-        await TodoExecutionService.EnsureReadyForCanonicalAsync(
-            fixture.Root);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var completed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("passed", completed.Status);
+        Assert.AreEqual("UWMIG-FILE", completed.HumanValidationItems.Single().TodoId);
+        Assert.IsNull(completed.HumanValidationItems.Single().StateId);
+        var reassessed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("UWMIG-FILE", reassessed.HumanValidationItems.Single().TodoId);
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, "UWMIG-FILE", TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("implemented", assessment.ImplementationStatus);
+        Assert.AreEqual("human-validation-required", assessment.VerificationStatus);
+        Assert.IsEmpty(assessment.Surfaces);
+        Assert.IsNull(assessment.HumanValidationItems.Single().StateId);
+        Assert.AreEqual("Preserve file reading and cancellation behavior.",
+            assessment.HumanValidationItems.Single().Behavior);
+        Assert.AreNotEqual("terminal-with-evidence",
+            assessment.HumanValidationItems.Single().ExpectedOutcome);
+        Assert.AreEqual("pending", (await fixture.LoadReportAsync()).Todos.Single().Status);
+        var status = await TodoExecutionService.StatusAsync(
+            fixture.Root, completed.TargetFingerprint, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("human-handoff", status.Phase);
     }
 
-    private static MigrationTodo Uwmig014() =>
-        new()
+    [TestMethod]
+    public async Task TodoExecution_SourceDependencyReviewDoesNotBlockCurrentProjectChecks()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        report.DependencyAnalysis.Status = "review-required";
+        var todo = ProjectTodo();
+        todo.Guidance!.CompletionChecks.Add(new MigrationCompletionCheck
         {
-            Id = "UWMIG014",
-            Category = "navigation-view-item-template",
-            Priority = "required",
-            Summary = "Preserve NavigationView item-template fallback behavior.",
-            Reason = "VanArsdel uses native items, a separator, and custom items.",
-            Locations =
-            [
-                new MigrationLocation
-                {
-                    Path = "OuterNav/OuterNavPage.xaml"
-                },
-                new MigrationLocation
-                {
-                    Path = "OuterNav/NavItemTemplateSelector.cs"
-                }
-            ],
-            AffectedStates = ["state-1"],
-            TouchSet = new MigrationTodoTouchSet
-            {
-                Paths = ["todo-relevant.txt"]
-            },
-            Guidance = new MigrationRepairGuidance
-            {
-                ReasonCode = "navigation-view-item-template",
-                CandidateStrategies =
-                [
-                    new MigrationGuidanceStrategy
-                    {
-                        Id = "preserve-native-items",
-                        Summary = "Return native NavigationView items unchanged and template custom items.",
-                        Actions =
-                        [
-                            "Preserve native/default NavigationView items and separators.",
-                            "Apply the custom template only to custom menu-item data."
-                        ]
-                    },
-                    new MigrationGuidanceStrategy
-                    {
-                        Id = "provide-non-null-default-template",
-                        Summary = "Provide an explicit non-null default template."
-                    }
-                ],
-                CompletionConditions =
-                [
-                    "Native, separator, custom, and selected items preserve source behavior."
-                ],
-                CompletionChecks =
-                [
-                    new MigrationCompletionCheck
-                    {
-                        Id = "uwmig014-main-name",
-                        Summary =
-                            "The main state preserves selector behavior.",
-                        VerificationKind = "state-assertion",
-                        Target = "state-1",
-                        Expected = "passed",
-                        AssertionIds = ["main-name"]
-                    }
-                ]
-            }
+            Id = "dependency-decisions-complete",
+            Summary = "Every inventoried dependency has a target compatibility decision.",
+            VerificationKind = "report-collection-status",
+            Target = "dependencyAnalysis",
+            Expected = "resolved"
+        });
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var probe = await CaptureClosureProbeAsync(fixture);
+
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var completed = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+
+        Assert.AreEqual("human-validation-required", assessment.VerificationStatus);
+        Assert.HasCount(1, assessment.HumanValidationItems);
+        Assert.AreEqual("passed", completed.Status);
+        Assert.AreEqual("review-required", (await fixture.LoadReportAsync()).DependencyAnalysis.Status);
+    }
+
+    [TestMethod]
+    [DataRow(false, "passed")]
+    [DataRow(true, "passed")]
+    [DataRow(true, "missing-build")]
+    [DataRow(true, "mismatch")]
+    public async Task TodoExecution_ActivationReviewDoesNotReplaceFixedAcceptanceChecks(
+        bool legacy, string result)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        report.MechanicalVerification.ActivationContracts.ReviewRequiredContracts = 1;
+        var todo = ProjectTodo();
+        todo.Summary = "Preserve the source protocol activation handler.";
+        todo.AffectedStates = ["activation:windows.protocol"];
+        todo.Guidance!.CompletionConditions =
+            ["The registered protocol delivers its payload to the intended destination."];
+        todo.Guidance.Classification = new MigrationGuidanceClassification
+        {
+            Status = "confirmed",
+            Summary = "Protocol delivery requires validation through the registered entry point.",
+            DiscriminatingTests = ["Invoke the registered protocol and verify its payload and destination."]
         };
+        todo.Guidance.CompletionChecks.Add(new MigrationCompletionCheck
+        {
+            Id = "activation-contract-review",
+            Summary = "Review the source protocol payload and destination.",
+            VerificationKind = legacy ? "report-field" : "activation-contract-review",
+            Target = legacy
+                ? "mechanicalVerification.activationContracts.reviewRequiredContracts"
+                : "activationAnalysis",
+            Expected = legacy ? "0" : todo.Guidance.CompletionConditions.Single()
+        });
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var probe = await CaptureClosureProbeAsync(fixture,
+            result == "mismatch"
+                ? new EnforcementProcessResult(0,
+                    ClosureTree.Replace("Ready", "Changed", StringComparison.Ordinal), "")
+                : null);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        if (result == "missing-build")
+            File.Delete(fixture.Path(EnforcementStore.BuildAttestationPath));
+
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+
+        Assert.AreEqual(result == "missing-build" ? "pending" : "human-validation-required",
+            assessment.VerificationStatus);
+        Assert.IsEmpty(assessment.Surfaces);
+        var handoff = assessment.HumanValidationItems.Single();
+        Assert.IsNull(handoff.StateId);
+        StringAssert.Contains(handoff.ExpectedOutcome, "payload");
+        CollectionAssert.AreEqual(todo.Guidance.Classification.DiscriminatingTests, handoff.Actions);
+        if (result == "passed")
+        {
+            var completed = await UwpEnforcementRunner.SynchronizeReportAsync(
+                fixture.Root, TestWindowOwnerResolver.Shared);
+            Assert.AreEqual("passed", completed.Status);
+            Assert.AreEqual(todo.Id, completed.HumanValidationItems.Single().TodoId);
+            Assert.AreEqual("passed", (await UwpEnforcementRunner.AssessAsync(
+                fixture.Root, TestWindowOwnerResolver.Shared)).Status);
+        }
+        else
+        {
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
+            var blocked = await UwpEnforcementRunner.AssessAsync(
+                fixture.Root, TestWindowOwnerResolver.Shared);
+            Assert.AreNotEqual("passed", blocked.Status);
+            Assert.AreNotEqual("passed", blocked.Gates.Single(gate =>
+                gate.Id == (result == "missing-build" ? "fresh-build" : "state-closure")).Status);
+        }
+        var current = await fixture.LoadReportAsync();
+        Assert.AreEqual(1, current.MechanicalVerification.ActivationContracts.ReviewRequiredContracts);
+        Assert.AreEqual("pending", current.Todos.Single().Status);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_TerminalTodoLabelDoesNotReplaceCurrentEvidence()
+    {
+        using var fixture = await TodoFixtureAsync();
+        var report = await fixture.LoadReportAsync();
+        report.Todos[0].Status = "verified";
+        await fixture.SaveReportAsync(report);
+        var assessment = (await TodoExecutionService.AssessAsync(fixture.Root, "UWMIG014")).Single();
+        Assert.AreEqual("implemented", assessment.ImplementationStatus);
+        Assert.AreEqual("pending", assessment.VerificationStatus);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_OnlyExplicitCompletionMappingsDefineVerificationScope()
+    {
+        using var fixture = await TodoFixtureAsync();
+        var report = await fixture.LoadReportAsync();
+        report.Todos[0].AffectedStates = ["another-surface"];
+        await fixture.SaveReportAsync(report);
+        var assessment = (await TodoExecutionService.AssessAsync(fixture.Root, "UWMIG014")).Single();
+        Assert.AreEqual("state-1", assessment.Surfaces.Single().StateId);
+        var json = JsonSerializer.SerializeToNode(assessment, EnforcementStore.JsonOptions)!;
+        Assert.IsNotNull(json["verificationStatus"]);
+        Assert.IsNotNull(json["surfaces"]![0]!["checkIds"]);
+        Assert.IsNull(json["developmentStatus"]);
+        Assert.IsNull(json["readyForCanonical"]);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_BindingPreservesProjectChecksAndExactSurfaceScope()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = ProjectTodo();
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var bound = await TodoExecutionService.BindStateAsync(
+            fixture.Root, todo.Id, "state-1", "build-surface",
+            "This surface exposes the migrated dependency's UI.", [SurfaceCheckIds.TargetReachable]);
+        Assert.HasCount(2, bound.Guidance!.CompletionChecks);
+        Assert.AreEqual("build-attestation", bound.Guidance.CompletionChecks[0].VerificationKind);
+        CollectionAssert.AreEqual(new[] { SurfaceCheckIds.TargetReachable },
+            bound.Guidance.CompletionChecks[1].AssertionIds);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => TodoExecutionService.BindStateAsync(
+            fixture.Root, todo.Id, "state-1", "invalid-surface", "Cannot prove file reading.", ["file-read-success"]));
+        Assert.HasCount(2, (await fixture.LoadReportAsync()).Todos.Single().Guidance!.CompletionChecks);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task TodoExecution_FailureNotesDoNotAuthorizeOrPreventAnotherImplementation(bool selected)
+    {
+        using var fixture = await TodoFixtureAsync();
+        if (selected)
+            await TodoExecutionService.SelectApproachAsync(
+                fixture.Root, "UWMIG014", "preserve-native-items", "Preserve native item presentation.");
+        var failed = await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, "UWMIG014", "failed", "The source selection contract remains incomplete.",
+            "selection-missing", "Preserve explicit selection handling.", ["selection-diagnostic.json"]);
+        Assert.AreEqual("pending", failed.ImplementationStatus);
+        Assert.AreEqual(selected ? 1 : 0, failed.RejectedApproaches.Count);
+        var repaired = await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, "UWMIG014", "implemented", "Preserved the selection contract.");
+        Assert.AreEqual("implemented", repaired.ImplementationStatus);
+        Assert.AreEqual("pending", repaired.VerificationStatus);
+        Assert.AreEqual(selected ? 1 : 0, repaired.RejectedApproaches.Count);
+    }
+
+    [TestMethod]
+    [DataRow("old-schema")]
+    [DataRow("missing-schema")]
+    [DataRow("old-event")]
+    public async Task TodoExecution_RetiredProgressIsRejectedWithoutInferenceOrReplacement(string mutation)
+    {
+        using var fixture = await TodoFixtureAsync();
+        await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, "UWMIG014", "implemented", "Preserved source item presentation.");
+        var progress = await fixture.LoadAsync<TodoExecutionProgressDocument>(EnforcementStore.TodoProgressPath);
+        var node = JsonSerializer.SerializeToNode(progress, EnforcementStore.JsonOptions)!;
+        if (mutation == "old-schema") node["schemaVersion"] = "2.4";
+        if (mutation == "missing-schema") node.AsObject().Remove("schemaVersion");
+        if (mutation == "old-event") node["todos"]![0]!["events"]![0]!["kind"] = "development-surface-verification";
+        var original = node.ToJsonString();
+        await EnforcementStore.WriteTextAtomicAsync(fixture.Root, EnforcementStore.TodoProgressPath, original);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            TodoExecutionService.AssessAsync(fixture.Root, "UWMIG014"));
+        Assert.AreEqual(original, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.TodoProgressPath)));
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_DiscoveredObligationRetainsCategoryScopeAndEvidence()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var todo = await TodoExecutionService.DiscoverAsync(
+            fixture.Root, "DISC001", "dispatcher", "required", "Preserve the source UI dispatch obligation.",
+            "The migrated callback still needs UI-thread dispatch.", "implementation", "dispatcher-obligation",
+            ["dispatcher-diagnostic.json"], ["Page.xaml.cs"], touchPaths: ["Page.xaml.cs"]);
+        Assert.AreEqual("dispatcher", todo.Category);
+        Assert.AreEqual("discovered", todo.Origin);
+        Assert.AreEqual("dispatcher-obligation", todo.Discovery!.Signature);
+        CollectionAssert.AreEqual(new[] { "Page.xaml.cs" }, todo.TouchSet.Paths);
+        Assert.AreEqual("DISC001", (await fixture.LoadReportAsync()).Todos.Single().Id);
+    }
+
+    private static async Task<RunnerFixture> TodoFixtureAsync()
+    {
+        var fixture = await RunnerFixture.CreateAsync();
+        try
+        {
+            var report = await fixture.LoadReportAsync();
+            report.Todos.Add(Uwmig014());
+            await fixture.SaveReportAsync(report);
+            return fixture;
+        }
+        catch { fixture.Dispose(); throw; }
+    }
+
+    private static MigrationTodo ProjectTodo() => new()
+    {
+        Id = "UWMIG-BUILD", Category = "project-dependencies", Priority = "required",
+        Summary = "Complete the target project graph.", Reason = "The target must build with its migrated dependencies.",
+        Guidance = new MigrationRepairGuidance
+        {
+            ReasonCode = "project-closure",
+            CompletionChecks =
+            [
+                new()
+                {
+                    Id = "target-build-passed", Summary = "The current target build passes.",
+                    VerificationKind = "build-attestation", Target = "target-build", Expected = "passed"
+                }
+            ]
+        }
+    };
+
+    private static MigrationTodo Uwmig014() => new()
+    {
+        Id = "UWMIG014", Category = "navigation-view-item-template", Priority = "required",
+        Summary = "Preserve NavigationView item-template fallback behavior.",
+        Reason = "The source uses native items, a separator, and custom items.",
+        Locations = [new MigrationLocation { Path = "OuterNav/OuterNavPage.xaml" }],
+        AffectedStates = ["state-1"],
+        TouchSet = new MigrationTodoTouchSet { Paths = ["todo-relevant.txt"] },
+        Guidance = new MigrationRepairGuidance
+        {
+            ReasonCode = "navigation-view-item-template",
+            CandidateStrategies =
+            [
+                new() { Id = "preserve-native-items", Summary = "Preserve native items and template custom items." }
+            ],
+            CompletionConditions = ["Native, separator, custom, and selected items preserve source behavior."],
+            CompletionChecks =
+            [
+                new()
+                {
+                    Id = "uwmig014-main", Summary = "The mapped surface preserves source structure.",
+                    VerificationKind = "surface-check", Target = "state-1", Expected = "passed",
+                    AssertionIds = [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]
+                }
+            ]
+        }
+    };
 }

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using UwpMigration.Contracts;
+using UwpMigration.Mechanical;
 using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement.Tests;
@@ -37,7 +38,7 @@ public sealed partial class RunnerAcceptanceTests
             new EnforcementProcessResult(0, """{"ProcessId":4242}""", ""));
         var command = new UwpEnforceCommand(process);
         var parseResult = command.Parse(
-            ["run", fixture.Root.FullName]);
+            ["attest", fixture.Root.FullName]);
 
         var exitCode = await parseResult.InvokeAsync(
             parseResult.InvocationConfiguration,
@@ -131,7 +132,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root,
             new UwpEnforcementOptions());
 
-        Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
+        Assert.AreEqual("build", snapshot.Frontier?.Kind);
         Assert.AreEqual(1, process.CallCount);
         var attestation = await fixture.LoadAsync<BuildAttestation>(
             EnforcementStore.BuildAttestationPath);
@@ -314,7 +315,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root,
             new UwpEnforcementOptions());
 
-        Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
+        Assert.AreEqual("replay", snapshot.Frontier?.Kind);
         var replay = await fixture.LoadAsync<ReplayAttestation>(
             EnforcementStore.ReplayAttestationPath);
         Assert.IsFalse(replay.Success);
@@ -325,7 +326,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Run_ForceReplayDoesNotBypassDiagnosisFrontier()
+    public async Task Run_ForceReplayCanRetryAFailedLaunchWithoutDiagnosis()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var process = new FakeProcessRunner(
@@ -339,8 +340,9 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root,
             new UwpEnforcementOptions { ForceReplay = true });
 
-        Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
-        Assert.AreEqual(2, process.CallCount);
+        Assert.AreEqual("state", snapshot.Frontier?.Kind);
+        Assert.IsTrue(snapshot.Replay!.Success);
+        Assert.AreEqual(3, process.CallCount);
     }
 
     [TestMethod]
@@ -388,7 +390,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task RecordDiagnosis_RequiresFreshEvidenceAndClearsFrontier()
+    public async Task RecordDiagnosis_RequiresFreshEvidenceWithoutAuthorizingAcceptance()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
@@ -405,7 +407,7 @@ public sealed partial class RunnerAcceptanceTests
             "0x800f1000",
             "state-1",
             [failureEvidence]);
-        Assert.AreEqual("diagnosis-required", failure.Frontier?.Kind);
+        Assert.AreEqual("state", failure.Frontier?.Kind);
         var diagnosisEvidence =
             ".migration-evidence/enforcement/source-target-diff.txt";
         await File.WriteAllTextAsync(
@@ -423,7 +425,7 @@ public sealed partial class RunnerAcceptanceTests
             "Restore only the guard and replay the failing category action.",
             [diagnosisEvidence]);
 
-        Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
+        Assert.AreEqual("state", snapshot.Frontier?.Kind);
         var attempts = await fixture.LoadAsync<AttemptLedger>(
             EnforcementStore.AttemptLedgerPath);
         Assert.IsNotNull(attempts.Attempts[0].Diagnosis);
@@ -469,7 +471,7 @@ public sealed partial class RunnerAcceptanceTests
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         var command = new UwpEnforceCommand(process);
         var parseResult = command.Parse(
-            ["ui", fixture.Root.FullName, "--", "list", "--json"]);
+            ["capture", fixture.Root.FullName, "--", "list", "--json"]);
 
         using var writer = new StringWriter();
         var original = Console.Out;
@@ -517,7 +519,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Ui_StateIntentAuthorizesSequenceButRejectsImmediateExactRepeat()
+    public async Task Ui_RepeatedInspectionRecordsIndependentAuthenticatedReceipts()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var process = new FakeProcessRunner(
@@ -525,7 +527,9 @@ public sealed partial class RunnerAcceptanceTests
             new EnforcementProcessResult(0, """{"ProcessId":4242}""", ""),
             new EnforcementProcessResult(0, """{"windows":[]}""", ""),
             new EnforcementProcessResult(0, """{"nodes":[]}""", ""),
-            new EnforcementProcessResult(0, """{"ProcessId":4243}""", ""));
+            new EnforcementProcessResult(0, """{"nodes":[]}""", ""),
+            new EnforcementProcessResult(0, """{"ProcessId":4243}""", ""),
+            new EnforcementProcessResult(0, """{"windows":[]}""", ""));
         var runner = new UwpEnforcementRunner(process);
         var initial = await runner.RunAsync(
             fixture.Root,
@@ -557,20 +561,20 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreNotEqual(first.CommandSignature, second.CommandSignature);
         Assert.IsTrue(File.Exists(fixture.Path(first.ArtifactPath)));
         Assert.IsTrue(File.Exists(fixture.Path(second.ArtifactPath)));
-        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            runner.InvokeUiAsync(
+        var third = await runner.InvokeUiAsync(
                 fixture.Root,
                 "winapp",
                 ["inspect", "--window", "Main", "--json"],
-                [intent]));
-        StringAssert.Contains(exception.Message, "same state intent and command signature");
-        Assert.AreEqual(4, process.CallCount);
+                [intent]);
+        Assert.AreNotEqual(second.Id, third.Id);
+        Assert.AreEqual(second.CommandSignature, third.CommandSignature);
+        Assert.AreEqual(5, process.CallCount);
         var progress = await fixture.LoadAsync<WorkflowProgress>(
             EnforcementStore.ProgressPath);
         var uiOperations = progress.Operations
             .Where(operation => operation.Kind == WorkflowOperation.UiAction)
             .ToArray();
-        Assert.AreEqual(2, uiOperations.Length);
+        Assert.AreEqual(3, uiOperations.Length);
         Assert.AreEqual(
             uiOperations[0].EvidenceFingerprint,
             uiOperations[1].EvidenceFingerprint);
@@ -592,14 +596,13 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreNotEqual(
             first.ReplayAttestationId,
             replayed.Replay!.Id);
-        var staleIntent = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            runner.InvokeUiAsync(
+        var current = await runner.InvokeUiAsync(
                 fixture.Root,
                 "winapp",
                 ["list-windows", "--json"],
-                [intent]));
-        StringAssert.Contains(staleIntent.Message, "must exist and postdate");
-        Assert.AreEqual(5, process.CallCount);
+                [intent]);
+        Assert.AreEqual(replayed.Replay.Id, current.ReplayAttestationId);
+        Assert.AreEqual(7, process.CallCount);
     }
 
     [TestMethod]
@@ -686,7 +689,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Run_RepeatedSameFailureIsBlockedWithoutInvocation()
+    public async Task Run_RepeatedFailureDoesNotRequireArtificialTargetChanges()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var failure = new EnforcementProcessResult(
@@ -699,17 +702,15 @@ public sealed partial class RunnerAcceptanceTests
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions
         {
-            ForceReplay = true,
-            MaximumSignatureAttempts = 10
+            ForceReplay = true
         });
         var snapshot = await runner.RunAsync(
             fixture.Root,
             new UwpEnforcementOptions());
 
-        Assert.AreEqual(1, process.CallCount);
-        Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
-        Assert.AreEqual(0, snapshot.Frontier!.AttemptsRemaining);
-        Assert.AreEqual(1, snapshot.Budget!.TotalOperations.Builds);
+        Assert.AreEqual(3, process.CallCount);
+        Assert.AreEqual("build", snapshot.Frontier?.Kind);
+        Assert.AreEqual(3, snapshot.Telemetry!.TotalOperations.Builds);
     }
 
     [TestMethod]
@@ -728,7 +729,7 @@ public sealed partial class RunnerAcceptanceTests
         await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
         await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
 
-        Assert.AreEqual(2, process.CallCount);
+        Assert.AreEqual(3, process.CallCount);
     }
 
     [TestMethod]
@@ -753,15 +754,9 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("state-1", report.Validation.SourceBaseline.States.Single().Id);
         Assert.AreEqual("captured", report.Validation.SourceBaseline.States.Single().Status);
         Assert.AreEqual("passed", report.Validation.TargetReplay.States.Single().Status);
-        CollectionAssert.AreEqual(
-            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/states/state-1/source.png")),
-            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/source/state-1.png")));
         Assert.AreEqual(
             await File.ReadAllTextAsync(fixture.Path(".migration-evidence/states/state-1/source-ui.json")),
             await File.ReadAllTextAsync(fixture.Path(".migration-evidence/source/state-1-ui.json")));
-        CollectionAssert.AreEqual(
-            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/states/state-1/target.png")),
-            await File.ReadAllBytesAsync(fixture.Path(".migration-evidence/target/state-1.png")));
         Assert.AreEqual(
             await File.ReadAllTextAsync(fixture.Path(".migration-evidence/states/state-1/stdout.log")),
             await File.ReadAllTextAsync(fixture.Path(".migration-evidence/target/state-1-ui.json")));
@@ -841,10 +836,14 @@ public sealed partial class RunnerAcceptanceTests
                         Id = "app-resource-main-name",
                         Summary =
                             "The main state resolves the required resources.",
-                        VerificationKind = "state-assertion",
+                        VerificationKind = "surface-check",
                         Target = "state-1",
                         Expected = "passed",
-                        AssertionIds = ["main-name"]
+                        AssertionIds =
+                        [
+                            SurfaceCheckIds.TargetReachable,
+                            SurfaceCheckIds.StructureMatch
+                        ]
                     }
                 ]
             }
@@ -880,7 +879,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task SyncReport_UnreferencedPendingRequiredTodoBlocksClosure()
+    public async Task SyncReport_BusinessOnlyTodoDoesNotReopenVerifiedSurfaceParity()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
@@ -897,24 +896,17 @@ public sealed partial class RunnerAcceptanceTests
             Category = "activation",
             Priority = "required",
             Summary = "Finish activation behavior.",
-            Reason = "The required activation work is not mapped to a state."
+            Reason = "The required activation work is not mapped to a surface."
         });
         await fixture.SaveReportAsync(report);
 
         var reassessed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        Assert.AreEqual("blocked", reassessed.Status);
-        Assert.AreEqual("report-closure", reassessed.Frontier?.Kind);
-
-        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(
-            fixture.Root, TestWindowOwnerResolver.Shared);
-
-        Assert.AreEqual("blocked", snapshot.Status);
-        Assert.AreNotEqual("complete", snapshot.Disposition?.Kind);
-        var gate = snapshot.Gates.Single(item => item.Id == "report-closure");
-        Assert.AreEqual("blocked", gate.Status);
-        StringAssert.Contains(gate.Reason, "UWMIG002");
-        StringAssert.Contains(gate.Reason, "no state-backed completion check");
-        StringAssert.Contains(gate.Reason, "Define an exact completion check");
+        Assert.AreEqual("passed", reassessed.Status);
+        Assert.AreEqual("complete", reassessed.Disposition?.Kind);
+        var todo = (await TodoExecutionService.AssessAsync(
+            fixture.Root, "UWMIG002", TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("human-validation-required", todo.VerificationStatus);
+        Assert.IsNull(todo.HumanValidationItems.Single().StateId);
         Assert.AreEqual(
             "pending",
             (await fixture.LoadReportAsync()).Todos.Single().Status);
@@ -1006,7 +998,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    [DataRow("source-screenshot")]
+    [DataRow("source-tree")]
     [DataRow("target-tree")]
     public async Task SyncReport_RejectsMissingOrInvalidCanonicalEvidence(
         string invalidEvidence)
@@ -1015,10 +1007,10 @@ public sealed partial class RunnerAcceptanceTests
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
             fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
-        if (invalidEvidence == "source-screenshot")
+        if (invalidEvidence == "source-tree")
         {
             File.Delete(fixture.Path(
-                ".migration-evidence/states/state-1/source.png"));
+                ".migration-evidence/states/state-1/source-ui.json"));
         }
         else
         {
@@ -1043,14 +1035,15 @@ public sealed partial class RunnerAcceptanceTests
         await fixture.VerifyStateAsync();
         var plan = await fixture.LoadAsync<StatePlanDocument>(
             ".migration-evidence/state-plan.json");
-        plan.States[0].Source.Evidence[0] = "../outside.png";
+        plan.States[0].Source.Evidence[0] = "../outside.json";
+        plan.States[0].Source.TreeEvidence = "../outside.json";
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root, ".migration-evidence/state-plan.json", plan);
 
         var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
 
-        StringAssert.Contains(exception.Message, "outside.png");
+        StringAssert.Contains(exception.Message, "outside.json");
     }
 
     [TestMethod]
@@ -1124,7 +1117,7 @@ public sealed partial class RunnerAcceptanceTests
         using var fixture = await RunnerFixture.CreateAsync();
         var plan = await fixture.LoadAsync<StatePlanDocument>(
             ".migration-evidence/state-plan.json");
-        plan.States[0].Actions.Clear();
+        plan.States[0].SourceDefinitions.Clear();
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root,
             ".migration-evidence/state-plan.json",
@@ -1148,7 +1141,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Assess_InvalidAttestationWritesBlockedSnapshot()
+    public async Task Assess_InvalidAttestationDoesNotCreateReplacementHistory()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         await EnforcementStore.WriteTextAtomicAsync(
@@ -1159,8 +1152,10 @@ public sealed partial class RunnerAcceptanceTests
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
         Assert.AreEqual("evidence", snapshot.Frontier?.Kind);
-        Assert.IsTrue(File.Exists(
+        Assert.IsFalse(File.Exists(
             fixture.Path(EnforcementStore.StatePath)));
+        Assert.IsFalse(File.Exists(fixture.Path(EnforcementStore.ProgressPath)));
+        Assert.AreEqual("{", await File.ReadAllTextAsync(fixture.Path(EnforcementStore.BuildAttestationPath)));
     }
 
     [TestMethod]
@@ -1222,6 +1217,9 @@ public sealed partial class RunnerAcceptanceTests
 
         internal int CallCount { get; private set; }
         internal List<string[]> Calls { get; } = [];
+        internal List<string[]> ScreenshotCalls { get; } = [];
+        internal bool SaveComparisonScreenshots { get; set; }
+        internal byte[]? ComparisonScreenshotContent { get; set; }
 
         public bool TryGetProcessId(long windowHandle, out int processId)
         {
@@ -1241,6 +1239,15 @@ public sealed partial class RunnerAcceptanceTests
             IReadOnlyList<string> arguments,
             CancellationToken cancellationToken = default)
         {
+            if (arguments.Count > 1 && arguments[1] == "screenshot" && arguments[^2] == "-o" &&
+                arguments[^1].EndsWith("comparison.png", StringComparison.Ordinal))
+            {
+                ScreenshotCalls.Add([.. arguments]);
+                if (SaveComparisonScreenshots)
+                    File.WriteAllBytes(arguments[^1], ComparisonScreenshotContent ?? PngTestData.Create());
+                return Task.FromResult(new EnforcementProcessResult(
+                    SaveComparisonScreenshots ? 0 : 1, "", "Optional screenshot unavailable."));
+            }
             CallCount++;
             Calls.Add([.. arguments]);
             return Task.FromResult(_results.Dequeue());
@@ -1284,6 +1291,13 @@ public sealed partial class RunnerAcceptanceTests
                    {analyzerReference}
                  </Project>
                  """);
+            await File.WriteAllTextAsync(
+                System.IO.Path.Combine(
+                    root.FullName,
+                    "MainPage.xaml"),
+                """
+                <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />
+                """);
             var report = new MigrationReport
             {
                 Source = new MigrationProject
@@ -1300,21 +1314,10 @@ public sealed partial class RunnerAcceptanceTests
             report.MechanicalVerification.Status = "passed";
             if (!unstarted)
             {
-                await WritePngAsync(
-                    System.IO.Path.Combine(
-                        root.FullName,
-                        ".migration-evidence",
-                        "states",
-                        "state-1",
-                        "source.png"));
                 await EnforcementStore.WriteTextAtomicAsync(
                     root,
                     ".migration-evidence/states/state-1/source-ui.json",
                     """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
-                await EnforcementStore.WriteTextAtomicAsync(
-                    root,
-                    ".migration-evidence/states/state-1/source-action.json",
-                    """{"success":true,"message":"The action completed."}""");
             }
             await File.WriteAllTextAsync(
                 System.IO.Path.Combine(root.FullName, "migration-report.json"),
@@ -1331,29 +1334,22 @@ public sealed partial class RunnerAcceptanceTests
                         new()
                         {
                             Id = "state-1",
-                            Actions = ["Attempt to open the known state."],
-                            ExpectedOutcome = "Known state is accounted for.",
-                            Assertions =
-                            [
-                                new()
-                                {
-                                    Id = "main-name",
-                                    Kind = "ui-property-equals-source",
-                                    ProbeIndex = 0,
-                                    SourceEvidence = ".migration-evidence/states/state-1/source-ui.json",
-                                    AutomationId = "main",
-                                    Property = "name"
-                                }
-                            ],
+                            Kind = "page",
+                            SourceDefinitions = ["MainPage.xaml"],
+                            Verification = new StateVerificationContract
+                            {
+                                TreeProbeIndex = 0
+                            },
                             Source = new StateObservation
                             {
                                 Status = unstarted ? "not-run" : "captured",
                                 Evidence = unstarted ? [] :
                                 [
-                                    ".migration-evidence/states/state-1/source.png",
-                                    ".migration-evidence/states/state-1/source-action.json",
                                     ".migration-evidence/states/state-1/source-ui.json"
-                                ]
+                                ],
+                                TreeEvidence = unstarted
+                                    ? null
+                                    : ".migration-evidence/states/state-1/source-ui.json"
                             },
                             Target = new StateObservation
                             {
@@ -1410,9 +1406,11 @@ public sealed partial class RunnerAcceptanceTests
             await EnforcementStore.WriteTextAtomicAsync(Root, intent,
                 JsonSerializer.Serialize(new { stateId = "state-1", replayAttestationId = replay.Id }));
             var inspect = await runner.InvokeUiAsync(Root, "winapp", ["inspect", "--json", "-w", "42"], [intent], "state-1");
-            var screenshot = await runner.InvokeUiAsync(Root, "winapp",
-                ["screenshot", "-o", ".migration-evidence/states/state-1/target.png", "--json", "-w", "42"], [intent], "state-1");
-            await UwpEnforcementRunner.RecordStateAsync(Root, new TestWindowOwnerResolver(replay.ProcessId!.Value), "state-1", [inspect.ArtifactPath, screenshot.ArtifactPath]);
+            await UwpEnforcementRunner.RecordSurfaceAsync(
+                Root,
+                new TestWindowOwnerResolver(replay.ProcessId!.Value),
+                "state-1",
+                [inspect.ArtifactPath]);
         }
 
         internal async Task WriteTargetEvidenceAsync()
@@ -1432,12 +1430,15 @@ public sealed partial class RunnerAcceptanceTests
                 await File.ReadAllTextAsync(Path("migration-report.json")),
                 MigrateJsonContext.Default.MigrationReport)!;
 
-        internal async Task SaveReportAsync(MigrationReport report) =>
+        internal async Task SaveReportAsync(MigrationReport report)
+        {
+            MigrationReportStore.NormalizeForWrite(report);
             await File.WriteAllTextAsync(
                 Path("migration-report.json"),
                 JsonSerializer.Serialize(
                     report,
                     MigrateJsonContext.Default.MigrationReport));
+        }
 
         internal string Path(string relativePath) =>
             System.IO.Path.Combine(

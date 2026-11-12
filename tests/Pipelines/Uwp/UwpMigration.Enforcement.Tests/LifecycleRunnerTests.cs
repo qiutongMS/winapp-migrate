@@ -82,8 +82,10 @@ public sealed partial class RunnerAcceptanceTests
         }
         else
         {
-            await EnforcementStore.WriteTextAtomicAsync(fixture.Root, EnforcementStore.PolicyPath, "{");
-            terminal = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
+            runner = new UwpEnforcementRunner(new InterruptingProcessRunner());
+            await Assert.ThrowsExactlyAsync<IOException>(() =>
+                runner.RunAsync(fixture.Root, new UwpEnforcementOptions()));
+            terminal = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         }
         Assert.AreEqual(kind, terminal.Disposition?.Kind);
         Assert.IsTrue(terminal.Disposition!.Terminal);
@@ -110,8 +112,6 @@ public sealed partial class RunnerAcceptanceTests
                 ["source.cs:1"], ["target.cs:1"], "Invariant", "Hypothesis", "Test", [".migration-evidence/terminal.txt"]));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.ConfigurePolicyAsync(fixture.Root, EnforcementPolicy.Balanced()));
         Assert.AreEqual(callCount, process.CallCount);
         var observed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(expected, JsonSerializer.Serialize(observed.Disposition, EnforcementStore.JsonOptions));
@@ -121,7 +121,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task Disposition_BlockedRequiredAllowsDeclaredStateCaptureAndRecording()
+    public async Task Disposition_SurfaceBlockLabelDoesNotPreventCaptureAndRecording()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
@@ -134,14 +134,17 @@ public sealed partial class RunnerAcceptanceTests
 
         var blocked = await UwpEnforcementRunner.AssessAsync(
             fixture.Root, TestWindowOwnerResolver.Shared);
-        var probe = await CaptureClosureProbeAsync(fixture);
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+        var probe = await new UwpEnforcementRunner(
+            new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, "")),
+            windowOwnerResolver: TestWindowOwnerResolver.Shared)
+            .InvokeUiAsync(fixture.Root, "winapp", ["inspect", "--json", "-w", "42"], [], "state-1");
+        var recorded = await UwpEnforcementRunner.RecordSurfaceAsync(
             fixture.Root,
             TestWindowOwnerResolver.Shared,
             "state-1",
             [probe.ArtifactPath]);
 
-        Assert.AreEqual("blocked-required", blocked.Disposition?.Kind);
+        Assert.AreEqual("continue", blocked.Disposition?.Kind);
         Assert.IsFalse(blocked.Disposition!.Terminal);
         Assert.AreEqual(
             "passed",
@@ -149,44 +152,25 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task ProgressSchema10_ImportsSafeJsonAndPreservesAmbiguousJson(bool ambiguous)
+    [DataRow("1.0")]
+    [DataRow("2.0")]
+    public async Task Progress_UnsupportedSchemasPreserveBothArtifacts(string schema)
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var initial = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var json = JsonSerializer.SerializeToNode(initial.Workflow, EnforcementStore.JsonOptions)!.AsObject();
-        json["schemaVersion"] = "1.0";
-        json.Remove("slices");
-        json.Remove("disposition");
-        var units = json["units"]!.AsArray();
-        units[0]!.AsObject().Remove("epochs");
-        units[0]!.AsObject().Remove("accountId");
-        if (ambiguous)
-        {
-            var other = units[0]!.DeepClone();
-            other["stage"] = "source-oracle";
-            units.Add(other);
-        }
+        json["schemaVersion"] = schema;
         var original = json.ToJsonString();
         await EnforcementStore.WriteTextAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, original);
+        var stateJson = await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath));
         var process = new FakeProcessRunner();
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        if (ambiguous)
-        {
-            Assert.AreEqual("infrastructure-failure", snapshot.Disposition?.Kind);
-            StringAssert.Contains(snapshot.Gates.Single(gate => gate.Id == "enforcement-artifacts").Reason, "Cannot safely import");
-            Assert.AreEqual(original, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.ProgressPath)));
-            await new UwpEnforcementRunner(process).RunAsync(fixture.Root, new UwpEnforcementOptions());
-            Assert.AreEqual(0, process.CallCount);
-        }
-        else
-        {
-            var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-            Assert.AreEqual("3.0", progress.SchemaVersion);
-            Assert.AreEqual(initial.Workflow!.StartedAt, progress.StartedAt);
-            Assert.AreEqual(initial.Workflow.Units[0].StartedAt, progress.Units[0].Epochs[0].EnteredAt);
-        }
+        Assert.AreEqual("infrastructure-failure", snapshot.Disposition?.Kind);
+        StringAssert.Contains(snapshot.Gates.Single(gate => gate.Id == "enforcement-artifacts").Reason, "Unsupported workflow progress schema");
+        Assert.AreEqual(original, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.ProgressPath)));
+        Assert.AreEqual(stateJson, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath)));
+        await new UwpEnforcementRunner(process).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        Assert.AreEqual(0, process.CallCount);
     }
 
     [TestMethod]
@@ -208,7 +192,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("infrastructure-failure", snapshot.Disposition?.Kind);
         Assert.IsTrue(snapshot.Disposition!.Terminal);
         StringAssert.Contains(snapshot.Gates.Single(gate => gate.Id == "enforcement-artifacts").Reason,
-            "exactly one reconstructable budget unit");
+            "Unsupported workflow progress schema");
         Assert.IsNull(snapshot.Workflow);
         Assert.AreEqual(original, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.ProgressPath)));
         Assert.AreEqual(0, process.CallCount);

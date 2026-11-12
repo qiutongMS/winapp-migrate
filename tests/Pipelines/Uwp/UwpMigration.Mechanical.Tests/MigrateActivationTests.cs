@@ -287,6 +287,18 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
         Assert.IsTrue(activation.GetProperty("issues").EnumerateArray().Any(issue =>
             issue.GetProperty("kind").GetString() ==
             "protocol-attribute-review-required"));
+        Assert.AreEqual(1, report.RootElement.GetProperty("mechanicalVerification")
+            .GetProperty("activationContracts").GetProperty("reviewRequiredContracts").GetInt32());
+        var checks = report.RootElement.GetProperty("todos").EnumerateArray()
+            .Single(todo => todo.GetProperty("id").GetString() == "UWMIG002")
+            .GetProperty("guidance").GetProperty("completionChecks").EnumerateArray().ToArray();
+        var review = checks.Single(check =>
+            check.GetProperty("verificationKind").GetString() == "activation-contract-review");
+        StringAssert.Contains(review.GetProperty("expected").GetString()!, "payload");
+        Assert.IsTrue(checks.Any(check =>
+            check.GetProperty("verificationKind").GetString() == "build-attestation"));
+        Assert.IsFalse(checks.Any(check =>
+            check.GetProperty("verificationKind").GetString() is "report-field" or "surface-check"));
         var targetManifest = XDocument.Load(
             Path.Combine(target.FullName, "Package.appxmanifest"));
         Assert.IsFalse(targetManifest.Descendants().Any(element =>
@@ -573,7 +585,11 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
     }
 
     [TestMethod]
-    public async Task Verify_UpgradesSchema12WithoutLosingValidationOrDependencies()
+    [DataRow("1.2")]
+    [DataRow("1.3")]
+    [DataRow("1.4")]
+    [DataRow("1.5")]
+    public async Task Verify_RejectsHistoricalSchemasWithoutChangingReport(string schema)
     {
         var source = await CreateSourceAsync(
             "UpgradeApp",
@@ -587,9 +603,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
         var report = JsonNode.Parse(await File.ReadAllTextAsync(
             reportPath,
             TestContext.CancellationToken))!;
-        report["schemaVersion"] = "1.2";
-        report.AsObject().Remove("activationAnalysis");
-        report["mechanicalVerification"]!.AsObject().Remove("activationContracts");
+        report["schemaVersion"] = schema;
         report["validation"]!["sourceBaseline"]!["status"] = "captured";
         report["dependencyAnalysis"]!["status"] = "resolved";
         report["dependencyAnalysis"]!["issues"]!.AsArray().Add(new JsonObject
@@ -602,33 +616,17 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
             reportPath,
             report.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
             TestContext.CancellationToken);
+        var original = await File.ReadAllTextAsync(reportPath, TestContext.CancellationToken);
 
         var (exit, output) = await InvokeVerifyAsync(target);
 
-        Assert.AreEqual(0, exit, output);
-        using var upgraded = await ReadReportAsync(target);
-        Assert.AreEqual("1.7", upgraded.RootElement.GetProperty("schemaVersion").GetString());
-        Assert.AreEqual(
-            "not-required",
-            upgraded.RootElement
-                .GetProperty("activationAnalysis")
-                .GetProperty("status")
-                .GetString());
-        Assert.AreEqual(
-            "captured",
-            upgraded.RootElement
-                .GetProperty("validation")
-                .GetProperty("sourceBaseline")
-                .GetProperty("status")
-                .GetString());
-        var dependencies = upgraded.RootElement.GetProperty("dependencyAnalysis");
-        Assert.AreEqual("resolved", dependencies.GetProperty("status").GetString());
-        Assert.IsTrue(dependencies.GetProperty("issues").EnumerateArray().Any(issue =>
-            issue.GetProperty("kind").GetString() == "preserved-test-issue"));
+        Assert.AreNotEqual(0, exit, output);
+        StringAssert.Contains(output, "not supported");
+        Assert.AreEqual(original, await File.ReadAllTextAsync(reportPath, TestContext.CancellationToken));
     }
 
     [TestMethod]
-    public async Task Verify_UpgradesSchema14WithoutLosingExistingTodo()
+    public async Task Verify_RejectsMissingPersistedTodoContractWithoutInference()
     {
         var source = await CreateSourceAsync(
             "Schema14UpgradeApp",
@@ -642,7 +640,6 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
         var report = JsonNode.Parse(await File.ReadAllTextAsync(
             reportPath,
             TestContext.CancellationToken))!;
-        report["schemaVersion"] = "1.4";
         report["todos"]!.AsArray().Add(new JsonObject
         {
             ["id"] = "UWMIG-LEGACY",
@@ -664,39 +661,13 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
             reportPath,
             report.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
             TestContext.CancellationToken);
+        var original = await File.ReadAllTextAsync(reportPath, TestContext.CancellationToken);
 
         var (exit, output) = await InvokeVerifyAsync(target);
 
-        Assert.AreEqual(0, exit, output);
-        using var upgraded = await ReadReportAsync(target);
-        Assert.AreEqual("1.7", upgraded.RootElement
-            .GetProperty("schemaVersion").GetString());
-        var legacyTodo = upgraded.RootElement.GetProperty("todos")
-            .EnumerateArray()
-            .Single(todo =>
-                todo.GetProperty("id").GetString() == "UWMIG-LEGACY");
-        Assert.AreEqual(
-            "accepted",
-            legacyTodo.GetProperty("status").GetString());
-        Assert.AreEqual(
-            "This reason must survive the schema upgrade.",
-            legacyTodo.GetProperty("reason").GetString());
-        Assert.AreEqual(
-            37,
-            legacyTodo.GetProperty("locations")[0]
-                .GetProperty("line").GetInt32());
-        var guidance = legacyTodo.GetProperty("guidance");
-        Assert.AreEqual(
-            "provisional",
-            guidance.GetProperty("classification")
-                .GetProperty("status").GetString());
-        Assert.IsFalse(
-            guidance.GetProperty("candidateStrategiesExhaustive")
-                .GetBoolean());
-        Assert.IsTrue(
-            guidance.GetProperty("facts").GetArrayLength() > 0);
-        Assert.IsFalse(
-            upgraded.RootElement.TryGetProperty("todoGraph", out _));
+        Assert.AreNotEqual(0, exit, output);
+        StringAssert.Contains(output, "missing-completion-contract");
+        Assert.AreEqual(original, await File.ReadAllTextAsync(reportPath, TestContext.CancellationToken));
     }
 
     [TestMethod]

@@ -76,7 +76,7 @@ public sealed partial class RunnerAcceptanceTests
             ["inspect", option, value, "--json"];
 
         var probe = await runner.InvokeUiAsync(fixture.Root, "winapp", arguments, [], "state-1");
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var recorded = await UwpEnforcementRunner.RecordSurfaceAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
 
         Assert.AreEqual(TestWindowOwnerResolver.WindowHandle, probe.WindowHandle);
         Assert.AreEqual(4242, probe.WindowProcessId);
@@ -152,7 +152,7 @@ public sealed partial class RunnerAcceptanceTests
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
         var process = new FakeProcessRunner();
         var output = await InvokeWithCapturedOutputAsync(new UwpEnforceCommand(process, new TestWindowOwnerResolver(4242))
-            .Parse(["capture", fixture.Root.FullName, "--state", "state-1", "--", "inspect", "--json"]));
+            .Parse(["capture", fixture.Root.FullName, "--surface", "state-1", "--", "inspect", "--json"]));
 
         StringAssert.Contains(output, "-w/--window");
         Assert.AreEqual(0, process.CallCount);
@@ -192,7 +192,7 @@ public sealed partial class RunnerAcceptanceTests
             ["inspect", "-w", "84", "--json"],
             [],
             "state-1");
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+        var recorded = await UwpEnforcementRunner.RecordSurfaceAsync(
             fixture.Root,
             owner,
             "state-1",
@@ -226,7 +226,7 @@ public sealed partial class RunnerAcceptanceTests
             ["inspect", "-w", "84", "--json"],
             [],
             "state-1");
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+        var recorded = await UwpEnforcementRunner.RecordSurfaceAsync(
             fixture.Root,
             TestWindowOwnerResolver.Shared,
             "state-1",
@@ -303,7 +303,7 @@ public sealed partial class RunnerAcceptanceTests
         await PersistTrackedProbeAsync(fixture, probe);
 
         var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
+            UwpEnforcementRunner.RecordSurfaceAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
 
         StringAssert.Contains(error.Message, invalid == "command-no-window" ? "-w/--window" : "window/process binding");
     }
@@ -321,7 +321,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsTrue(StateClosureSeal.VerifyPortableIntegrity(probe));
         Assert.IsFalse(StateClosureSeal.Verify(probe));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
+            UwpEnforcementRunner.RecordSurfaceAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
     }
 
     [TestMethod]

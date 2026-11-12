@@ -37,13 +37,11 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(failedAt, snapshot.Workflow!.LastObservedAt);
         Assert.AreEqual(failedAt, snapshot.Workflow.Units.Single().Epochs.Single().ExitedAt);
         Assert.AreEqual("terminal:infrastructure-failure", snapshot.Workflow.Units.Single().Epochs.Single().ExitReason);
-        Assert.AreEqual(5, snapshot.Budget!.ElapsedMinutes);
-        Assert.AreEqual(5, snapshot.Budget.TotalElapsedMinutes);
-        Assert.AreEqual(1, snapshot.Budget.Operations.Builds);
-        Assert.AreEqual(1, snapshot.Budget.TotalOperations.Builds);
-        Assert.IsNull(snapshot.Budget.HardDeadline);
-        Assert.IsNull(WorkflowValidation.ProgressError(snapshot.Workflow,
-            await fixture.LoadAsync<EnforcementPolicy>(EnforcementStore.PolicyPath), failedAt));
+        Assert.AreEqual(5, snapshot.Telemetry!.ElapsedMinutes);
+        Assert.AreEqual(5, snapshot.Telemetry.TotalElapsedMinutes);
+        Assert.AreEqual(1, snapshot.Telemetry.Operations.Builds);
+        Assert.AreEqual(1, snapshot.Telemetry.TotalOperations.Builds);
+        Assert.IsNull(WorkflowValidation.ProgressError(snapshot.Workflow, failedAt));
     }
 
     [TestMethod]
@@ -78,7 +76,7 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow("total-budget-exhausted", "total-hard-limit")]
     [DataRow("blocked-required", "unit-hard-limit")]
     [DataRow("blocked-required", "operation-ceiling")]
-    public async Task LegacySchema20AuthorizationTerminalResumesAndInvokesWinApp(
+    public async Task Progress_RetiredAuthorizationTerminalFailsWithoutRewritingArtifacts(
         string kind, string reasonCode)
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -94,25 +92,16 @@ public sealed partial class RunnerAcceptanceTests
             Finalization = "blocked"
         };
         progress.Disposition = disposition;
-        var unit = progress.Units.Single();
-        unit.BlockedAt = DeadlineNow;
-        unit.BlockedReason = "Retired time authorization.";
         WorkflowController.CloseActiveEpochs(progress, DeadlineNow, $"terminal:{kind}");
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
-        var policy = await fixture.LoadAsync<EnforcementPolicy>(
-            EnforcementStore.PolicyPath);
-        var (imported, importError) = WorkflowPersistence.ImportProgress(
-            progress,
-            policy,
-            DeadlineNow);
-        Assert.IsNull(importError, importError);
-        Assert.AreEqual("continue", imported!.Disposition?.Kind);
         var state = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         state.GeneratedAt = DeadlineNow;
         state.Status = "blocked";
         state.Workflow = progress;
         state.Disposition = disposition;
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.StatePath, state);
+        var progressJson = await File.ReadAllTextAsync(fixture.Path(EnforcementStore.ProgressPath));
+        var stateJson = await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath));
         var process = SuccessfulLaunch();
 
         var resumed = await new UwpEnforcementRunner(process, new ManualTimeProvider(DeadlineNow))
@@ -120,13 +109,12 @@ public sealed partial class RunnerAcceptanceTests
 
         var artifactGate = resumed.Gates.Single(
             gate => gate.Id == "enforcement-artifacts");
-        Assert.AreEqual("passed", artifactGate.Status, artifactGate.Reason);
-        Assert.AreEqual("continue", resumed.Disposition?.Kind);
-        Assert.IsFalse(resumed.Disposition!.Terminal);
-        Assert.AreEqual("3.0", resumed.Workflow?.SchemaVersion);
-        Assert.AreEqual("within-budget", resumed.Budget?.Decision);
-        Assert.IsTrue(resumed.Workflow!.Units.All(account => account.BlockedAt is null));
-        Assert.AreEqual(2, process.CallCount);
+        Assert.AreEqual("blocked", artifactGate.Status, artifactGate.Reason);
+        Assert.AreEqual("infrastructure-failure", resumed.Disposition?.Kind);
+        Assert.IsNull(resumed.Workflow);
+        Assert.AreEqual(progressJson, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.ProgressPath)));
+        Assert.AreEqual(stateJson, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath)));
+        Assert.AreEqual(0, process.CallCount);
     }
 
     private static async Task SeedElapsedTimeAsync(RunnerFixture fixture, int previousMinutes)
@@ -177,63 +165,8 @@ public sealed partial class RunnerAcceptanceTests
     private sealed class ManualTimeProvider(DateTimeOffset initialTime) : TimeProvider
     {
         private DateTimeOffset _now = initialTime;
-        private readonly List<ManualTimer> _timers = [];
-        public Action? OnTimerCreated { get; set; }
-
         public override DateTimeOffset GetUtcNow() => _now;
 
-        public void Advance(TimeSpan elapsed)
-        {
-            _now += elapsed;
-            foreach (var timer in _timers.ToArray())
-                if (timer.DueAt <= _now) timer.Fire();
-        }
-
-        public override ITimer CreateTimer(
-            TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
-        {
-            var timer = new ManualTimer(this, callback, state);
-            _timers.Add(timer);
-            timer.Change(dueTime, period);
-            var onCreated = OnTimerCreated;
-            OnTimerCreated = null;
-            onCreated?.Invoke();
-            return timer;
-        }
-
-        private sealed class ManualTimer(
-            ManualTimeProvider clock, TimerCallback callback, object? state) : ITimer
-        {
-            private TimeSpan _period;
-            private bool _disposed;
-            public DateTimeOffset? DueAt { get; private set; }
-
-            public bool Change(TimeSpan dueTime, TimeSpan period)
-            {
-                if (_disposed) return false;
-                _period = period;
-                DueAt = dueTime == Timeout.InfiniteTimeSpan ? null : clock._now + dueTime;
-                return true;
-            }
-
-            public void Fire()
-            {
-                if (_disposed) return;
-                DueAt = _period == Timeout.InfiniteTimeSpan ? null : clock._now + _period;
-                callback(state);
-            }
-
-            public void Dispose()
-            {
-                _disposed = true;
-                clock._timers.Remove(this);
-            }
-
-            public ValueTask DisposeAsync()
-            {
-                Dispose();
-                return ValueTask.CompletedTask;
-            }
-        }
+        public void Advance(TimeSpan elapsed) => _now += elapsed;
     }
 }

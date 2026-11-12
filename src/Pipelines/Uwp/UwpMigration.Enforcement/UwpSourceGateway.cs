@@ -600,6 +600,12 @@ public sealed class UwpSourceGateway
             $"{workspace.GatewayRoot}/current-probe.json",
             probe,
             cancellationToken);
+        if (commandName == "inspect" && arguments.Contains("--json") && windowHandle is not null &&
+            result.ExitCode == 0 && !result.InfrastructureFailure)
+            await SurfaceComparisonArtifacts.CaptureAsync(
+                workspace.Target, _processRunner, _windowOwnerResolver, winAppExecutable,
+                windowHandle.Value, directory, stdoutPath, "source", null,
+                workspace.SourceFingerprint, launch?.Id, cancellationToken);
         return probe;
     }
 

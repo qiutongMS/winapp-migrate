@@ -11,7 +11,7 @@ namespace WinAppMigration.Enforcement;
 public sealed class RequiredStateContractDocument
 {
     [JsonPropertyName("schemaVersion")]
-    public string SchemaVersion { get; set; } = "1.0";
+    public string SchemaVersion { get; set; } = "2.0";
     [JsonPropertyName("seal")]
     public string? Seal { get; set; }
     [JsonPropertyName("sealPublicKey")]
@@ -24,45 +24,93 @@ public sealed class RequiredStateContractDocument
     public string BaselineHash { get; set; } = string.Empty;
     [JsonPropertyName("requiredContractHash")]
     public string RequiredContractHash { get; set; } = string.Empty;
-    [JsonPropertyName("states")]
+    [JsonPropertyName("surfaces")]
     public List<MigrationState> States { get; set; } = [];
 }
 
 public static class RequiredStateContracts
 {
-    public const string Path = ".migration-evidence/enforcement/required-contract.json";
+    public const string Path =
+        ".migration-evidence/enforcement/required-contract.json";
 
     public static async Task<RequiredStateContractDocument> EstablishAsync(
-        DirectoryInfo root, StatePlanDocument plan, bool extend = false, CancellationToken cancellationToken = default)
+        DirectoryInfo root,
+        StatePlanDocument plan,
+        bool extend = false,
+        CancellationToken cancellationToken = default)
     {
         ValidateRequirements(plan);
-        if (plan.States.Any(state => state.Source.Status != "not-run" || state.Source.Evidence.Count != 0 ||
-                state.Assertions.Any(assertion => Exists(root, assertion.SourceEvidence))) ||
-            Exists(root, EnforcementStore.ProgressPath) || Exists(root, EnforcementStore.BuildAttestationPath) ||
-            Directory.Exists(System.IO.Path.Combine(root.FullName, ".migration-evidence", "source", "gateway")) ||
+        var (progress, progressError) =
+            await EnforcementStore.TryLoadAsync<WorkflowProgress>(
+                root,
+                EnforcementStore.ProgressPath,
+                cancellationToken);
+        if (progressError is not null)
+            throw new InvalidDataException(progressError);
+        if (plan.States.Any(surface =>
+                surface.Disposition == "required" &&
+                (surface.Source.Status != "not-run" ||
+                 surface.Source.Evidence.Count != 0 ||
+                 surface.Source.TreeEvidence is not null)) ||
+            progress?.OperationsStartedAt is not null ||
+            progress?.Operations is { Count: > 0 } ||
+            !WorkflowOperationAuthentication.VerifyAnchored(
+                root, progress?.Operations ?? []) ||
+            Exists(root, EnforcementStore.BuildAttestationPath) ||
+            Directory.Exists(System.IO.Path.Combine(
+                root.FullName,
+                ".migration-evidence",
+                "source",
+                "gateway")) ||
             SelectorBindingAmendments.HasHistory(root))
-            throw new InvalidDataException("Establish/extend requirements before source capture and the first workflow assessment. Captured legacy plans cannot be retroactively blessed.");
-        var (existing, error) = await EnforcementStore.TryLoadAsync<RequiredStateContractDocument>(root, Path, cancellationToken);
-        if (error is not null) throw new InvalidDataException(error);
-        var association = StateClosureSeal.ReadContractAnchor(RootAnchor(root));
+        {
+            throw new InvalidDataException(
+                "Establish or extend the surface contract before source capture or workflow operations.");
+        }
+
+        var (existing, error) =
+            await EnforcementStore
+                .TryLoadAsync<RequiredStateContractDocument>(
+                    root,
+                    Path,
+                    cancellationToken);
+        if (error is not null)
+            throw new InvalidDataException(error);
+        var association =
+            StateClosureSeal.ReadContractAnchor(RootAnchor(root));
         if (existing is null && association is not null)
-            throw new InvalidDataException("The independently anchored contract is missing; deleting its JSON does not reset requirements.");
+        {
+            throw new InvalidDataException(
+                "The independently anchored surface contract is missing; deleting its JSON does not reset requirements.");
+        }
+
         var document = Create(plan);
         if (existing is not null)
         {
             VerifyDocument(root, existing);
-            if (!extend || Frozen(existing) || !IsExtension(existing.States, document.States))
-                throw new InvalidDataException("Required actions/assertions/order cannot be removed or changed. Only explicit append-only extensions before workflow/source start are supported.");
+            if (!extend ||
+                Frozen(existing) ||
+                !IsExtension(existing.States, document.States))
+            {
+                throw new InvalidDataException(
+                    "Required surface inventory and navigation recipes cannot be removed or changed. Only append-only surface additions before workflow/source start are supported.");
+            }
             document.Id = existing.Id;
             document.BaselineHash = existing.BaselineHash;
         }
+
         StateClosureSeal.Sign(document);
-        await EnforcementStore.WriteAtomicAsync(root, Path, document, cancellationToken);
+        await EnforcementStore.WriteAtomicAsync(
+            root,
+            Path,
+            document,
+            cancellationToken);
         Anchor(root, document, frozen: false);
         return document;
     }
 
-    internal static RequiredStateContractDocument Create(StatePlanDocument plan)
+    internal static RequiredStateContractDocument Create(
+        StatePlanDocument plan)
     {
         ValidateRequirements(plan);
         var document = new RequiredStateContractDocument
@@ -75,157 +123,294 @@ public static class RequiredStateContracts
         return document;
     }
 
-    internal static void Anchor(DirectoryInfo root, RequiredStateContractDocument document, bool frozen)
+    internal static void Anchor(
+        DirectoryInfo root,
+        RequiredStateContractDocument document,
+        bool frozen)
     {
-        StateClosureSeal.WriteContractAnchor("rc-doc-" + document.Id, document.RequiredContractHash + (frozen ? "|frozen" : "|open"));
-        StateClosureSeal.WriteContractAnchor(RootAnchor(root), document.Id);
+        StateClosureSeal.WriteContractAnchor(
+            "rc-doc-" + document.Id,
+            document.RequiredContractHash +
+            (frozen ? "|frozen" : "|open"));
+        StateClosureSeal.WriteContractAnchor(
+            RootAnchor(root),
+            document.Id);
     }
 
-    public static string Require(DirectoryInfo root, MigrationState state, DateTimeOffset? before = null)
+    public static string Require(
+        DirectoryInfo root,
+        MigrationState state,
+        DateTimeOffset? before = null)
     {
-        var (document, error) = EnforcementStore.TryLoadAsync<RequiredStateContractDocument>(root, Path).GetAwaiter().GetResult();
-        if (document is null) throw new InvalidDataException(error ?? "A pre-source immutable required contract is missing; run closure seal-contract before starting a fresh source/workflow.");
+        var (document, error) =
+            EnforcementStore
+                .TryLoadAsync<RequiredStateContractDocument>(
+                    root,
+                    Path)
+                .GetAwaiter()
+                .GetResult();
+        if (document is null)
+        {
+            throw new InvalidDataException(
+                error ??
+                "A pre-source immutable surface contract is missing; run closure seal-contract before starting a fresh source/workflow.");
+        }
         VerifyDocument(root, document);
         if (before is { } time && document.EstablishedAt > time)
-            throw new InvalidDataException("Required contract was established after the target replay/evidence and cannot authorize it retroactively.");
-        var required = document.States.SingleOrDefault(item => item.Id == state.Id);
-        if (required is null || Serialize(required) != Serialize(Project(state)))
-            throw new InvalidDataException($"State {state.Id} changed its immutable required contract. Source/workflow observations cannot redefine requirements.");
+        {
+            throw new InvalidDataException(
+                "The surface contract was established after the target replay/evidence and cannot authorize it retroactively.");
+        }
+        var required =
+            document.States.SingleOrDefault(item => item.Id == state.Id);
+        if (required is null ||
+            Serialize(required) != Serialize(Project(state)))
+        {
+            throw new InvalidDataException(
+                $"Surface {state.Id} changed its immutable inventory or navigation contract.");
+        }
         return document.RequiredContractHash;
     }
 
-    public static string Freeze(DirectoryInfo root, StatePlanDocument plan)
+    public static string Freeze(
+        DirectoryInfo root,
+        StatePlanDocument plan)
     {
-        var (document, error) = EnforcementStore.TryLoadAsync<RequiredStateContractDocument>(root, Path).GetAwaiter().GetResult();
-        if (document is null) throw new InvalidDataException(error ?? "No immutable required contract has been established.");
+        var (document, error) =
+            EnforcementStore
+                .TryLoadAsync<RequiredStateContractDocument>(
+                    root,
+                    Path)
+                .GetAwaiter()
+                .GetResult();
+        if (document is null)
+            throw new InvalidDataException(
+                error ?? "No immutable surface contract has been established.");
         VerifyDocument(root, document);
-        if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion || Hash(plan.States.Select(Project).ToList()) != document.RequiredContractHash)
-            throw new InvalidDataException("The plan changed required states/actions/assertions/order after contract establishment.");
-        if (!Frozen(document)) Anchor(root, document, frozen: true);
+        if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion ||
+            Hash(plan.States.Select(Project).ToList()) !=
+            document.RequiredContractHash)
+        {
+            throw new InvalidDataException(
+                "The surface inventory or navigation recipes changed after contract establishment.");
+        }
+        if (!Frozen(document))
+            Anchor(root, document, frozen: true);
         return document.RequiredContractHash;
     }
 
-    internal static MigrationState Project(MigrationState state)
-    {
-        var assertions = JsonSerializer.Deserialize<List<StateAssertion>>(Serialize(state.Assertions), EnforcementStore.JsonOptions)!;
-        foreach (var assertion in assertions.Where(item => item.Kind == "visual-region-equals-source"))
-            assertion.Sufficiency ??= new VisualSufficiency();
-        return new MigrationState
+    internal static MigrationState Project(MigrationState state) =>
+        new()
         {
             Id = state.Id,
+            Kind = state.Kind,
+            Disposition = state.Disposition,
+            ExclusionReason = state.ExclusionReason,
+            SourceDefinitions = [.. state.SourceDefinitions],
             Criticality = state.Criticality,
-            Preconditions = [.. state.Preconditions],
-            Actions = [.. state.Actions],
-            ExpectedOutcome = state.ExpectedOutcome,
-            Assertions = assertions,
-            Verification = state.Verification is null ? null :
-            JsonSerializer.Deserialize<StateVerificationContract>(Serialize(state.Verification), EnforcementStore.JsonOptions),
-            Source = new StateObservation { Status = "not-run" },
-            Target = new StateObservation { Status = "not-run" },
-            Comparison = new StateComparison { Status = "not-run" }
+            Verification = state.Verification is null
+                ? null
+                : JsonSerializer.Deserialize<StateVerificationContract>(
+                    Serialize(state.Verification),
+                    EnforcementStore.JsonOptions),
+            Source = new StateObservation
+            {
+                Status = state.Disposition == "excluded"
+                    ? "excluded"
+                    : "not-run"
+            },
+            Target = new StateObservation
+            {
+                Status = state.Disposition == "excluded"
+                    ? "excluded"
+                    : "not-run"
+            },
+            Comparison = new StateComparison
+            {
+                Status = state.Disposition == "excluded"
+                    ? "excluded"
+                    : "not-run"
+            }
         };
-    }
 
-    private static void VerifyDocument(DirectoryInfo root, RequiredStateContractDocument document)
+    private static void VerifyDocument(
+        DirectoryInfo root,
+        RequiredStateContractDocument document)
     {
-        if (document.SchemaVersion != "1.0" || document.Id.Length != 32 ||
-            document.EstablishedAt == default || document.EstablishedAt > DateTimeOffset.UtcNow ||
+        if (document.SchemaVersion != "2.0" ||
+            document.Id.Length != 32 ||
+            document.EstablishedAt == default ||
+            document.EstablishedAt > DateTimeOffset.UtcNow ||
             document.Id.Any(character => !char.IsAsciiHexDigit(character)) ||
-            !StateClosureSeal.Verify(document) || Hash(document.States) != document.RequiredContractHash)
-            throw new InvalidDataException("Required contract signature/hash is not locally trusted.");
-        var association = StateClosureSeal.ReadContractAnchor(RootAnchor(root));
-        if (association != document.Id)
-            throw new InvalidDataException("The required contract is not independently established for this workspace. Copying signed JSON is not pre-source establishment.");
-        var anchor = StateClosureSeal.ReadContractAnchor("rc-doc-" + document.Id);
-        if (anchor != document.RequiredContractHash + "|open" && anchor != document.RequiredContractHash + "|frozen")
-            throw new InvalidDataException("Required contract rollback/replacement does not match the independent CNG anchor.");
-    }
-
-    private static bool Frozen(RequiredStateContractDocument document) =>
-        StateClosureSeal.ReadContractAnchor("rc-doc-" + document.Id) == document.RequiredContractHash + "|frozen";
-
-    private static bool IsExtension(List<MigrationState> old, List<MigrationState> current)
-    {
-        if (current.Count < old.Count) return false;
-        for (var index = 0; index < old.Count; index++)
+            !StateClosureSeal.Verify(document) ||
+            Hash(document.States) != document.RequiredContractHash)
         {
-            var before = old[index];
-            var after = current[index];
-            if (before.Id != after.Id || before.Criticality != after.Criticality || before.ExpectedOutcome != after.ExpectedOutcome ||
-                !Prefix(before.Preconditions, after.Preconditions) || !Prefix(before.Actions, after.Actions) ||
-                !Prefix(before.Assertions, after.Assertions) || before.Verification?.Kind != after.Verification?.Kind ||
-                !Prefix(before.Verification!.RequiredActions, after.Verification!.RequiredActions) ||
-                !Prefix(before.Verification.Steps, after.Verification.Steps) ||
-                !Prefix(before.Verification.Restorations, after.Verification.Restorations))
-                return false;
+            throw new InvalidDataException(
+                "Required surface contract signature/hash is not locally trusted.");
         }
-        return true;
+        var association =
+            StateClosureSeal.ReadContractAnchor(RootAnchor(root));
+        if (association != document.Id)
+        {
+            throw new InvalidDataException(
+                "The required surface contract is not independently established for this workspace.");
+        }
+        var anchor =
+            StateClosureSeal.ReadContractAnchor("rc-doc-" + document.Id);
+        if (anchor != document.RequiredContractHash + "|open" &&
+            anchor != document.RequiredContractHash + "|frozen")
+        {
+            throw new InvalidDataException(
+                "Required surface contract rollback/replacement does not match the independent CNG anchor.");
+        }
     }
 
-    private static bool Prefix<T>(IReadOnlyList<T> old, IReadOnlyList<T> current) =>
-        current.Count >= old.Count && old.Select(Serialize).SequenceEqual(current.Take(old.Count).Select(Serialize), StringComparer.Ordinal);
+    private static bool Frozen(
+        RequiredStateContractDocument document) =>
+        StateClosureSeal.ReadContractAnchor(
+            "rc-doc-" + document.Id) ==
+        document.RequiredContractHash + "|frozen";
+
+    private static bool IsExtension(
+        List<MigrationState> old,
+        List<MigrationState> current)
+    {
+        if (current.Count < old.Count)
+            return false;
+        return old
+            .Select(Serialize)
+            .SequenceEqual(
+                current.Take(old.Count).Select(Serialize),
+                StringComparer.Ordinal);
+    }
 
     internal static void ValidateRequirements(StatePlanDocument plan)
     {
-        if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion || plan.States is not { Count: > 0 } ||
-            plan.States.Any(state => state is null || string.IsNullOrWhiteSpace(state.Id)) ||
-            plan.States.Select(state => state.Id).Distinct(StringComparer.Ordinal).Count() != plan.States.Count)
-            throw new InvalidDataException("A schema 2.0 plan with unique states and explicit machine requirements is required.");
-        foreach (var state in plan.States)
+        if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion ||
+            plan.States is not { Count: > 0 } ||
+            plan.States.Any(surface =>
+                surface is null ||
+                string.IsNullOrWhiteSpace(surface.Id)) ||
+            plan.States
+                .Select(surface => surface.Id)
+                .Distinct(StringComparer.Ordinal)
+                .Count() != plan.States.Count)
         {
-            var spec = state.Verification;
-            if (spec is null || spec.Kind is not ("nonvisual" or "visual") || spec.RequiredActions is not { Count: > 0 } ||
-                spec.Steps is not { Count: > 0 } || spec.Restorations is null ||
-                state.Actions.Count != spec.RequiredActions.Count || state.Assertions is not { Count: > 0 } ||
-                spec.RequiredActions.Any(action => action is null || string.IsNullOrWhiteSpace(action.Id) ||
-                    action.Command is not { Count: > 0 } || action.Command.Any(string.IsNullOrWhiteSpace)) ||
-                state.Assertions.Any(assertion => assertion is null || string.IsNullOrWhiteSpace(assertion.Id) ||
-                    assertion.ProbeIndex < 0 ||
-                    assertion.Kind is not ("ui-property-equals-source" or "visual-region-equals-source") ||
-                    assertion.Kind == "ui-property-equals-source" &&
-                        (!UiAssertionProtocol.Supports(assertion.Property) || string.IsNullOrWhiteSpace(assertion.AutomationId))) ||
-                spec.RequiredActions.Select(action => action.Id).Distinct(StringComparer.Ordinal).Count() != spec.RequiredActions.Count ||
-                state.Assertions.Select(assertion => assertion.Id).Distinct(StringComparer.Ordinal).Count() != state.Assertions.Count ||
-                spec.Steps.Any(step => step is null || step.Kind is not ("action" or "assertion")) ||
-                !spec.Steps.Where(step => step.Kind == "action").Select(step => step.Id).SequenceEqual(spec.RequiredActions.Select(action => action.Id)) ||
-                !spec.Steps.Where(step => step.Kind == "assertion").Select(step => step.Id).SequenceEqual(state.Assertions.Select(assertion => assertion.Id)) ||
-                spec.Kind == "visual" && !state.Assertions.Any(assertion => assertion.Kind == "visual-region-equals-source"))
-                throw new InvalidDataException($"State {state.Id} requires explicit unique ordered action/assertion IDs covering all declared actions.");
-            foreach (var restore in spec.Restorations)
-                if (restore is null || string.IsNullOrWhiteSpace(restore.Id) ||
-                    !spec.RequiredActions.Any(action => action.Id == restore.ReturnActionId) ||
-                    !state.Assertions.Any(assertion => assertion.Id == restore.BaselineAssertionId) ||
-                    !state.Assertions.Any(assertion => assertion.Id == restore.RestoredAssertionId) ||
-                    restore.BaselineAssertionId == restore.RestoredAssertionId)
-                    throw new InvalidDataException($"Restoration {restore?.Id ?? "(missing)"} requires baseline, explicit return action, and a distinct restored comparison.");
-            if (spec.Restorations.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count() != spec.Restorations.Count)
-                throw new InvalidDataException("Restoration IDs must be unique.");
-            foreach (var assertion in state.Assertions.Where(item => item.Kind == "visual-region-equals-source"))
+            throw new InvalidDataException(
+                "A schema 3.0 surface plan with unique inventoried surfaces is required.");
+        }
+
+        var definitionOwners = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var surface in plan.States)
+        {
+            if (surface.SourceDefinitions is null ||
+                surface.Source is null ||
+                surface.Target is null ||
+                surface.Comparison is null ||
+                surface.Kind is not
+                    ("window" or "page" or "dialog" or
+                     "flyout" or "user-control") ||
+                surface.Disposition is not ("required" or "excluded") ||
+                surface.SourceDefinitions is not { Count: > 0 } ||
+                surface.SourceDefinitions.Any(string.IsNullOrWhiteSpace) ||
+                surface.SourceDefinitions
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count() != surface.SourceDefinitions.Count ||
+                surface.SourceDefinitions.Any(path =>
+                    !definitionOwners.Add(path)))
             {
-                var policy = assertion.Sufficiency ?? new VisualSufficiency();
-                if (assertion.Comparison is not ("pixel-exact" or "sampled-mae") ||
-                    !double.IsFinite(assertion.MaximumMeanError) || assertion.MaximumMeanError is < 0 or > 0.1 ||
-                    assertion.Region is null && (string.IsNullOrWhiteSpace(assertion.AutomationId) ||
-                        assertion.BoundsProbeIndex is null || assertion.BoundsEvidence is null || assertion.SourceCaptureEvidence is null ||
-                        assertion.BoundsAfterProbeIndex is null || assertion.BoundsAfterProbeIndex <= assertion.ProbeIndex) ||
-                    !double.IsFinite(policy.MinimumContentFraction) ||
-                    policy.MinimumContentFraction is <= 0 or > 0.5 ||
-                    policy.MinimumDistinctColors is < 2 or > 4096 ||
-                    policy.MinimumSamplePixels is < 4 or > 16777216)
-                    throw new InvalidDataException("Visual contracts require an explicit semantic ROI or bound source/target UIA bounds and a supported comparison.");
-                foreach (var region in new[] { assertion.Region, assertion.SourceRegion }.OfType<VisualRegion>())
-                    if (!double.IsFinite(region.X) || !double.IsFinite(region.Y) || !double.IsFinite(region.Width) ||
-                        !double.IsFinite(region.Height) || region.X < 0 || region.Y < 0 || region.Width <= 0 ||
-                        region.Height <= 0 || region.X + region.Width > 1 || region.Y + region.Height > 1)
-                        throw new InvalidDataException("Visual regions must be contained, normalized and nonempty.");
+                throw new InvalidDataException(
+                    $"Surface {surface.Id} requires a supported kind, a required/excluded disposition, and unique source definition paths.");
+            }
+
+            if (surface.Disposition == "excluded")
+            {
+                if (string.IsNullOrWhiteSpace(surface.ExclusionReason) ||
+                    surface.Verification is not null ||
+                    surface.Source.Status != "excluded" ||
+                    surface.Target.Status != "excluded" ||
+                    surface.Comparison.Status != "excluded")
+                {
+                    throw new InvalidDataException(
+                        $"Excluded surface {surface.Id} requires a reason and cannot define runtime verification.");
+                }
+                continue;
+            }
+
+            var navigation = surface.Verification;
+            if (surface.Criticality != StateCriticality.Required ||
+                navigation is null ||
+                navigation.TreeProbeIndex < 0 ||
+                navigation.RequiredActions is null ||
+                navigation.RequiredActions.Any(action =>
+                    action is null ||
+                    string.IsNullOrWhiteSpace(action.Id) ||
+                    action.ProbeIndex < 0 ||
+                    action.ProbeIndex >= navigation.TreeProbeIndex ||
+                    action.Command is not { Count: > 0 } ||
+                    action.Command.Any(string.IsNullOrWhiteSpace)) ||
+                navigation.RequiredActions
+                    .Select(action => action.Id)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count() != navigation.RequiredActions.Count ||
+                navigation.RequiredActions
+                    .Select(action => action.ProbeIndex)
+                    .Distinct()
+                    .Count() != navigation.RequiredActions.Count ||
+                !navigation.RequiredActions
+                    .Select(action => action.ProbeIndex)
+                    .SequenceEqual(
+                        navigation.RequiredActions
+                            .Select(action => action.ProbeIndex)
+                            .Order()))
+            {
+                throw new InvalidDataException(
+                    $"Required surface {surface.Id} needs an ordered navigation recipe and one later inspect tree probe.");
+            }
+
+            if (surface.Source.Status == "captured" &&
+                (string.IsNullOrWhiteSpace(surface.Source.TreeEvidence) ||
+                 !surface.Source.Evidence.Contains(
+                     surface.Source.TreeEvidence,
+                     StringComparer.Ordinal)) ||
+                surface.Target.Status == "passed" &&
+                (string.IsNullOrWhiteSpace(surface.Target.TreeEvidence) ||
+                 !surface.Target.Evidence.Contains(
+                     surface.Target.TreeEvidence,
+                     StringComparer.Ordinal)))
+            {
+                throw new InvalidDataException(
+                    $"Surface {surface.Id} captured observations must identify their complete UIA tree evidence.");
             }
         }
     }
 
-    private static bool Exists(DirectoryInfo root, string path) =>
-        EnforcementStore.TryResolveContainedPath(root, path, out var full, out _) && File.Exists(full);
-    private static string RootAnchor(DirectoryInfo root) => "rc-root-" + HashText(System.IO.Path.GetFullPath(root.FullName).ToUpperInvariant())[..32];
-    private static string Hash(List<MigrationState> states) => HashText(Serialize(states));
-    private static string HashText(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
-    private static string Serialize<T>(T value) => JsonSerializer.Serialize(value, EnforcementStore.JsonOptions);
+    private static bool Exists(
+        DirectoryInfo root,
+        string path) =>
+        EnforcementStore.TryResolveContainedPath(
+            root,
+            path,
+            out var full,
+            out _) &&
+        File.Exists(full);
+
+    private static string RootAnchor(DirectoryInfo root) =>
+        "rc-root-" +
+        HashText(
+            System.IO.Path
+                .GetFullPath(root.FullName)
+                .ToUpperInvariant())[..32];
+
+    private static string Hash(List<MigrationState> states) =>
+        HashText(Serialize(states));
+
+    private static string HashText(string value) =>
+        Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+
+    private static string Serialize<T>(T value) =>
+        JsonSerializer.Serialize(value, EnforcementStore.JsonOptions);
 }

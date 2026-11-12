@@ -8,17 +8,6 @@ namespace WinAppMigration.Enforcement;
 
 public static class WorkflowOperations
 {
-    public static bool IsCompatible(WorkflowStage stage, WorkflowOperation operation) => stage switch
-    {
-        WorkflowStage.SourceOracle => false,
-        WorkflowStage.MechanicalStabilization => operation == WorkflowOperation.Build,
-        WorkflowStage.TargetBootstrap => operation is WorkflowOperation.Replay or
-            WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis,
-        WorkflowStage.SemanticConvergence => Enum.IsDefined(operation),
-        WorkflowStage.Closure => operation is WorkflowOperation.Build or WorkflowOperation.Replay or WorkflowOperation.UiAction,
-        _ => false
-    };
-
     public static bool TryObserveEvidence(
         EnforcementEvaluationInput input, EnforcementSnapshot snapshot,
         IReadOnlyList<string> evidence, out string reason)
@@ -26,9 +15,7 @@ public static class WorkflowOperations
         if (WorkflowDispositions.RejectTerminal(snapshot, out reason)) return false;
         reason = "Valid workflow artifacts are required before recording discriminating progress.";
         if (snapshot.Workflow is null) return false;
-        var previous = snapshot.Workflow.Operations.Where(item =>
-            item.TargetFingerprint == input.TargetFingerprint).Select(item => (DateTimeOffset?)item.RecordedAt).Max();
-        if (!TryEvidenceFingerprint(input.TargetRoot, evidence, previous, out var fingerprint, out reason))
+        if (!TryEvidenceFingerprint(input.TargetRoot, evidence, out var fingerprint, out reason))
             return false;
         WorkflowController.AddEvent(snapshot.Workflow,
             WorkflowController.CurrentUnit(snapshot.Workflow, snapshot.ActiveSlice),
@@ -41,7 +28,7 @@ public static class WorkflowOperations
         IReadOnlyList<string> evidence, string? signature, out string reason, StateSliceBinding? intended = null)
     {
         if (WorkflowDispositions.RejectTerminal(snapshot, out reason)) return false;
-        reason = "Valid enforcement artifacts and a permitted stage budget are required.";
+        reason = "Valid enforcement artifacts are required.";
         if (snapshot.Workflow is null ||
             snapshot.Gates.First(gate => gate.Id == "enforcement-artifacts").Status != "passed")
             return false;
@@ -52,36 +39,9 @@ public static class WorkflowOperations
             reason = prerequisite.Reason;
             return false;
         }
-        if (!IsCompatible(snapshot.Workflow.Stage, operation))
+        if (!Enum.IsDefined(operation))
         {
-            reason = $"{operation} is not permitted during {snapshot.Workflow.Stage}.";
-            return false;
-        }
-        if (snapshot.Workflow.Stage == WorkflowStage.TargetBootstrap &&
-            operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
-            !FailureProtocol.ActiveRuntimeFailures(input).Any(attempt =>
-                attempt.TargetFingerprint == input.TargetFingerprint) &&
-            !(input.Replay is { Success: false } && input.Replay.TargetFingerprint == input.TargetFingerprint))
-        {
-            reason = "Bootstrap diagnosis/hypothesis operations require a bootstrap runtime failure.";
-            return false;
-        }
-        if (snapshot.Workflow.Stage == WorkflowStage.Closure &&
-            operation is WorkflowOperation.Replay or WorkflowOperation.UiAction && evidence.Count == 0)
-        {
-            reason = "Final closure replay/UI operations require explicit discriminating evidence justification.";
-            return false;
-        }
-        if (operation is WorkflowOperation.Build or WorkflowOperation.Replay or WorkflowOperation.DiagnosticRun &&
-            FailureProtocol.FindChangeRequired(input) is { } change)
-        {
-            reason = change.Reason;
-            return false;
-        }
-        if (operation is WorkflowOperation.Build or WorkflowOperation.Replay &&
-            snapshot.Gates.First(gate => gate.Id == "failure-diagnosis").Status != "passed")
-        {
-            reason = "Source-first diagnosis is required before correction/build/replay.";
+            reason = $"Unsupported workflow operation: {operation}.";
             return false;
         }
         var binding = intended ?? StateAttribution.Authorize(input);
@@ -93,81 +53,27 @@ public static class WorkflowOperations
         {
             var authorized = StateAttribution.Authorize(input, binding.StateId);
             if (authorized != binding)
-                throw new InvalidDataException("Operation intent does not match the declared state contract.");
+                throw new InvalidDataException("Operation intent does not match the declared surface contract.");
         }
         var progress = snapshot.Workflow;
         var now = input.GeneratedAt;
         var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
-        var previous = progress.Operations.Where(item =>
-            item.Kind == operation && item.TargetFingerprint == input.TargetFingerprint).ToArray();
+        if (operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
+            progress.Operations.Any(item => item.Kind == operation &&
+                item.TargetFingerprint == input.TargetFingerprint && item.Signature == signature &&
+                item.StateId == binding.StateId && item.IntendedSliceId == binding.SliceId))
+        {
+            reason = "This failure tuple already has this diagnostic/hypothesis receipt.";
+            return false;
+        }
         string? evidenceFingerprint = null;
         if (evidence.Count > 0)
         {
-            if (operation == WorkflowOperation.UiAction)
-            {
-                if (!TryEvidenceFingerprint(input.TargetRoot, evidence, null, out evidenceFingerprint, out reason))
-                    return false;
-                var matchingIntent = previous
-                    .Where(item =>
-                        item.EvidenceFingerprint == evidenceFingerprint &&
-                        item.ReplayAttestationId == input.Replay?.Id)
-                    .ToArray();
-                var freshnessAfter = previous.Length == 0
-                    ? input.Replay?.StartedAt
-                    : new[]
-                    {
-                        previous.Max(item => item.RecordedAt),
-                        input.Replay?.StartedAt ?? DateTimeOffset.MinValue
-                    }.Max();
-                if (matchingIntent.Length == 0 &&
-                    !TryEvidenceFingerprint(
-                        input.TargetRoot,
-                        evidence,
-                        freshnessAfter,
-                        out evidenceFingerprint,
-                        out reason))
-                    return false;
-                var latestOperation = previous
-                    .Where(item => item.ReplayAttestationId == input.Replay?.Id)
-                    .MaxBy(item => item.RecordedAt);
-                if (latestOperation is not null &&
-                    latestOperation.EvidenceFingerprint == evidenceFingerprint &&
-                    latestOperation.Signature == signature)
-                {
-                    reason = "This UI command immediately repeats the same state intent and command signature, so it is not discriminating progress.";
-                    return false;
-                }
-            }
-            else
-            {
-                if (!TryEvidenceFingerprint(input.TargetRoot, evidence,
-                    previous.Length == 0 ? null : previous.Max(item => item.RecordedAt), out evidenceFingerprint, out reason))
-                    return false;
-                if (progress.Operations.Any(item => item.Kind == operation &&
-                    item.TargetFingerprint == input.TargetFingerprint && item.EvidenceFingerprint == evidenceFingerprint))
-                {
-                    reason = "Discriminating evidence content has already authorized this operation; touching or renaming it is not progress.";
-                    return false;
-                }
-            }
-        }
-        if (operation == WorkflowOperation.Replay &&
-            (previous.Length > 0 || input.Replay?.TargetFingerprint == input.TargetFingerprint) &&
-            evidenceFingerprint is null)
-        {
-            reason = "Repeated replay requires new, fresh discriminating evidence; --force-replay cannot bypass this rule.";
-            return false;
-        }
-        if (operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
-            previous.Any(item => item.Signature == signature &&
-                item.StateId == binding.StateId && item.IntendedSliceId == binding.SliceId))
-        {
-            reason = "This signature and target fingerprint already received this diagnosis/hypothesis operation; change the target before repeating it.";
-            return false;
+            if (!TryEvidenceFingerprint(input.TargetRoot, evidence, out evidenceFingerprint, out reason))
+                return false;
         }
         if (evidenceFingerprint is not null)
             WorkflowController.AddEvent(progress, unit, "discriminating-evidence", evidenceFingerprint, now);
-        snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now);
         progress.StartedAt ??= now;
         progress.OperationsStartedAt ??= now;
         WorkflowController.Activate(progress, unit, now, input.TargetFingerprint);
@@ -187,24 +93,29 @@ public static class WorkflowOperations
         WorkflowOperationAuthentication.Seal(progress.Operations[^1],
             progress.Operations.Count > 1 ? progress.Operations[^2] : null, progress.Operations.Count);
         progress.LastObservedAt = now;
-        snapshot.Budget = WorkflowBudgets.Evaluate(input.Policy, progress, unit, now);
+        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, unit, now);
         WorkflowDispositions.Update(snapshot, now);
         return true;
     }
 
     private static bool TryEvidenceFingerprint(
-        DirectoryInfo root, IReadOnlyList<string> evidence, DateTimeOffset? after,
+        DirectoryInfo root, IReadOnlyList<string> evidence,
         out string? fingerprint, out string reason)
     {
         fingerprint = null;
+        if (evidence.Count == 0)
+        {
+            reason = "At least one diagnostic evidence path is required.";
+            return false;
+        }
         var hashes = new List<string>();
         foreach (var relativePath in evidence)
         {
             if (!EnforcementStore.TryResolveContainedPath(root, relativePath, out var path, out reason))
                 return false;
-            if (!File.Exists(path) || after is not null && File.GetLastWriteTimeUtc(path) <= after.Value.UtcDateTime)
+            if (!File.Exists(path))
             {
-                reason = $"Discriminating evidence must exist and postdate the previous operation: {relativePath}";
+                reason = $"Diagnostic evidence must exist: {relativePath}";
                 return false;
             }
             using var stream = File.OpenRead(path);

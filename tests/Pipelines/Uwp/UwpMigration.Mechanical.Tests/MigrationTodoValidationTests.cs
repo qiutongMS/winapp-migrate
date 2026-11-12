@@ -131,17 +131,17 @@ public sealed class MigrationTodoValidationTests
     }
 
     [TestMethod]
-    public void NormalizeForWrite_CompletesPartialLegacyGuidance()
+    public void NormalizeForWrite_CompletesCurrentMechanicalGuidance()
     {
         var todo = Todo("UWMIG001");
         todo.Guidance = new MigrationRepairGuidance
         {
-            ReasonCode = "legacy-reason"
+            ReasonCode = "mechanical-reason"
         };
 
         MigrationReportStore.NormalizeForWrite(Report(todo));
 
-        Assert.AreEqual("legacy-reason", todo.Guidance.ReasonCode);
+        Assert.AreEqual("mechanical-reason", todo.Guidance.ReasonCode);
         Assert.IsNotEmpty(todo.Guidance.Facts);
         Assert.AreEqual(
             "provisional",

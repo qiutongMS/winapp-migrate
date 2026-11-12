@@ -13,12 +13,8 @@ public sealed partial class EnforcementEvaluatorTests
     [TestMethod]
     public void Accounts_ReentryTracksActiveEpochsAndOperationCounts()
     {
-        var policy = EnforcementPolicy.Balanced();
-        policy.SemanticConvergence.SoftMinutes = 60;
-        policy.SemanticConvergence.HardMinutes = 90;
         var progress = new WorkflowProgress
         {
-            PolicyFingerprint = WorkflowValidation.PolicyFingerprint(policy),
             LastTargetFingerprint = "target", LastObservedAt = LifecycleNow,
             StartedAt = LifecycleNow, Stage = WorkflowStage.SemanticConvergence, ActiveSliceId = "A",
             Disposition = new RunDisposition
@@ -44,31 +40,23 @@ public sealed partial class EnforcementEvaluatorTests
         progress.ActiveSliceId = "A";
         WorkflowController.Activate(progress, a, LifecycleNow.AddMinutes(25), "target");
         Assert.AreEqual(5, a.ActiveMinutes(LifecycleNow.AddMinutes(25)));
-        var budget = WorkflowBudgets.Evaluate(
-            policy, progress, a, LifecycleNow.AddMinutes(28));
+        var budget = WorkflowTelemetry.Measure(
+            progress, a, LifecycleNow.AddMinutes(28));
         Assert.AreEqual(8, budget.ElapsedMinutes);
         Assert.AreEqual(28, budget.TotalElapsedMinutes);
         Assert.AreEqual(1, budget.Operations.Builds);
-        Assert.AreEqual(0, budget.ExtensionsUsed);
         Assert.HasCount(2, a.Epochs);
         Assert.AreEqual(LifecycleNow.AddMinutes(5), a.Epochs[0].ExitedAt);
         Assert.AreEqual("account-switched", a.Epochs[0].ExitReason);
         progress.LastObservedAt = LifecycleNow.AddMinutes(28);
-        Assert.IsNull(WorkflowValidation.ProgressError(progress, policy, progress.LastObservedAt));
+        Assert.IsNull(WorkflowValidation.ProgressError(progress, progress.LastObservedAt));
 
-        a.Operations.Builds = policy.SemanticConvergence.Operations.Builds;
-        var ceiling = WorkflowBudgets.Evaluate(
-            policy, progress, a, progress.LastObservedAt);
-        Assert.AreEqual("within-budget", ceiling.Decision);
-        Assert.AreEqual("within-budget", ceiling.ReasonCode);
-        Assert.AreEqual(0, ceiling.ExtensionsUsed);
         WorkflowController.CloseActiveEpochs(progress, progress.LastObservedAt, "paused");
         WorkflowController.Activate(progress, a, progress.LastObservedAt.AddMinutes(20), "corrected");
-        var reopened = WorkflowBudgets.Evaluate(
-            policy, progress, a, progress.LastObservedAt.AddMinutes(20));
+        var reopened = WorkflowTelemetry.Measure(
+            progress, a, progress.LastObservedAt.AddMinutes(20));
         Assert.AreEqual(8, reopened.ElapsedMinutes);
-        Assert.AreEqual("within-budget", reopened.Decision);
-        Assert.IsNull(a.BlockedAt);
+        Assert.AreEqual(1, reopened.Operations.Builds);
     }
 
     [TestMethod]
@@ -114,8 +102,6 @@ public sealed partial class EnforcementEvaluatorTests
     {
         using var fixture = new EvaluatorFixture();
         var input = LifecycleInput(fixture);
-        input.Policy.SemanticConvergence.SoftMinutes = 30;
-        input.Policy.SemanticConvergence.HardMinutes = 60;
         input.StatePlan!.States[0].Target.Status = "unverified";
         input.StatePlan.States.Add(State("B"));
         var a = EnforcementEvaluator.Evaluate(input);
@@ -133,8 +119,8 @@ public sealed partial class EnforcementEvaluatorTests
             Progress = b.Workflow, GeneratedAt = LifecycleNow.AddMinutes(25)
         });
         Assert.AreEqual("state-1", reopened.ActiveSlice);
-        Assert.AreEqual(5, reopened.Budget!.ElapsedMinutes);
-        Assert.AreEqual(1, reopened.Budget.Operations.Builds);
+        Assert.AreEqual(5, reopened.Telemetry!.ElapsedMinutes);
+        Assert.AreEqual(1, reopened.Telemetry.Operations.Builds);
         Assert.AreEqual(20, reopened.Workflow!.Units.Single(unit => unit.SliceId == "B")
             .ActiveMinutes(LifecycleNow.AddMinutes(25)));
         Assert.AreEqual(accountId, reopened.Workflow.Units.Single(unit => unit.SliceId == "state-1").AccountId);
@@ -142,10 +128,9 @@ public sealed partial class EnforcementEvaluatorTests
         {
             Progress = reopened.Workflow, GeneratedAt = LifecycleNow.AddMinutes(28)
         });
-        Assert.AreEqual(8, running.Budget!.ElapsedMinutes);
-        Assert.AreEqual(28, running.Budget.TotalElapsedMinutes);
-        Assert.AreEqual(1, running.Budget.Operations.Builds);
-        Assert.AreEqual(3, running.Budget.OperationCeilings.Builds);
+        Assert.AreEqual(8, running.Telemetry!.ElapsedMinutes);
+        Assert.AreEqual(28, running.Telemetry.TotalElapsedMinutes);
+        Assert.AreEqual(1, running.Telemetry.Operations.Builds);
     }
 
     [TestMethod]
@@ -176,7 +161,7 @@ public sealed partial class EnforcementEvaluatorTests
             Progress = changed.Workflow, TargetFingerprint = "changed", GeneratedAt = LifecycleNow.AddMinutes(3)
         });
         Assert.AreEqual(WorkflowStage.Closure, stale.Stage);
-        Assert.AreEqual("revalidate", stale.Frontier?.Kind);
+        Assert.AreEqual("state", stale.Frontier?.Kind);
         input.StatePlan!.States[0].Comparison.Status = "failed";
         var failed = EnforcementEvaluator.Evaluate(input with
         {
@@ -204,40 +189,8 @@ public sealed partial class EnforcementEvaluatorTests
         });
         Assert.AreEqual("continue", observedLater.Disposition?.Kind);
         Assert.IsFalse(observedLater.Disposition!.Terminal);
-        Assert.AreEqual(5, observedLater.Budget!.ElapsedMinutes);
-        Assert.AreEqual(150, observedLater.Budget.TotalElapsedMinutes);
-        Assert.AreEqual("within-budget", observedLater.Budget.Decision);
-    }
-
-    [TestMethod]
-    public void Debt_RemainsNonterminalAndDoesNotHideRequiredClosureRevalidation()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = LifecycleInput(fixture);
-        var optional = State("optional");
-        optional.Criticality = StateCriticality.Optional;
-        optional.Target.Status = "blocked";
-        input.StatePlan!.States.Add(optional);
-        var deferred = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("continue-with-debt", deferred.Disposition?.Kind);
-        Assert.IsFalse(deferred.Disposition!.Terminal);
-        CollectionAssert.Contains(deferred.Disposition.AllowedOperations, WorkflowOperation.UiAction);
-        Assert.IsTrue(deferred.Workflow!.Units.SelectMany(unit => unit.Epochs).Any(epoch => epoch.ExitedAt is null));
-        var closure = EnforcementEvaluator.Evaluate(input with
-        {
-            Progress = deferred.Workflow, GeneratedAt = LifecycleNow.AddMinutes(1)
-        });
-        Assert.AreEqual(WorkflowStage.Closure, closure.Stage);
-        Assert.AreEqual("continue-with-debt", closure.Disposition?.Kind);
-        var changed = EnforcementEvaluator.Evaluate(input with
-        {
-            Progress = closure.Workflow, TargetFingerprint = "changed", GeneratedAt = LifecycleNow.AddMinutes(2)
-        });
-        Assert.AreEqual(WorkflowStage.Closure, changed.Stage);
-        Assert.AreEqual("state-1", changed.ActiveSlice);
-        Assert.AreEqual("build", changed.Frontier?.Kind);
-        Assert.AreEqual("continue", changed.Disposition?.Kind);
-        Assert.IsTrue(changed.Workflow!.Slices.Single(slice => slice.SliceId == "state-1").Resolved);
+        Assert.AreEqual(5, observedLater.Telemetry!.ElapsedMinutes);
+        Assert.AreEqual(150, observedLater.Telemetry.TotalElapsedMinutes);
     }
 
     [TestMethod]
@@ -279,7 +232,7 @@ public sealed partial class EnforcementEvaluatorTests
 
         var blocked = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("blocked-required", blocked.Disposition?.Kind);
+        Assert.AreEqual("continue", blocked.Disposition?.Kind);
         Assert.IsFalse(blocked.Disposition!.Terminal);
         Assert.IsTrue(blocked.Disposition.Retryable);
         CollectionAssert.Contains(blocked.Disposition.AllowedOperations, WorkflowOperation.UiAction);
@@ -294,7 +247,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Disposition_LegacyBlockedRequiredTerminalResumesAsAdvisory()
+    public void Disposition_RetiredBlockedRequiredTerminalFailsWithoutMutation()
     {
         using var fixture = new EvaluatorFixture();
         var input = LifecycleInput(fixture);
@@ -310,7 +263,7 @@ public sealed partial class EnforcementEvaluatorTests
         };
         var progress = EnforcementEvaluator.Evaluate(input).Workflow!;
         progress.Disposition = legacy;
-        WorkflowDispositions.ResumeRetiredAuthorization(progress);
+        var before = JsonSerializer.Serialize(progress, EnforcementStore.JsonOptions);
 
         var resumed = EnforcementEvaluator.Evaluate(input with
         {
@@ -319,9 +272,9 @@ public sealed partial class EnforcementEvaluatorTests
             GeneratedAt = LifecycleNow.AddMinutes(1)
         });
 
-        Assert.AreEqual("blocked-required", resumed.Disposition?.Kind);
-        Assert.IsFalse(resumed.Disposition!.Terminal);
-        Assert.IsTrue(resumed.Disposition.Retryable);
+        Assert.AreEqual("infrastructure-failure", resumed.Disposition?.Kind);
+        Assert.IsTrue(resumed.Disposition!.Terminal);
+        Assert.AreEqual(before, JsonSerializer.Serialize(progress, EnforcementStore.JsonOptions));
     }
 
     [TestMethod]
@@ -339,7 +292,7 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.IsFalse(observed.Disposition!.Terminal);
         Assert.IsTrue(observed.Disposition.Retryable);
         Assert.IsNotEmpty(observed.Disposition.AllowedOperations);
-        Assert.AreEqual("within-budget", observed.Budget?.Decision);
+        Assert.AreEqual(16, observed.Telemetry!.ElapsedMinutes);
     }
 
     [TestMethod]
@@ -360,211 +313,20 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void ProgressSchema20_PreservesEvidenceHistoryAndRetiresBudgetState()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = LifecycleInput(fixture);
-        input.StatePlan!.States[0].Target.Status = "unverified";
-        var initial = EnforcementEvaluator.Evaluate(input);
-        var changedInput = input with
-        {
-            Progress = initial.Workflow,
-            TargetFingerprint = "corrected"
-        };
-        var changed = EnforcementEvaluator.Evaluate(changedInput);
-        Assert.IsTrue(WorkflowOperations.TryBegin(
-            changedInput, changed, WorkflowOperation.Build, [], null, out var reason), reason);
-        var original = changed.Workflow!;
-        original.SchemaVersion = "2.0";
-        var unit = original.Units.Single(unit => unit.SliceId == "state-1");
-        unit.ExtensionGrantedAt = LifecycleNow;
-        original.Disposition = new RunDisposition
-        {
-            Kind = "pause-replan",
-            ReasonCode = "stage-soft-limit",
-            Terminal = false,
-            Retryable = true,
-            Finalization = "not-ready"
-        };
-        var before = JsonSerializer.Serialize(original, EnforcementStore.JsonOptions);
-
-        var (imported, error) = WorkflowPersistence.ImportProgress(
-            original, input.Policy, LifecycleNow);
-
-        Assert.IsNull(error);
-        Assert.AreEqual("3.0", imported!.SchemaVersion);
-        Assert.AreEqual("continue", imported.Disposition?.Kind);
-        Assert.AreEqual("retired-authorization-resumed", imported.Disposition?.ReasonCode);
-        Assert.IsNull(imported.Units.Single(unit => unit.SliceId == "state-1").ExtensionGrantedAt);
-        Assert.AreEqual(1, imported.Operations.Count);
-        Assert.AreEqual(WorkflowOperation.Build, imported.Operations.Single().Kind);
-        Assert.AreEqual(1, imported.Units.Single(unit => unit.SliceId == "state-1").Operations.Builds);
-        Assert.AreEqual(before, JsonSerializer.Serialize(original, EnforcementStore.JsonOptions));
-        Assert.IsNull(WorkflowValidation.ProgressError(imported, input.Policy, LifecycleNow));
-        var json = JsonSerializer.Serialize(imported, EnforcementStore.JsonOptions);
-        Assert.DoesNotContain("\"extensionGrantedAt\"", json);
-        Assert.DoesNotContain("\"blockedAt\"", json);
-        Assert.DoesNotContain("\"blockedReason\"", json);
-        Assert.DoesNotContain("\"softMinutes\"", json);
-        Assert.DoesNotContain("\"hardMinutes\"", json);
-        Assert.DoesNotContain("\"operationCeilings\"", json);
-    }
-
-    [TestMethod]
-    public void ProgressSchema20_RejectsMalformedRetiredAuthorization()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = LifecycleInput(fixture);
-        input.StatePlan!.States[0].Target.Status = "unverified";
-        var original = EnforcementEvaluator.Evaluate(input).Workflow!;
-        original.SchemaVersion = "2.0";
-        original.Disposition = new RunDisposition
-        {
-            Kind = "continue",
-            ReasonCode = "unit-hard-limit",
-            Terminal = true,
-            Retryable = false,
-            Finalization = "blocked"
-        };
-        WorkflowController.CloseActiveEpochs(
-            original,
-            LifecycleNow,
-            "terminal:continue");
-
-        var (unchanged, error) = WorkflowPersistence.ImportProgress(
-            original,
-            input.Policy,
-            LifecycleNow);
-
-        Assert.AreSame(original, unchanged);
-        StringAssert.Contains(error, "Cannot safely import");
-    }
-
-    [TestMethod]
-    [DataRow(false, "continue")]
-    [DataRow(true, "continue-with-debt")]
-    public void ProgressSchema20_RemovesOnlyRetiredAuthorizationDebt(
-        bool retainSemanticDebt, string expectedDisposition)
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = LifecycleInput(fixture);
-        input.StatePlan!.States[0].Target.Status = "unverified";
-        input.StatePlan.States[0].Criticality = StateCriticality.Optional;
-        var original = EnforcementEvaluator.Evaluate(input).Workflow!;
-        original.SchemaVersion = "2.0";
-        original.Debt.Add(new WorkflowDebt
-        {
-            SliceId = "state-1",
-            Reason = "Stage hard limit expired. Optional work must be deferred with debt."
-        });
-        if (retainSemanticDebt)
-        {
-            original.Debt.Add(new WorkflowDebt
-            {
-                SliceId = "external-state",
-                Reason = "Required hardware is unavailable."
-            });
-        }
-        original.Disposition = new RunDisposition
-        {
-            Kind = "continue-with-debt",
-            ReasonCode = "optional-debt",
-            Terminal = false,
-            Retryable = true,
-            Finalization = "debt"
-        };
-        WorkflowController.CloseActiveEpochs(
-            original, LifecycleNow, "optional-deferred");
-
-        var (imported, error) = WorkflowPersistence.ImportProgress(
-            original, input.Policy, LifecycleNow);
-
-        Assert.IsNull(error);
-        Assert.AreEqual(expectedDisposition, imported!.Disposition?.Kind);
-        Assert.IsFalse(imported.Debt.Any(debt => debt.SliceId == "state-1"));
-        Assert.AreEqual(retainSemanticDebt ? 1 : 0, imported.Debt.Count);
-        Assert.IsNull(WorkflowValidation.ProgressError(
-            imported, input.Policy, LifecycleNow));
-    }
-
-    [TestMethod]
-    public void ProgressSchema10_ImportsSingleContinuousAccountAndRetiresAuthorizationState()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = LifecycleInput(fixture);
-        input.StatePlan!.States[0].Target.Status = "unverified";
-        var original = EnforcementEvaluator.Evaluate(input).Workflow!;
-        original.SchemaVersion = "1.0";
-        original.Disposition = null;
-        original.Slices.Clear();
-        original.CompletedSliceIds = ["previously-resolved"];
-        var unit = original.Units.Single();
-        unit.Epochs.Clear();
-        unit.ExtensionGrantedAt = LifecycleNow.AddMinutes(4);
-        unit.Operations.Builds = 2;
-        original.OperationsStartedAt = LifecycleNow;
-        original.Operations =
-        [
-            new WorkflowOperationRecord
-            {
-                Kind = WorkflowOperation.Build, Stage = unit.Stage, SliceId = unit.SliceId,
-                TargetFingerprint = input.TargetFingerprint, RecordedAt = LifecycleNow
-            },
-            new WorkflowOperationRecord
-            {
-                Kind = WorkflowOperation.Build, Stage = unit.Stage, SliceId = unit.SliceId,
-                TargetFingerprint = input.TargetFingerprint, RecordedAt = LifecycleNow.AddMinutes(1)
-            }
-        ];
-        original.LastObservedAt = LifecycleNow.AddMinutes(5);
-        var (imported, error) = WorkflowPersistence.ImportProgress(original, input.Policy, original.LastObservedAt);
-        Assert.IsNull(error);
-        Assert.AreEqual("3.0", imported!.SchemaVersion);
-        Assert.AreEqual("1.0", original.SchemaVersion);
-        Assert.IsEmpty(original.Units.Single().Epochs);
-        Assert.AreEqual(5, imported.Units.Single().ActiveMinutes(original.LastObservedAt));
-        Assert.AreEqual(2, imported.Units.Single().Operations.Builds);
-        Assert.IsNull(imported.Units.Single().ExtensionGrantedAt);
-        Assert.IsTrue(imported.Slices.Single().Resolved);
-        Assert.IsFalse(imported.Slices.Single().EvidenceFresh);
-        Assert.IsNull(WorkflowValidation.ProgressError(imported, input.Policy, original.LastObservedAt));
-        Assert.IsNotNull(WorkflowValidation.ProgressError(original, input.Policy, original.LastObservedAt));
-    }
-
-    [TestMethod]
-    [DataRow("multiple-units")]
-    [DataRow("zero-units")]
-    [DataRow("switched-unit")]
-    [DataRow("bad-counts")]
-    [DataRow("future-start")]
-    [DataRow("unsupported-schema")]
-    public void ProgressSchema10_AmbiguousOrInvalidHistoryFailsClosed(string mutation)
+    [DataRow("1.0")]
+    [DataRow("2.0")]
+    [DataRow("4.0")]
+    public void Progress_UnsupportedSchemasFailWithoutMutation(string schema)
     {
         using var fixture = new EvaluatorFixture();
         var input = LifecycleInput(fixture);
         input.StatePlan!.States[0].Target.Status = "unverified";
         var progress = EnforcementEvaluator.Evaluate(input).Workflow!;
-        progress.SchemaVersion = "1.0";
-        progress.Disposition = null;
-        progress.Slices.Clear();
-        var unit = progress.Units.Single();
-        unit.Epochs.Clear();
-        switch (mutation)
-        {
-            case "zero-units": progress.Units.Clear(); break;
-            case "multiple-units":
-                progress.Units.Add(new WorkflowUnitProgress { Stage = WorkflowStage.MechanicalStabilization, StartedAt = LifecycleNow });
-                break;
-            case "switched-unit": progress.ActiveSliceId = "other"; break;
-            case "bad-counts": unit.Operations.Builds = 1; break;
-            case "future-start": unit.StartedAt = LifecycleNow.AddMinutes(1); break;
-            case "unsupported-schema": progress.SchemaVersion = "4.0"; break;
-        }
+        progress.SchemaVersion = schema;
         var before = JsonSerializer.Serialize(progress, EnforcementStore.JsonOptions);
-        var (unchanged, error) = WorkflowPersistence.ImportProgress(progress, input.Policy, LifecycleNow);
+        var error = WorkflowValidation.ProgressError(progress, LifecycleNow);
         Assert.IsNotNull(error);
-        StringAssert.Contains(error, mutation == "unsupported-schema" ? "Unsupported workflow progress schema" : "Cannot safely import");
-        Assert.AreSame(progress, unchanged);
+        StringAssert.Contains(error, "Unsupported workflow progress schema");
         Assert.AreEqual(before, JsonSerializer.Serialize(progress, EnforcementStore.JsonOptions));
     }
 

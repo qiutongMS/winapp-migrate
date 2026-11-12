@@ -13,5 +13,4 @@ public sealed class UwpEnforcementOptions
     public string? Framework { get; init; }
     public IReadOnlyList<string> Properties { get; init; } = [];
     public bool ForceReplay { get; init; }
-    public int MaximumSignatureAttempts { get; init; } = 2;
 }

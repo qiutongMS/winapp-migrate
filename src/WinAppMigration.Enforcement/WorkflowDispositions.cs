@@ -6,41 +6,11 @@ namespace WinAppMigration.Enforcement;
 public static class WorkflowDispositions
 {
     public static RunDisposition? Terminal(EnforcementEvaluationInput input) =>
+        input.ArtifactError is not null ? null :
         input.PersistedDisposition is { Terminal: true } persisted &&
-            !IsRetiredAuthorization(persisted) &&
             WorkflowValidation.DispositionError(persisted) is null ? persisted :
         input.Progress is { SchemaVersion: WorkflowProgress.CurrentSchemaVersion, Disposition: { Terminal: true } disposition } &&
-            !IsRetiredAuthorization(disposition) &&
             WorkflowValidation.DispositionError(disposition) is null ? disposition : null;
-
-    public static void ResumeRetiredAuthorization(WorkflowProgress progress)
-    {
-        if (!IsRetiredAuthorization(progress.Disposition))
-            return;
-        progress.Disposition = new RunDisposition
-        {
-            Kind = "continue",
-            ReasonCode = "retired-authorization-resumed",
-            Terminal = false,
-            Retryable = true,
-            Finalization = "not-ready"
-        };
-        foreach (var unit in progress.Units)
-        {
-            unit.BlockedAt = null;
-            unit.BlockedReason = null;
-        }
-    }
-
-    public static bool IsRetiredAuthorization(RunDisposition? disposition) =>
-        disposition?.ReasonCode is "total-hard-limit" or "unit-hard-limit" or
-            "operation-ceiling" or "stage-soft-limit" ||
-        disposition is
-        {
-            Kind: "blocked-required",
-            ReasonCode: "required-work-blocked",
-            Terminal: true
-        };
 
     public static bool RejectTerminal(EnforcementSnapshot snapshot, out string reason)
     {
@@ -59,19 +29,14 @@ public static class WorkflowDispositions
             return;
         var (kind, code, terminal, retryable, finalization) = snapshot switch
         {
-            { Frontier.Kind: "required-blocked" } =>
-                ("blocked-required", "required-work-blocked", false, true, "blocked"),
             _ when snapshot.Gates.Any(gate => gate.Id == "enforcement-artifacts" && gate.Status != "passed") =>
                 ("infrastructure-failure", "invalid-enforcement-artifacts", true, true, "failed"),
-            { Frontier.Kind: "continue-with-debt" } =>
-                ("continue-with-debt", "optional-debt", false, true, "debt"),
             { Status: "passed" } =>
                 ("complete", "closure-passed", true, false, "complete"),
             _ => ("continue", "workflow-active", false, true, "not-ready")
         };
-        var allowed = terminal || kind == "pause-replan" || snapshot.Workflow is null
-            ? [] : Enum.GetValues<WorkflowOperation>().Where(operation =>
-                WorkflowOperations.IsCompatible(snapshot.Stage, operation)).ToList();
+        var allowed = terminal || snapshot.Workflow is null
+            ? [] : Enum.GetValues<WorkflowOperation>().ToList();
         snapshot.Disposition = new RunDisposition
         {
             Kind = kind, ReasonCode = code, Terminal = terminal, Retryable = retryable,

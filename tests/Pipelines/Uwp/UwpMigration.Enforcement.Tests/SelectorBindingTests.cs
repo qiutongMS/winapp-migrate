@@ -12,25 +12,13 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
         var plan = await NewRequiredPlanAsync(fixture);
-        plan.States[0].Actions =
-        [
-            "Invoke the target action.",
-            "Inspect the resulting state."
-        ];
-        plan.States[0].Assertions[0].ProbeIndex = 1;
         plan.States[0].Verification = new StateVerificationContract
         {
             RequiredActions =
             [
-                new("invoke-target", ["invoke", "Original"]),
-                new("observe-main", ["inspect"])
+                new("invoke-target", 0, ["invoke", "Original"])
             ],
-            Steps =
-            [
-                new("action", "invoke-target"),
-                new("action", "observe-main"),
-                new("assertion", "main-name")
-            ]
+            TreeProbeIndex = 1
         };
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root,
@@ -71,7 +59,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("unverified", state.Target.Status);
         Assert.AreEqual("unverified", state.Comparison.Status);
         var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(
-            () => UwpEnforcementRunner.RecordStateAsync(
+            () => UwpEnforcementRunner.RecordSurfaceAsync(
                 fixture.Root,
                 TestWindowOwnerResolver.Shared,
                 "state-1",
@@ -98,7 +86,7 @@ public sealed partial class RunnerAcceptanceTests
             ["inspect", "-w", "42", "--json"],
             [],
             "state-1");
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(
+        var recorded = await UwpEnforcementRunner.RecordSurfaceAsync(
             fixture.Root,
             TestWindowOwnerResolver.Shared,
             "state-1",
@@ -116,10 +104,17 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
         var plan = await NewRequiredPlanAsync(fixture);
-        plan.States[0].Verification!.RequiredActions[0] =
-            new RequiredStateAction(
-                "observe-main",
-                ["invoke", "Original"]);
+        plan.States[0].Verification = new StateVerificationContract
+        {
+            RequiredActions =
+            [
+                new RequiredStateAction(
+                    "open-surface",
+                    0,
+                    ["invoke", "Original"])
+            ],
+            TreeProbeIndex = 1
+        };
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root,
             ClosurePlan,
@@ -130,7 +125,7 @@ public sealed partial class RunnerAcceptanceTests
             () => UwpEnforcementRunner.RebindSelectorAsync(
                 fixture.Root,
                 "state-1",
-                "observe-main",
+                "open-surface",
                 ["set-value", "Replacement", "changed"],
                 "Attempt to change behavior."));
 
@@ -144,10 +139,17 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
         var plan = await NewRequiredPlanAsync(fixture);
-        plan.States[0].Verification!.RequiredActions[0] =
-            new RequiredStateAction(
-                "observe-main",
-                ["invoke", "Original"]);
+        plan.States[0].Verification = new StateVerificationContract
+        {
+            RequiredActions =
+            [
+                new RequiredStateAction(
+                    "open-surface",
+                    0,
+                    ["invoke", "Original"])
+            ],
+            TreeProbeIndex = 1
+        };
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root,
             ClosurePlan,
@@ -156,7 +158,7 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.RebindSelectorAsync(
             fixture.Root,
             "state-1",
-            "observe-main",
+            "open-surface",
             ["invoke", "Replacement"],
             "First selector repair.");
         var older = await File.ReadAllTextAsync(
@@ -164,7 +166,7 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.RebindSelectorAsync(
             fixture.Root,
             "state-1",
-            "observe-main",
+            "open-surface",
             ["invoke", "Replacement-2"],
             "Second selector repair.");
         await File.WriteAllTextAsync(
@@ -182,10 +184,17 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
         var plan = await NewRequiredPlanAsync(fixture);
-        plan.States[0].Verification!.RequiredActions[0] =
-            new RequiredStateAction(
-                "observe-main",
-                ["inspect", "Original"]);
+        plan.States[0].Verification = new StateVerificationContract
+        {
+            RequiredActions =
+            [
+                new RequiredStateAction(
+                    "open-surface",
+                    0,
+                    ["inspect", "Original"])
+            ],
+            TreeProbeIndex = 1
+        };
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root,
             ClosurePlan,
@@ -194,7 +203,7 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.RebindSelectorAsync(
             fixture.Root,
             "state-1",
-            "observe-main",
+            "open-surface",
             ["inspect", "Replacement"],
             "Initial selector repair.");
         File.Delete(fixture.Path(SelectorBindingAmendments.Path));
@@ -203,7 +212,7 @@ public sealed partial class RunnerAcceptanceTests
             () => UwpEnforcementRunner.RebindSelectorAsync(
                 fixture.Root,
                 "state-1",
-                "observe-main",
+                "open-surface",
                 ["inspect", "Replacement-2"],
                 "Attempt to reset the amendment history."));
 
@@ -215,10 +224,17 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
         var plan = await NewRequiredPlanAsync(fixture);
-        plan.States[0].Verification!.RequiredActions[0] =
-            new RequiredStateAction(
-                "observe-main",
-                ["inspect", "Original"]);
+        plan.States[0].Verification = new StateVerificationContract
+        {
+            RequiredActions =
+            [
+                new RequiredStateAction(
+                    "open-surface",
+                    0,
+                    ["inspect", "Original"])
+            ],
+            TreeProbeIndex = 1
+        };
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root,
             ClosurePlan,
@@ -227,15 +243,16 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.RebindSelectorAsync(
             fixture.Root,
             "state-1",
-            "observe-main",
+            "open-surface",
             ["inspect", "Replacement"],
             "Initial selector repair.");
-        plan.States[0].Actions.Add("Observe again.");
         var verification = plan.States[0].Verification!;
         verification.RequiredActions.Add(
-            new RequiredStateAction("observe-again", ["inspect"]));
-        verification.Steps.Add(
-            new RequiredStateStep("action", "observe-again"));
+            new RequiredStateAction(
+                "observe-again",
+                1,
+                ["inspect", "Again"]));
+        verification.TreeProbeIndex = 2;
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root,
             ClosurePlan,

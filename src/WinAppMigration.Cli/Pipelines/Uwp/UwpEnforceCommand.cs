@@ -17,19 +17,16 @@ internal sealed class UwpEnforceCommand : Command
             "Assess migration closure and produce fingerprint-bound canonical attestations through WinApp CLI.")
     {
         windowOwnerResolver ??= processRunner as IWindowOwnerResolver ?? WindowsWindowOwnerResolver.Instance;
-        Aliases.Add("enforce");
         Subcommands.Add(new AssessCommand(windowOwnerResolver));
         Subcommands.Add(new SealContractCommand());
         Subcommands.Add(new RebindSelectorCommand());
-        Subcommands.Add(new WaitCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new RunCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new DiagnoseCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new UiCommand(processRunner, windowOwnerResolver));
-        Subcommands.Add(new RecordStateCommand(windowOwnerResolver));
+        Subcommands.Add(new RecordSurfaceCommand(windowOwnerResolver));
         Subcommands.Add(new SynchronizeCommand(windowOwnerResolver));
         Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
         Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
-        Subcommands.Add(new ConfigureCommand());
     }
 
     private sealed class RebindSelectorCommand : Command
@@ -37,13 +34,13 @@ internal sealed class UwpEnforceCommand : Command
         internal RebindSelectorCommand()
             : base(
                 "rebind-selector",
-                "Audit a selector-only repair for one frozen required action. The semantic command and required contract remain unchanged; prior target evidence for the state becomes stale.")
+                "Audit a selector-only repair for one frozen navigation action. The semantic command and required contract remain unchanged; prior target evidence for the surface becomes stale.")
         {
             var target = TargetArgument();
-            var state = new Option<string>("--state")
+            var state = new Option<string>("--surface")
             {
                 Required = true,
-                Description = "Exact planned state ID."
+                Description = "Exact planned surface ID."
             };
             var action = new Option<string>("--action")
             {
@@ -85,93 +82,18 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class SealContractCommand : Command
     {
-        internal SealContractCommand() : base("seal-contract", "Independently anchor schema 2.0 required actions/assertions/order before source capture or workflow start.")
+        internal SealContractCommand() : base("seal-contract", "Independently anchor schema 3.0 source surface inventory and navigation recipes before source capture or workflow start.")
         {
             var target = TargetArgument();
-            var extend = new Option<bool>("--extend") { Description = "Append requirements without changing/removing established requirements, before source/workflow start only." };
-            var upgrade = new Option<bool>("--upgrade-plan") { Description = "Explicitly upgrade an unstarted schema 1.0 plan that already defines structured requirements. Captured legacy evidence is never blessed." };
-            Arguments.Add(target); Options.Add(extend); Options.Add(upgrade);
+            var extend = new Option<bool>("--extend") { Description = "Append inventoried surfaces without changing/removing established surfaces, before source/workflow start only." };
+            Arguments.Add(target); Options.Add(extend);
             SetAction((result, token) => InvokeGuardedAsync(async () =>
             {
                 var contract = await UwpEnforcementRunner.SealContractAsync(result.GetValue(target)!,
-                    result.GetValue(extend), result.GetValue(upgrade), token);
+                    result.GetValue(extend), token);
                 Console.Out.WriteLine(JsonSerializer.Serialize(contract, EnforcementStore.JsonOptions));
                 return 0;
             }));
-        }
-    }
-
-    private sealed class WaitCommand : Command
-    {
-        internal WaitCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
-            : base(
-                "wait",
-                "Deprecated compatibility command. Wait for a durable closure disposition or an optional host observation timeout; elapsed time never changes closure state.")
-        {
-            var target = TargetArgument();
-            var attempts = AttemptsOption();
-            var timeoutSeconds = new Option<int?>("--timeout-seconds")
-            {
-                Description = "Optional positive host observation timeout. This does not change Runner budgets or dispositions."
-            };
-            var pollIntervalMilliseconds = new Option<int?>("--poll-interval-ms")
-            {
-                Description = "Positive polling interval in milliseconds. Defaults to 500."
-            };
-            Arguments.Add(target);
-            Options.Add(attempts);
-            Options.Add(timeoutSeconds);
-            Options.Add(pollIntervalMilliseconds);
-            SetAction((parseResult, cancellationToken) =>
-                InvokeObservationAsync(
-                    async () =>
-                    {
-                        var timeoutValue = parseResult.GetValue(timeoutSeconds);
-                        var pollValue = parseResult.GetValue(pollIntervalMilliseconds) ?? 500;
-                        var runner = new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver);
-                        return await runner.WaitForTerminalAsync(
-                            parseResult.GetValue(target)!,
-                            parseResult.GetValue(attempts) ?? 2,
-                            timeoutValue is null
-                                ? null
-                                : TimeSpan.FromSeconds(timeoutValue.Value),
-                            TimeSpan.FromMilliseconds(pollValue),
-                            cancellationToken);
-                    },
-                    cancellationToken));
-        }
-    }
-
-    private sealed class ConfigureCommand : Command
-    {
-        internal ConfigureCommand()
-            : base("configure", "Deprecated compatibility command. Persist legacy telemetry policy before operations start; policy limits do not authorize, stop, or finalize closure operations.")
-        {
-            var target = TargetArgument();
-            var file = new Option<FileInfo?>("--policy")
-            {
-                Description = "Strict schema 1.0 policy JSON file; incompatible stage operations must have zero ceilings."
-            };
-            var defaults = new Option<bool>("--write-default")
-            {
-                Description = "Write the balanced policy with stage-specific ceilings and one measured-progress extension per stage/slice to .migration-evidence/enforcement/policy.json and stdout."
-            };
-            Arguments.Add(target);
-            Options.Add(file);
-            Options.Add(defaults);
-            SetAction((parseResult, cancellationToken) =>
-                InvokeGuardedAsync(async () =>
-                {
-                    var policyFile = parseResult.GetValue(file);
-                    if ((policyFile is not null) == parseResult.GetValue(defaults))
-                        throw new ArgumentException("Specify exactly one of --policy <file> or --write-default.");
-                    var policy = policyFile is null ? EnforcementPolicy.Balanced() :
-                        await WorkflowPersistence.ReadPolicyAsync(policyFile, cancellationToken);
-                    await UwpEnforcementRunner.ConfigurePolicyAsync(
-                        parseResult.GetValue(target)!, policy, cancellationToken);
-                    Console.Out.WriteLine(JsonSerializer.Serialize(policy, EnforcementStore.JsonOptions));
-                    return 0;
-                }));
         }
     }
 
@@ -181,14 +103,12 @@ internal sealed class UwpEnforceCommand : Command
             : base("assess", "Assess deterministic migration checklist, evidence freshness, active semantic work, and durable closure disposition without invoking external tools.")
         {
             var target = TargetArgument();
-            var attempts = AttemptsOption();
             var full = FullOutputOption();
             var strict = new Option<bool>("--strict")
             {
-                Description = "Return a nonzero exit code unless migration closure is fully verified."
+                Description = "Return a nonzero exit code unless all required UI Surface Parity checks pass. Business behavior remains outside this scope."
             };
             Arguments.Add(target);
-            Options.Add(attempts);
             Options.Add(full);
             Options.Add(strict);
             SetAction((parseResult, cancellationToken) =>
@@ -197,7 +117,6 @@ internal sealed class UwpEnforceCommand : Command
                     var snapshot = await UwpEnforcementRunner.AssessAsync(
                         parseResult.GetValue(target)!,
                         windowOwnerResolver,
-                        parseResult.GetValue(attempts) ?? 2,
                         cancellationToken);
                     return WriteSnapshot(snapshot, parseResult.GetValue(full), parseResult.GetValue(strict));
                 }));
@@ -209,9 +128,8 @@ internal sealed class UwpEnforceCommand : Command
         internal RunCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "attest",
-                "Run the next checklist-authorized canonical build or replay through WinApp CLI and bind its attestation to the target fingerprint.")
+                "Obtain current analyzer build and canonical launch evidence through WinApp CLI. Explicit retries do not require diagnosis or a target change.")
         {
-            Aliases.Add("run");
             var target = TargetArgument();
             var winApp = new Option<string?>("--winapp")
             {
@@ -241,10 +159,9 @@ internal sealed class UwpEnforceCommand : Command
             };
             var forceReplay = new Option<bool>("--force-replay")
             {
-                Description = "Request another canonical replay; requires new --discriminating-evidence and never bypasses diagnosis, target-change, or freshness requirements."
+                Description = "Request another canonical replay after a current successful analyzer build. Existing process-bound surface evidence becomes stale."
             };
             var discriminatingEvidence = DiscriminatingEvidenceOption();
-            var attempts = AttemptsOption();
             var full = FullOutputOption();
             Arguments.Add(target);
             Options.Add(winApp);
@@ -255,7 +172,6 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(properties);
             Options.Add(forceReplay);
             Options.Add(discriminatingEvidence);
-            Options.Add(attempts);
             Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
@@ -271,16 +187,23 @@ internal sealed class UwpEnforceCommand : Command
                         Framework = parseResult.GetValue(framework),
                         Properties = parseResult.GetValue(properties) ?? [],
                         ForceReplay = parseResult.GetValue(forceReplay),
-                        DiscriminatingEvidence = parseResult.GetValue(discriminatingEvidence) ?? [],
-                        MaximumSignatureAttempts =
-                            parseResult.GetValue(attempts) ?? 2
+                        DiscriminatingEvidence = parseResult.GetValue(discriminatingEvidence) ?? []
                     };
                     var runner = new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver);
+                    using var trace = EnforcementTrace.Start(parseResult.GetValue(target)!);
+                    if (trace is not null)
+                    {
+                        Console.Error.WriteLine($"[winapp-migrate trace] {trace.Path}");
+                        AppDomain.CurrentDomain.ProcessExit += (_, _) => trace.Record("cli.process-exit");
+                    }
                     var snapshot = await runner.RunAsync(
                         parseResult.GetValue(target)!,
                         options,
                         cancellationToken);
-                    return WriteAttestationSnapshot(snapshot, parseResult.GetValue(full));
+                    using var serialization = EnforcementTrace.Measure("cli.serialize");
+                    var exitCode = WriteAttestationSnapshot(snapshot, parseResult.GetValue(full));
+                    EnforcementTrace.Mark("cli.return", new { exitCode });
+                    return exitCode;
                 }));
         }
     }
@@ -290,7 +213,7 @@ internal sealed class UwpEnforceCommand : Command
         internal DiagnoseCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "diagnose",
-                "Forward a checklist-authorized development diagnostic probe to WinApp CLI. Probe output is fingerprint-bound but never satisfies canonical build, replay, parity, or finalization gates.")
+                "Capture optional fingerprint-bound diagnostic output through WinApp CLI. It does not satisfy canonical build or UI parity checks and is never a retry prerequisite.")
         {
             var target = TargetArgument();
             var winApp = WinAppOption();
@@ -304,7 +227,6 @@ internal sealed class UwpEnforceCommand : Command
                 Arity = ArgumentArity.ZeroOrMore,
                 AllowMultipleArgumentsPerToken = false
             };
-            var attempts = AttemptsOption();
             var discriminatingEvidence = DiscriminatingEvidenceOption();
             Arguments.Add(target);
             Options.Add(winApp);
@@ -313,7 +235,6 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(runtime);
             Options.Add(framework);
             Options.Add(properties);
-            Options.Add(attempts);
             Options.Add(discriminatingEvidence);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
@@ -333,9 +254,7 @@ internal sealed class UwpEnforceCommand : Command
                             Framework = parseResult.GetValue(framework),
                             Properties =
                                 parseResult.GetValue(properties) ?? [],
-                            DiscriminatingEvidence = parseResult.GetValue(discriminatingEvidence) ?? [],
-                            MaximumSignatureAttempts =
-                                parseResult.GetValue(attempts) ?? 2
+                            DiscriminatingEvidence = parseResult.GetValue(discriminatingEvidence) ?? []
                         },
                         cancellationToken);
                     Console.Out.WriteLine(JsonSerializer.Serialize(
@@ -351,15 +270,14 @@ internal sealed class UwpEnforceCommand : Command
         internal UiCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver? windowOwnerResolver)
             : base(
                 "capture",
-                "Capture a target development probe. --state binds a planned contract and requires an explicit replay-owned window or trusted PickerHost delegated through its owner chain. Use unbound list-windows for discovery. Closure requires --discriminating-evidence. Place UI arguments after --.")
+                "Capture an authenticated target probe. --surface binds a planned contract and requires an explicit replay-owned window or trusted owner-bound PickerHost. Use unbound list-windows for discovery. Place UI arguments after --.")
         {
-            Aliases.Add("ui");
             var target = TargetArgument();
             var winApp = WinAppOption();
             var discriminatingEvidence = DiscriminatingEvidenceOption();
-            var state = new Option<string?>("--state")
+            var state = new Option<string?>("--surface")
             {
-                Description = "Bind this probe to a planned state/contract and an explicit replay-owned HWND or trusted owner-bound PickerHost HWND."
+                Description = "Bind this probe to a required UI surface and an explicit replay-owned HWND or trusted owner-bound PickerHost HWND."
             };
             var rawOutput = new Option<bool>("--raw-output")
             {
@@ -391,13 +309,20 @@ internal sealed class UwpEnforceCommand : Command
         }
     }
 
-    private sealed class RecordStateCommand : Command
+    private sealed class RecordSurfaceCommand : Command
     {
-        internal RecordStateCommand(IWindowOwnerResolver windowOwnerResolver)
-            : base("record-state", "Derive state closure from ordered, successful state-bound probes and supported source/target assertions. Then use finalize to synchronize canonical evidence, TODOs, and report.")
+        internal RecordSurfaceCommand(
+            IWindowOwnerResolver windowOwnerResolver)
+            : base(
+                "record-surface",
+                "Derive UI Surface Parity from authenticated navigation probes and one complete semantic UIA tree inspection.")
         {
             var target = TargetArgument();
-            var state = new Option<string>("--state") { Required = true, Description = "Exact planned state ID." };
+            var state = new Option<string>("--surface")
+            {
+                Required = true,
+                Description = "Exact required surface ID."
+            };
             var probes = new Option<string[]>("--probe")
             {
                 Required = true,
@@ -415,18 +340,11 @@ internal sealed class UwpEnforceCommand : Command
                 {
                     var targetValue = parseResult.GetValue(target)!;
                     var stateValue = parseResult.GetValue(state)!;
-                    await TodoExecutionService.EnsureReadyForCanonicalAsync(
-                        targetValue,
-                        cancellationToken);
-                    var snapshot = await UwpEnforcementRunner.RecordStateAsync(
+                    var snapshot = await UwpEnforcementRunner.RecordSurfaceAsync(
                         targetValue,
                         windowOwnerResolver,
                         stateValue,
                         parseResult.GetValue(probes) ?? [],
-                        cancellationToken);
-                    await TodoExecutionService.RecordStateVerificationAsync(
-                        targetValue,
-                        stateValue,
                         cancellationToken);
                     return WriteSnapshot(
                         snapshot,
@@ -442,16 +360,13 @@ internal sealed class UwpEnforceCommand : Command
                 "finalize",
                 "Synchronize migration-report validation summaries from canonical closure evidence and reassess final parity.")
         {
-            Aliases.Add("sync-report");
             var target = TargetArgument();
-            var attempts = AttemptsOption();
             var full = FullOutputOption();
             var strict = new Option<bool>("--strict")
             {
                 Description = "Return a nonzero exit code unless migration closure is fully verified."
             };
             Arguments.Add(target);
-            Options.Add(attempts);
             Options.Add(full);
             Options.Add(strict);
             SetAction((parseResult, cancellationToken) =>
@@ -461,7 +376,6 @@ internal sealed class UwpEnforceCommand : Command
                         await UwpEnforcementRunner.SynchronizeReportAsync(
                             parseResult.GetValue(target)!,
                             windowOwnerResolver,
-                            parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
                     return WriteSnapshot(snapshot, parseResult.GetValue(full), parseResult.GetValue(strict));
                 }));
@@ -486,9 +400,9 @@ internal sealed class UwpEnforceCommand : Command
                 Description = "Stable diagnostic or crash signature.",
                 Arity = ArgumentArity.ExactlyOne
             };
-            var state = new Option<string?>("--state")
+            var state = new Option<string?>("--surface")
             {
-                Description = "Optional state ID affected by the failure."
+                Description = "Optional surface ID affected by the failure."
             };
             var evidence = new Option<string[]>("--evidence")
             {
@@ -497,14 +411,12 @@ internal sealed class UwpEnforceCommand : Command
                 Required = true,
                 AllowMultipleArgumentsPerToken = false
             };
-            var attempts = AttemptsOption();
             var full = FullOutputOption();
             Arguments.Add(target);
             Arguments.Add(kind);
             Arguments.Add(signature);
             Options.Add(state);
             Options.Add(evidence);
-            Options.Add(attempts);
             Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
@@ -517,7 +429,6 @@ internal sealed class UwpEnforceCommand : Command
                             parseResult.GetValue(signature)!,
                             parseResult.GetValue(state),
                             parseResult.GetValue(evidence) ?? [],
-                            parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
                     return WriteSnapshot(snapshot, parseResult.GetValue(full));
                 }));
@@ -537,9 +448,9 @@ internal sealed class UwpEnforceCommand : Command
                 Description = "Stable runtime failure signature used by record-failure.",
                 Arity = ArgumentArity.ExactlyOne
             };
-            var state = new Option<string?>("--state")
+            var state = new Option<string?>("--surface")
             {
-                Description = "Optional state ID associated with the failure."
+                Description = "Optional surface ID associated with the failure."
             };
             var sourceLocations = new Option<string[]>(
                 "--source-location")
@@ -580,7 +491,6 @@ internal sealed class UwpEnforceCommand : Command
                 Required = true,
                 AllowMultipleArgumentsPerToken = false
             };
-            var attempts = AttemptsOption();
             var full = FullOutputOption();
             Arguments.Add(target);
             Arguments.Add(signature);
@@ -591,7 +501,6 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(hypothesis);
             Options.Add(test);
             Options.Add(evidence);
-            Options.Add(attempts);
             Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
@@ -608,7 +517,6 @@ internal sealed class UwpEnforceCommand : Command
                             parseResult.GetValue(hypothesis)!,
                             parseResult.GetValue(test)!,
                             parseResult.GetValue(evidence) ?? [],
-                            parseResult.GetValue(attempts) ?? 2,
                             cancellationToken);
                     return WriteSnapshot(snapshot, parseResult.GetValue(full));
                 }));
@@ -626,16 +534,10 @@ internal sealed class UwpEnforceCommand : Command
         return target;
     }
 
-    private static Option<int?> AttemptsOption() =>
-        new("--max-attempts")
-        {
-            Description = "Compatibility limit for grouping repeated failure signatures (1..10, default 2). Cannot override unchanged-target or evidence-freshness guards."
-        };
-
     private static Option<string[]> DiscriminatingEvidenceOption() =>
         new("--discriminating-evidence")
         {
-            Description = "New target-relative discriminating evidence file. Repeat for multiple files; touching/reusing evidence is not progress.",
+            Description = "Optional target-relative diagnostic notes retained with the operation. Notes do not authorize builds, replay, or UI verification.",
             Arity = ArgumentArity.ZeroOrMore,
             AllowMultipleArgumentsPerToken = false
         };
@@ -643,7 +545,7 @@ internal sealed class UwpEnforceCommand : Command
     private static Option<bool> FullOutputOption() =>
         new("--full")
         {
-            Description = "Write the full durable closure snapshot, including workflow history. The default bounded receipt points to the full state artifact."
+            Description = "Write the full durable closure snapshot, including workflow history. The default bounded receipt points to the full snapshot artifact."
         };
 
     private static Option<string?> WinAppOption() =>
@@ -738,6 +640,9 @@ internal sealed class UwpEnforceCommand : Command
                 snapshot.ActiveSlice,
                 snapshot.ActiveStateIds,
                 snapshot.Status,
+                snapshot.VerificationScope,
+                snapshot.HumanValidationItems,
+                snapshot.Findings,
                 snapshot.StateVerifications,
                 snapshot.TargetFingerprint,
                 snapshot.Gates,
@@ -842,66 +747,4 @@ internal sealed class UwpEnforceCommand : Command
         }
     }
 
-    private static async Task<int> InvokeObservationAsync(
-        Func<Task<EnforcementSnapshot>> operation,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var snapshot = await operation();
-            WriteObservation(new UwpEnforcementObservation(
-                "1.0",
-                "terminal",
-                snapshot.GeneratedAt,
-                snapshot.Disposition));
-            return 0;
-        }
-        catch (TimeoutException exception)
-        {
-            WriteObservation(new UwpEnforcementObservation(
-                "1.0",
-                "error",
-                DateTimeOffset.UtcNow,
-                Error: new UwpEnforcementObservationError(
-                    "observation-timeout",
-                    exception.Message,
-                    true)));
-            return 2;
-        }
-        catch (OperationCanceledException exception)
-            when (cancellationToken.IsCancellationRequested)
-        {
-            WriteObservation(new UwpEnforcementObservation(
-                "1.0",
-                "error",
-                DateTimeOffset.UtcNow,
-                Error: new UwpEnforcementObservationError(
-                    "observation-cancelled",
-                    exception.Message,
-                    true)));
-            return 130;
-        }
-        catch (Exception exception) when (
-            exception is ArgumentException
-            or InvalidDataException
-            or IOException
-            or UnauthorizedAccessException)
-        {
-            WriteObservation(new UwpEnforcementObservation(
-                "1.0",
-                "error",
-                DateTimeOffset.UtcNow,
-                Error: new UwpEnforcementObservationError(
-                    "observation-failed",
-                    exception.Message,
-                    false)));
-            return 1;
-        }
-    }
-
-    private static void WriteObservation(UwpEnforcementObservation observation)
-    {
-        Console.Out.WriteLine(
-            JsonSerializer.Serialize(observation, EnforcementStore.JsonOptions));
-    }
 }

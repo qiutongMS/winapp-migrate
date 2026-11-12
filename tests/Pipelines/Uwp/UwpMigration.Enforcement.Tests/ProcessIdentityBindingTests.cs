@@ -10,6 +10,28 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
+    public async Task ProcessIdentity_AssessmentRejectsLostOrReusedCanonicalProcess(bool reused)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var owner = new MutableIdentityResolver();
+        var runner = new UwpEnforcementRunner(new IdentityProcessRunner(), windowOwnerResolver: owner);
+        await runner.RunAsync(fixture.Root, new UwpEnforcementOptions());
+        if (reused)
+            owner.StartedAt = owner.StartedAt.AddHours(1);
+        else
+            owner.Available = false;
+
+        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, owner);
+
+        var gate = snapshot.Gates.Single(gate => gate.Id == "canonical-replay");
+        Assert.AreEqual("blocked", gate.Status);
+        StringAssert.Contains(gate.Reason, "absent or has a reused-PID");
+        Assert.AreEqual("replay", snapshot.Frontier?.Kind);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
     public async Task ProcessIdentity_SamePidReplacementBeforeOrDuringCaptureIsRejected(bool during)
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -56,7 +78,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(replay.ProcessStartedAt, probe.WindowProcessStartedAt);
         Assert.IsNotNull(probe.WindowProcessStartedAt);
         Assert.IsTrue(StateClosureSeal.Verify(probe));
-        var recorded = await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var recorded = await UwpEnforcementRunner.RecordSurfaceAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         Assert.AreEqual("passed", recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
         probe.WindowProcessStartedAt = probe.WindowProcessStartedAt.Value.AddHours(1);
         Assert.IsFalse(StateClosureSeal.Verify(probe));
@@ -87,7 +109,7 @@ public sealed partial class RunnerAcceptanceTests
         }
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
+            UwpEnforcementRunner.RecordSurfaceAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]));
     }
 
     private sealed class MutableIdentityResolver : IWindowOwnerResolver

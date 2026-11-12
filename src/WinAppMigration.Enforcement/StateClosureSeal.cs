@@ -259,12 +259,6 @@ internal static class StateClosureSeal
                 using var anchor = CngKey.Open(anchorName);
                 value = Encoding.UTF8.GetString(anchor.GetProperty("state", CngPropertyOptions.CustomProperty).GetValue()!);
             }
-            else if (CngKey.Exists(KeyName))
-            {
-                using var legacy = CngKey.Open(KeyName);
-                if (legacy.HasProperty(name, CngPropertyOptions.CustomProperty))
-                    value = Encoding.UTF8.GetString(legacy.GetProperty(name, CngPropertyOptions.CustomProperty).GetValue()!);
-            }
             if (Verification.Value is { } context) context.Anchors[name] = value;
             return value;
         }

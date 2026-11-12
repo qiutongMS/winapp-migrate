@@ -125,7 +125,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Evaluate_RuntimeFailureRequiresDiagnosis()
+    public void Evaluate_DiagnosticHistoryDoesNotOverrideCurrentSurfaceProof()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -145,15 +145,12 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
-        Assert.AreEqual("state-1", snapshot.Frontier?.Id);
-        Assert.AreEqual(
-            "runtime:0x800f1000",
-            snapshot.Frontier?.Signature);
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.IsNull(snapshot.Frontier);
     }
 
     [TestMethod]
-    public void Evaluate_FreshCompleteDiagnosisClearsDiagnosisFrontier()
+    public void Evaluate_OptionalDiagnosisDoesNotRequireATargetChange()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -185,11 +182,11 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
+        Assert.AreEqual("passed", snapshot.Status);
     }
 
     [TestMethod]
-    public void Evaluate_StaleDiagnosisEvidenceRequiresDiagnosis()
+    public void Evaluate_StaleDiagnosticNotesDoNotReplaceAcceptanceEvidence()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -220,7 +217,7 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("diagnosis-required", snapshot.Frontier?.Kind);
+        Assert.AreEqual("passed", snapshot.Status);
     }
 
     [TestMethod]
@@ -250,7 +247,7 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("revalidate", snapshot.Frontier?.Kind);
+        Assert.AreEqual("state", snapshot.Frontier?.Kind);
         StringAssert.Contains(snapshot.Gates.Single(gate => gate.Id == "state-closure").Reason, "predates");
     }
 
@@ -260,6 +257,8 @@ public sealed partial class EnforcementEvaluatorTests
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
         input.StatePlan!.States[0].Target.Evidence = ["../outside.txt"];
+        input.StatePlan.States[0].Target.TreeEvidence =
+            "../outside.txt";
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
@@ -273,6 +272,8 @@ public sealed partial class EnforcementEvaluatorTests
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
         input.StatePlan!.States[0].Target.Evidence = ["missing.json"];
+        input.StatePlan.States[0].Target.TreeEvidence =
+            "missing.json";
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
@@ -281,7 +282,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Evaluate_ActionableBlockedFindingFailsClosed()
+    public void Evaluate_OutOfScopeFindingIsRetainedWithoutBlockingSurfaceParity()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -304,13 +305,17 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("finding", snapshot.Frontier?.Kind);
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.AreSame(input.FindingLedger!.Findings[0], snapshot.Findings.Single());
+        Assert.AreEqual("blocked", snapshot.Findings.Single().Status);
+        Assert.AreEqual("finding-finding-1-scope-review", snapshot.HumanValidationItems.Single().CheckId);
+        CollectionAssert.AreEqual(new[] { "Inspect activation." }, snapshot.HumanValidationItems.Single().Actions);
     }
 
     [TestMethod]
     [DataRow("open")]
     [DataRow("failed")]
-    public void Evaluate_UnresolvedFindingFailsClosed(string status)
+    public void Evaluate_OutOfScopeFindingStatusDoesNotAuthorizeAcceptance(string status)
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput() with
@@ -333,11 +338,12 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("finding", snapshot.Frontier?.Kind);
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.AreEqual(status, snapshot.Findings.Single().Status);
     }
 
     [TestMethod]
-    public void Evaluate_ResolvedFindingWithoutEvidenceFailsClosed()
+    public void Evaluate_ResolvedBusinessFindingDoesNotClaimMachineVerification()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -358,7 +364,10 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("finding", snapshot.Frontier?.Kind);
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.AreEqual("behavior", snapshot.Findings.Single().Category);
+        Assert.AreEqual("Activation remains correct.", snapshot.HumanValidationItems.Single().Behavior);
+        StringAssert.Contains(snapshot.Gates.Single(gate => gate.Id == "findings").Reason, "human-validation");
     }
 
     [TestMethod]
@@ -389,7 +398,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Evaluate_TwoSameSignatureAttemptsExhaustBudget()
+    public void Evaluate_RepeatedFailureHistoryDoesNotSetAnOperationBudget()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -402,8 +411,8 @@ public sealed partial class EnforcementEvaluatorTests
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
-        Assert.AreEqual("change-required", snapshot.Frontier?.Kind);
-        Assert.AreEqual(0, snapshot.Frontier!.AttemptsRemaining);
+        Assert.AreEqual("build", snapshot.Frontier?.Kind);
+        Assert.IsFalse(snapshot.Disposition!.Terminal);
     }
 
     [TestMethod]
@@ -421,7 +430,7 @@ public sealed partial class EnforcementEvaluatorTests
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
         Assert.AreEqual("build", snapshot.Frontier?.Kind);
-        Assert.AreEqual(2, snapshot.Frontier!.AttemptsRemaining);
+        Assert.IsFalse(snapshot.Disposition!.Terminal);
     }
 
     [TestMethod]
@@ -558,17 +567,23 @@ public sealed partial class EnforcementEvaluatorTests
                     new()
                     {
                         Id = "state-1",
-                        Actions = ["Open the main state."],
-                        ExpectedOutcome = "Main state remains usable.",
+                        Kind = "page",
+                        SourceDefinitions = ["MainPage.xaml"],
+                        Verification = new StateVerificationContract
+                        {
+                            TreeProbeIndex = 0
+                        },
                         Source = new StateObservation
                         {
                             Status = "captured",
-                            Evidence = ["evidence.txt"]
+                            Evidence = ["evidence.txt"],
+                            TreeEvidence = "evidence.txt"
                         },
                         Target = new StateObservation
                         {
                             Status = "passed",
-                            Evidence = ["evidence.txt"]
+                            Evidence = ["evidence.txt"],
+                            TreeEvidence = "evidence.txt"
                         },
                         Comparison = new StateComparison
                         {

@@ -5,7 +5,7 @@ namespace WinAppMigration.Enforcement;
 
 public static class RuntimeFailureRecovery
 {
-    // An interruption between attestation and ledger writes must not erase diagnosis-required.
+    // Preserve failure history if attestation and ledger writes were interrupted.
     public static bool Recover(
         AttemptLedger attempts, ReplayAttestation? replay, DiagnosticRunAttestation? diagnostic,
         EnforcementEvaluationInput input)
@@ -18,30 +18,15 @@ public static class RuntimeFailureRecovery
             var supplied = new StateSliceBinding(stateId, sliceId);
             StateAttribution.Validate(input.StatePlan, supplied);
             signature ??= DiagnosticGrouper.CreateSignature("runtime", [], fallbackSignature);
+            if (string.IsNullOrWhiteSpace(operationId))
+                throw new InvalidDataException("Runtime recovery requires an authenticated operation ID; attribution cannot be inferred.");
             var existing = attempts.Attempts.FirstOrDefault(attempt => attempt.Kind == "runtime" &&
-                attempt.TargetFingerprint == fingerprint &&
-                (operationId is not null ? attempt.OperationId == operationId :
-                    attempt.Evidence.Contains(stdout, StringComparer.Ordinal)));
-            if (existing is not null && operationId is null)
-            {
-                StateAttribution.Validate(input.StatePlan, new StateSliceBinding(existing.StateId, existing.SliceId));
-                return;
-            }
-            StateSliceBinding binding;
-            if (operationId is not null)
-            {
-                var operation = StateAttribution.AuthenticatedOperation(input.TargetRoot, operationId);
-                binding = new StateSliceBinding(operation.StateId, operation.IntendedSliceId);
-                StateAttribution.Validate(input.StatePlan, binding);
-                if (binding != supplied || operation.TargetFingerprint != fingerprint)
-                    throw new InvalidDataException("Failure attestation differs from its authenticated operation-start tuple.");
-            }
-            else
-            {
-                if (supplied != StateSliceBinding.Unbound)
-                    throw new InvalidDataException("Legacy non-operation attribution cannot be repaired/rebound silently.");
-                binding = StateAttribution.PersistedFallback(input);
-            }
+                attempt.TargetFingerprint == fingerprint && attempt.OperationId == operationId);
+            var operation = StateAttribution.AuthenticatedOperation(input.TargetRoot, operationId);
+            var binding = new StateSliceBinding(operation.StateId, operation.IntendedSliceId);
+            StateAttribution.Validate(input.StatePlan, binding);
+            if (binding != supplied || operation.TargetFingerprint != fingerprint)
+                throw new InvalidDataException("Failure attestation differs from its authenticated operation-start tuple.");
             if (existing is not null)
             {
                 if (existing.StateId != binding.StateId || existing.SliceId != binding.SliceId)
@@ -58,7 +43,7 @@ public static class RuntimeFailureRecovery
         }
         if (replay is { Success: false })
         {
-            if (replay.OperationId is not null && !CanonicalAttestationTrust.VerifyFailure(input.TargetRoot, replay))
+            if (!CanonicalAttestationTrust.VerifyFailure(input.TargetRoot, replay))
                 throw new InvalidDataException("Runtime recovery requires the trusted replay operation/attestation chain.");
             Add(replay.TargetFingerprint, replay.Signature, replay.StateId, replay.SliceId,
                 replay.OperationId,
@@ -66,7 +51,7 @@ public static class RuntimeFailureRecovery
         }
         if (diagnostic is { ExitCode: not 0 })
         {
-            if (diagnostic.OperationId is not null && !CanonicalAttestationTrust.Verify(input.TargetRoot, diagnostic))
+            if (!CanonicalAttestationTrust.Verify(input.TargetRoot, diagnostic))
                 throw new InvalidDataException("Runtime recovery requires the trusted diagnostic operation/attestation chain.");
             Add(diagnostic.TargetFingerprint, diagnostic.Signature, diagnostic.StateId, diagnostic.SliceId,
                 diagnostic.OperationId,

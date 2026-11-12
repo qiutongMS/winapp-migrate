@@ -4,3 +4,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("winapp-migrate")]
 [assembly: InternalsVisibleTo("UwpMigration.Mechanical.Tests")]
 [assembly: InternalsVisibleTo("UwpMigration.Enforcement")]
+[assembly: InternalsVisibleTo("UwpMigration.Enforcement.Tests")]

@@ -6,8 +6,7 @@ namespace WinAppMigration.Enforcement;
 public sealed record WorkflowAssessment(
     WorkflowProgress Progress,
     SemanticSlice? ActiveSlice,
-    WorkflowBudgetSnapshot Budget,
-    EnforcementFrontier? Frontier);
+    WorkflowTelemetrySnapshot Telemetry);
 
 public static class WorkflowController
 {
@@ -16,13 +15,11 @@ public static class WorkflowController
         bool sourceReady,
         bool buildFresh,
         bool replayFresh,
-        IReadOnlyList<SemanticSlice> slices,
-        EnforcementFrontier? next)
+        IReadOnlyList<SemanticSlice> slices)
     {
         var progress = input.Progress is null
             ? new WorkflowProgress
             {
-                PolicyFingerprint = WorkflowValidation.PolicyFingerprint(input.Policy),
                 LastTargetFingerprint = input.TargetFingerprint,
                 LastObservedAt = input.GeneratedAt,
                 StartedAt = input.GeneratedAt,
@@ -31,8 +28,8 @@ public static class WorkflowController
                 CompletedSliceIds = slices.Where(slice => slice.Resolved).Select(slice => slice.Id).ToList()
             }
             : Copy(input.Progress);
-        WorkflowDispositions.ResumeRetiredAuthorization(progress);
-        var active = SemanticSlicePlanner.Select(slices, progress.Debt);
+        var active = SemanticSlicePlanner.Select(slices) ??
+            slices.FirstOrDefault(slice => !slice.Complete);
         var previousUnit = progress.Units.FirstOrDefault(unit => unit.Epochs.Any(epoch => epoch.ExitedAt is null));
 
         if (input.Progress is not null)
@@ -73,18 +70,13 @@ public static class WorkflowController
         }).ToList();
         progress.LastTargetFingerprint = input.TargetFingerprint;
         progress.LastObservedAt = input.GeneratedAt;
-        if (progress.OperationsStartedAt is null)
-            progress.PolicyFingerprint = WorkflowValidation.PolicyFingerprint(input.Policy);
-
         progress.Stage = NextStage(
             progress.Stage, buildFresh, replayFresh,
             input.Replay is { Success: true } && input.Build is { Success: true } &&
                 input.Replay.TargetFingerprint == input.Build.TargetFingerprint,
-            slices.Count > 0 && slices.All(slice => slice.Resolved ||
-                slice.Criticality == StateCriticality.Optional && progress.Debt.Any(debt => debt.SliceId == slice.Id)));
+            slices.Count > 0 && slices.All(slice => slice.Resolved));
         if (progress.Stage == WorkflowStage.Closure)
-            active = slices.FirstOrDefault(slice => slice.Resolved && !slice.Complete &&
-                !progress.Debt.Any(debt => debt.SliceId == slice.Id));
+            active = slices.FirstOrDefault(slice => slice.Resolved && !slice.Complete);
         progress.ActiveSliceId = progress.Stage is WorkflowStage.SemanticConvergence or WorkflowStage.Closure
             ? active?.Id : null;
         var activeStates = active?.States.Where(state => progress.Stage == WorkflowStage.Closure ||
@@ -93,52 +85,20 @@ public static class WorkflowController
         var unit = CurrentUnit(progress, active?.Id);
         Activate(progress, unit, input.GeneratedAt, input.TargetFingerprint);
 
-        var budget = WorkflowBudgets.Evaluate(
-            input.Policy, progress, unit, input.GeneratedAt);
-        EnforcementFrontier? frontier = null;
-        if (frontier is null && progress.Stage == WorkflowStage.SemanticConvergence &&
-            next?.Kind is not ("diagnosis-required" or "change-required"))
-        {
-            if (active is { Blocked: true })
-            {
-                var optional = active.Criticality == StateCriticality.Optional;
-                frontier = new EnforcementFrontier
-                {
-                    Kind = optional ? "continue-with-debt" : "required-blocked",
-                    Reason = active.Reason,
-                    SliceId = active.Id,
-                    StateIds = active.States.Select(state => state.Id).ToList()
-                };
-                if (optional) Defer(progress, active, active.Reason);
-            }
-            else if (active is null && slices.Any(slice => !slice.Resolved))
-            {
-                var requiredBlocked = slices.Any(slice => !slice.Resolved &&
-                    slice.Criticality == StateCriticality.Required);
-                frontier = new EnforcementFrontier
-                {
-                    Kind = requiredBlocked ? "required-blocked" : "continue-with-debt",
-                    Reason = "Remaining slices depend on incomplete or deferred work; only independent dependency-ready work may proceed."
-                };
-            }
-        }
-        if (frontier is null && progress.Stage == WorkflowStage.Closure &&
-            active is null && next?.Kind is not ("build" or "replay") &&
-            slices.Any(slice => !slice.Resolved) && progress.Debt.Count > 0)
-            frontier = new EnforcementFrontier
-            {
-                Kind = "continue-with-debt",
-                Reason = "Required slices are complete; optional deferred slices remain explicit debt and are not verified."
-            };
-        if (frontier is null && progress.Stage == WorkflowStage.Closure && active is not null &&
-            next?.Kind is not ("mechanical" or "build" or "replay" or "diagnosis-required" or "change-required"))
-            frontier = new EnforcementFrontier
-            {
-                Kind = "revalidate", SliceId = active.Id,
-                StateIds = active.States.Select(state => state.Id).ToList(),
-                Reason = "Semantic resolution is retained; refresh this resolved slice's evidence for closure."
-            };
-        return new WorkflowAssessment(progress, active, budget, frontier);
+        var telemetry = WorkflowTelemetry.Measure(progress, unit, input.GeneratedAt);
+        return new WorkflowAssessment(progress, active, telemetry);
+    }
+
+    private static WorkflowStage NextStage(
+        WorkflowStage current, bool buildFresh,
+        bool replayFresh, bool historicalReplay, bool statesComplete)
+    {
+        if (current >= WorkflowStage.SemanticConvergence || historicalReplay)
+            return statesComplete ? WorkflowStage.Closure : WorkflowStage.SemanticConvergence;
+        if (!buildFresh) return WorkflowStage.MechanicalStabilization;
+        return replayFresh
+            ? statesComplete ? WorkflowStage.Closure : WorkflowStage.SemanticConvergence
+            : WorkflowStage.TargetBootstrap;
     }
 
     public static WorkflowUnitProgress CurrentUnit(WorkflowProgress progress, string? activeSlice)
@@ -185,28 +145,9 @@ public static class WorkflowController
         });
     }
 
-    private static void Defer(WorkflowProgress progress, SemanticSlice slice, string reason)
-    {
-        if (!progress.Debt.Any(debt => debt.SliceId == slice.Id))
-            progress.Debt.Add(new WorkflowDebt { SliceId = slice.Id, Reason = reason });
-    }
-
     private static List<string> Unresolved(IReadOnlyList<SemanticSlice> slices) =>
         slices.Where(slice => !slice.Resolved && slice.Criticality == StateCriticality.Required)
             .SelectMany(slice => slice.States.Select(state => state.Id)).ToList();
-
-    private static WorkflowStage NextStage(
-        WorkflowStage current, bool buildFresh,
-        bool replayFresh, bool historicalReplay, bool statesComplete)
-    {
-        if (current >= WorkflowStage.SemanticConvergence || historicalReplay)
-            return statesComplete ? WorkflowStage.Closure : WorkflowStage.SemanticConvergence;
-        if (!buildFresh) return WorkflowStage.MechanicalStabilization;
-        current = WorkflowStage.TargetBootstrap;
-        return replayFresh
-            ? statesComplete ? WorkflowStage.Closure : WorkflowStage.SemanticConvergence
-            : current;
-    }
 
     private static WorkflowProgress Copy(WorkflowProgress source) => source with
     {
@@ -219,40 +160,30 @@ public static class WorkflowController
         }).ToList(),
         Slices = source.Slices.Select(slice => slice with { }).ToList(),
         Events = [.. source.Events],
-        Operations = [.. source.Operations],
-        Debt = [.. source.Debt]
+        Operations = [.. source.Operations]
     };
 }
 
-public static class WorkflowBudgets
+public static class WorkflowTelemetry
 {
-    public static WorkflowBudgetSnapshot Evaluate(
-        EnforcementPolicy policy, WorkflowProgress progress, WorkflowUnitProgress unit,
+    public static WorkflowTelemetrySnapshot Measure(
+        WorkflowProgress progress, WorkflowUnitProgress unit,
         DateTimeOffset now)
     {
-        var stage = policy.For(unit.Stage);
         var elapsed = unit.ActiveMinutes(now);
         var total = progress.StartedAt is null ? 0 : (now - progress.StartedAt.Value).TotalMinutes;
         var measured = progress.Events.Any(item => item.Stage == unit.Stage && item.SliceId == unit.SliceId &&
             unit.StartedAt is not null && item.RecordedAt >= unit.StartedAt);
         var totals = new OperationCounts();
         foreach (var item in progress.Operations) totals.Increment(item.Kind);
-        return new WorkflowBudgetSnapshot
+        return new WorkflowTelemetrySnapshot
         {
             Stage = unit.Stage,
             SliceId = unit.SliceId,
-            Decision = "within-budget",
-            Reason = "Elapsed time and operation totals are telemetry only; operation compatibility and evidence freshness govern authorization.",
-            ReasonCode = "within-budget",
             ElapsedMinutes = Math.Max(0, elapsed),
             TotalElapsedMinutes = Math.Max(0, total),
-            SoftDeadline = null,
-            HardDeadline = null,
-            TotalHardDeadline = null,
-            ExtensionsUsed = unit.ExtensionGrantedAt is null ? 0 : 1,
             MeasuredProgress = measured,
             Operations = unit.Operations with { },
-            OperationCeilings = stage.Operations with { },
             TotalOperations = totals
         };
     }

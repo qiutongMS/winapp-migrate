@@ -2,16 +2,25 @@
 // Licensed under the MIT License.
 
 using UwpMigration.Contracts;
+using UwpMigration.Mechanical;
 using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement;
 
 internal static class TodoCompletionContract
 {
+    internal static bool IsMachineCheck(MigrationCompletionCheck check) =>
+        check.VerificationKind == "surface-check" || IsProjectCheck(check);
+
+    private static bool IsProjectCheck(MigrationCompletionCheck check) =>
+        check.VerificationKind is "build-attestation" or "target-uwp-compatibility" ||
+        check.VerificationKind == "report-field" &&
+        check.Target == "mechanicalVerification.targetProjectGraph.status";
+
     internal static IReadOnlyList<MigrationCompletionCheck> StateChecks(
         MigrationTodo todo) =>
         (todo.Guidance?.CompletionChecks ?? [])
-            .Where(check => check.VerificationKind == "state-assertion")
+            .Where(check => check.VerificationKind == "surface-check")
             .ToArray();
 
     internal static List<string> StateIds(MigrationTodo todo)
@@ -20,14 +29,9 @@ internal static class TodoCompletionContract
         var checks = todo.Guidance?.CompletionChecks ?? [];
         foreach (var check in checks)
         {
-            if (check.VerificationKind == "state-assertion")
+            if (check.VerificationKind == "surface-check")
             {
                 stateIds.Add(check.Target);
-            }
-            else if (check.VerificationKind == "state-set" &&
-                check.Target == "affectedStates")
-            {
-                stateIds.UnionWith(todo.AffectedStates);
             }
         }
 
@@ -65,54 +69,49 @@ internal static class TodoCompletionContract
         return checks.All(check =>
             check.AssertionIds.Count > 0 &&
             states.TryGetValue(check.Target, out var state) &&
-            check.AssertionIds.All(assertionId =>
-                state.Assertions.Any(assertion =>
-                    assertion.Id.Equals(
-                        assertionId,
-                        StringComparison.Ordinal))));
+            state.Disposition == "required" &&
+            check.Expected == "passed" &&
+            check.AssertionIds.All(checkId =>
+                SurfaceCheckIds.All.Contains(
+                    checkId,
+                    StringComparer.Ordinal)));
     }
 
     internal static bool UsesProjectClosureOnly(MigrationTodo todo)
     {
         var checks = todo.Guidance?.CompletionChecks ?? [];
         return checks.Count > 0 &&
-            checks.All(check => check.VerificationKind is
-                "build-attestation" or
-                "report-collection-status" or
-                "report-field");
+            checks.All(IsProjectCheck);
     }
 
     internal static bool HasProjectClosureChecks(MigrationTodo todo) =>
-        (todo.Guidance?.CompletionChecks ?? []).Any(check =>
-            check.VerificationKind is
-                "build-attestation" or
-                "report-collection-status" or
-                "report-field");
+        (todo.Guidance?.CompletionChecks ?? []).Any(IsProjectCheck);
 
     internal static bool ProjectClosureChecksPass(
+        DirectoryInfo target,
         MigrationTodo todo,
         MigrationReport report,
         BuildAttestation? build,
         string targetFingerprint)
     {
         var checks = (todo.Guidance?.CompletionChecks ?? [])
-            .Where(check => check.VerificationKind is
-                "build-attestation" or
-                "report-collection-status" or
-                "report-field")
+            .Where(IsProjectCheck)
             .ToArray();
         return checks.All(check => check.VerificationKind switch
             {
                 "build-attestation" =>
                     check.Target == "target-build" &&
                     check.Expected == "passed" &&
-                    build is { Success: true } &&
-                    build.TargetFingerprint == targetFingerprint,
-                "report-collection-status" =>
-                    check.Target == "dependencyAnalysis" &&
-                    report.DependencyAnalysis.Status == check.Expected,
+                    build is { Success: true, StructuredOutput: true, AnalyzerPrivateAssets: true } &&
+                    !string.IsNullOrWhiteSpace(build.AnalyzerPackage) &&
+                    build.TargetFingerprint == targetFingerprint &&
+                    build.StartedAt <= build.CompletedAt && build.CompletedAt <= DateTimeOffset.UtcNow &&
+                    CanonicalAttestationTrust.Verify(target, build),
                 "report-field" =>
                     ReportFieldMatches(report, check.Target, check.Expected),
+                "target-uwp-compatibility" =>
+                    check.Target == "target-source" && check.Expected == "passed" &&
+                    MechanicalMigration.Engine.FindIncompatibleUwpResiduals(target.FullName).Count == 0,
                 _ => false
             });
     }
@@ -126,10 +125,6 @@ internal static class TodoCompletionContract
             "mechanicalVerification.targetProjectGraph.status" =>
                 report.MechanicalVerification.TargetProjectGraph.Status ==
                 expected,
-            "mechanicalVerification.activationContracts.reviewRequiredContracts" =>
-                int.TryParse(expected, out var value) &&
-                report.MechanicalVerification.ActivationContracts
-                    .ReviewRequiredContracts == value,
             _ => false
         };
 
@@ -140,36 +135,6 @@ internal static class TodoCompletionContract
                 StateIds(todo).Contains(stateId, StringComparer.Ordinal))
             .OrderBy(todo => todo.Id, StringComparer.Ordinal)
             .ToList();
-
-    internal static List<MigrationTodo> ScopeTodos(
-        MigrationReport report,
-        StatePlanDocument? plan,
-        MigrationTodo todo,
-        string stateId)
-    {
-        var todos = new Dictionary<string, MigrationTodo>(
-            StringComparer.Ordinal)
-        {
-            [todo.Id] = todo
-        };
-        if (plan is null)
-        {
-            return todos.Values.ToList();
-        }
-
-        foreach (var dependencyStateId in DependencyStateIds(plan, stateId))
-        {
-            foreach (var dependencyTodo in TodosForState(
-                report,
-                dependencyStateId))
-            {
-                todos[dependencyTodo.Id] = dependencyTodo;
-            }
-        }
-        return todos.Values
-            .OrderBy(item => item.Id, StringComparer.Ordinal)
-            .ToList();
-    }
 
     internal static List<string> DependencyStateIds(
         StatePlanDocument plan,

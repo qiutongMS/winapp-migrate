@@ -9,10 +9,10 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class EnforcementEvaluatorTests
 {
     [TestMethod]
-    [DataRow("none", null, null)]
-    [DataRow("verified-prior", null, null)]
-    [DataRow("unresolved-current", "category-selection", "category-slice")]
-    public void Attribution_IdlessRecoveryNeverInfersTheFirstPlannedState(string fallback, string? state, string? slice)
+    [DataRow("none")]
+    [DataRow("verified-prior")]
+    [DataRow("unresolved-current")]
+    public void Attribution_IdlessRecoveryIsRejectedWithoutInferringHistory(string fallback)
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
@@ -21,7 +21,7 @@ public sealed partial class EnforcementEvaluatorTests
         input.StatePlan!.States.Add(next);
         var progress = fallback == "none" ? null : new WorkflowProgress
         {
-            PolicyFingerprint = "fixture", LastTargetFingerprint = input.TargetFingerprint,
+            LastTargetFingerprint = input.TargetFingerprint,
             ActiveStateId = fallback == "verified-prior" ? "state-1" : "category-selection",
             ActiveSliceId = fallback == "verified-prior" ? "state-1" : "category-slice"
         };
@@ -33,22 +33,9 @@ public sealed partial class EnforcementEvaluatorTests
         };
         var attempts = new AttemptLedger();
 
-        Assert.IsTrue(RuntimeFailureRecovery.Recover(attempts, failed, null, input with { Progress = progress }));
-
-        Assert.AreEqual(state, attempts.Attempts.Single().StateId);
-        Assert.AreEqual(slice, attempts.Attempts.Single().SliceId);
-        var evaluated = EnforcementEvaluator.Evaluate(input with
-        {
-            Attempts = attempts, Progress = null, ReportClosureReady = false, ReportClosureReason = "Pending category work."
-        });
-        Assert.IsTrue(evaluated.Workflow!.Slices.Single(item => item.SliceId == "state-1").Resolved,
-            "Unscoped later failures cannot reopen an unrelated parity-verified state.");
-        if (state is null)
-        {
-            Assert.IsNull(evaluated.Frontier!.Id);
-            Assert.IsNull(evaluated.Frontier.SliceId);
-            Assert.IsEmpty(evaluated.Frontier.StateIds);
-        }
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            RuntimeFailureRecovery.Recover(attempts, failed, null, input with { Progress = progress }));
+        Assert.IsEmpty(attempts.Attempts);
     }
 
     [TestMethod]
@@ -68,28 +55,6 @@ public sealed partial class EnforcementEvaluatorTests
 
         Assert.ThrowsExactly<InvalidDataException>(() =>
             RuntimeFailureRecovery.Recover(new AttemptLedger(), null, failure, input));
-    }
-
-    [TestMethod]
-    public void Attribution_RequestedStateBindingDoesNotDependOnSchedulerSelection()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        var optional = State("optional-state");
-        optional.Criticality = StateCriticality.Optional;
-        input.StatePlan!.States.Add(optional);
-        input.StatePlan.States.Add(State("required-state"));
-        var progress = EnforcementEvaluator.Evaluate(input).Workflow!;
-        progress.Debt.Add(new WorkflowDebt { SliceId = optional.Id, Reason = "Explicitly deferred optional work." });
-        input = input with { Progress = progress };
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        var binding = StateAttribution.Authorize(input, "required-state");
-        var optionalBinding = StateAttribution.Authorize(input, optional.Id);
-
-        Assert.AreEqual(snapshot.ActiveSlice, binding.SliceId);
-        Assert.AreEqual("required-state", binding.StateId);
-        Assert.AreEqual(new StateSliceBinding(optional.Id, optional.Id), optionalBinding);
     }
 
     [TestMethod]
@@ -120,7 +85,8 @@ public sealed partial class EnforcementEvaluatorTests
         var binding = StateAttribution.Authorize(input, "state-1");
         var laterBinding = StateAttribution.Authorize(input, "later-state");
 
-        Assert.AreEqual(snapshot.ActiveSlice, binding.SliceId);
+        Assert.AreEqual("later-state", snapshot.ActiveSlice);
+        Assert.AreEqual("state-1", binding.SliceId);
         Assert.AreEqual("state-1", binding.StateId);
         Assert.AreEqual(new StateSliceBinding("later-state", "later-state"), laterBinding);
     }
@@ -131,6 +97,7 @@ public sealed partial class EnforcementEvaluatorTests
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
         input.StatePlan!.States.Add(State("later-state"));
+        AttestState(input);
         input = input with
         {
             FindingLedger = new SemanticFindingLedger
@@ -145,8 +112,18 @@ public sealed partial class EnforcementEvaluatorTests
                         CompletionCondition = "Verify both mapped state assertions.",
                         CompletionAssertions =
                         [
-                            new FindingCompletionAssertion { StateId = "state-1", AssertionId = "main-name" },
-                            new FindingCompletionAssertion { StateId = "later-state", AssertionId = "later-name" }
+                            new FindingCompletionAssertion
+                            {
+                                StateId = "state-1",
+                                AssertionId =
+                                    SurfaceCheckIds.StructureMatch
+                            },
+                            new FindingCompletionAssertion
+                            {
+                                StateId = "later-state",
+                                AssertionId =
+                                    SurfaceCheckIds.StructureMatch
+                            }
                         ]
                     }
                 ]
@@ -190,14 +167,13 @@ public sealed partial class EnforcementEvaluatorTests
         if (malformed == "unknown-dependency") state.Dependencies.Add("unknown");
         input = input with { Progress = new WorkflowProgress
         {
-            PolicyFingerprint = "fixture", LastTargetFingerprint = input.TargetFingerprint,
+            LastTargetFingerprint = input.TargetFingerprint,
             ActiveStateId = state.Id, ActiveSliceId = state.Id
         } };
 
         if (malformed == "null-target")
             Assert.IsFalse(StateClosureProtocol.HasHistoricalParity(input.TargetRoot, state));
         Assert.ThrowsExactly<InvalidDataException>(() => StateAttribution.Authorize(input));
-        Assert.ThrowsExactly<InvalidDataException>(() => StateAttribution.PersistedFallback(input));
         var snapshot = EnforcementEvaluator.Evaluate(input with { Progress = null });
         Assert.AreEqual("blocked", snapshot.Gates.Single(gate => gate.Id == "state-plan").Status);
     }
@@ -300,7 +276,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsTrue(history.Slices.Single(item => item.SliceId == "initial-slice").Resolved);
         if (failure)
         {
-            Assert.AreEqual("category-selection", replayed.Frontier!.Id);
+            Assert.AreEqual("replay", replayed.Frontier!.Kind);
             Assert.AreEqual("category-slice", replayed.Frontier.SliceId);
         }
     }
@@ -436,20 +412,30 @@ public sealed partial class RunnerAcceptanceTests
             var next = JsonSerializer.Deserialize<MigrationState>(JsonSerializer.Serialize(first, EnforcementStore.JsonOptions),
                 EnforcementStore.JsonOptions)!;
             next.Id = "category-selection"; next.Slice = "category-slice"; next.Dependencies = ["initial-slice"];
-            next.ExpectedOutcome = "Current category selection remains observable.";
-            next.Assertions[0].SourceEvidence = ".migration-evidence/states/state-1/category-ui.json";
+            next.SourceDefinitions = ["CategoryPage.xaml"];
+            await File.WriteAllTextAsync(
+                fixture.Path("CategoryPage.xaml"),
+                """
+                <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />
+                """);
+            const string categoryTree =
+                ".migration-evidence/states/state-1/category-ui.json";
             plan.States.Add(next);
             await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
             await UwpEnforcementRunner.SealContractAsync(fixture.Root);
             await ObserveSourceAsync(fixture, plan);
-            await File.WriteAllTextAsync(fixture.Path(next.Assertions[0].SourceEvidence), ClosureTree);
-            next.Source.Status = "captured"; next.Source.Evidence = [next.Assertions[0].SourceEvidence];
+            await File.WriteAllTextAsync(
+                fixture.Path(categoryTree),
+                ClosureTree);
+            next.Source.Status = "captured";
+            next.Source.TreeEvidence = categoryTree;
+            next.Source.Evidence = [categoryTree];
             await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
             await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
             var probe = await new UwpEnforcementRunner(new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, "")),
                 windowOwnerResolver: TestWindowOwnerResolver.Shared).InvokeUiAsync(fixture.Root,
                     "winapp", ["inspect", "-w", "42", "--json"], [], "initial-state");
-            await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "initial-state", [probe.ArtifactPath]);
+            await UwpEnforcementRunner.RecordSurfaceAsync(fixture.Root, TestWindowOwnerResolver.Shared, "initial-state", [probe.ArtifactPath]);
             return fixture;
         }
         catch { fixture.Dispose(); throw; }

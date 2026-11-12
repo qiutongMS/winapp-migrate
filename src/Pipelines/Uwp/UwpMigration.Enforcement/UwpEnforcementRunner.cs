@@ -11,15 +11,6 @@ namespace UwpMigration.Enforcement;
 
 public sealed class UwpEnforcementRunner
 {
-    private static readonly HashSet<string> TerminalTodoStatuses =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            "verified",
-            "accepted",
-            "completed",
-            "resolved",
-            "done"
-        };
     private readonly IEnforcementProcessRunner _processRunner;
     private readonly TimeProvider _timeProvider;
     private readonly IWindowOwnerResolver _windowOwnerResolver;
@@ -34,22 +25,19 @@ public sealed class UwpEnforcementRunner
 
     public static Task<EnforcementSnapshot> AssessAsync(
         DirectoryInfo target,
-        int maximumSignatureAttempts = 2,
         CancellationToken cancellationToken = default) =>
-        AssessAsync(target, WindowsWindowOwnerResolver.Instance, maximumSignatureAttempts, cancellationToken);
+        AssessAsync(target, WindowsWindowOwnerResolver.Instance, cancellationToken);
 
     public static async Task<RequiredStateContractDocument> SealContractAsync(DirectoryInfo target,
-        bool extend = false, bool upgradePlan = false, CancellationToken cancellationToken = default)
+        bool extend = false, CancellationToken cancellationToken = default)
     {
         await using var enforcementLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken);
         var report = await MigrationReportStore.LoadAsync(Path.Combine(target.FullName, "migration-report.json"), cancellationToken);
         var (plan, error) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(target, report.Validation.StatePlan, cancellationToken);
-        if (plan is null) throw new InvalidDataException(error ?? "A state plan is required.");
-        if (plan.SchemaVersion == "1.0" && upgradePlan)
-            plan.SchemaVersion = StatePlanDocument.CurrentSchemaVersion;
+        if (plan is null) throw new InvalidDataException(error ?? "A surface plan is required.");
+        RequiredStateContracts.ValidateRequirements(plan);
+        SourceSurfaceInventory.Validate(target, report, plan);
         var document = await RequiredStateContracts.EstablishAsync(target, plan, extend, cancellationToken);
-        if (upgradePlan)
-            await EnforcementStore.WriteAtomicAsync(target, report.Validation.StatePlan, plan, cancellationToken);
         return document;
     }
 
@@ -68,7 +56,6 @@ public sealed class UwpEnforcementRunner
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
-            2,
             cancellationToken);
         await RequireNonterminalAsync(
             workspace.Target,
@@ -77,11 +64,11 @@ public sealed class UwpEnforcementRunner
         var plan = workspace.Input.StatePlan ??
             throw new InvalidDataException(
                 workspace.Input.StatePlanError ??
-                "A valid state plan is required.");
+                "A valid surface plan is required.");
         var state = plan.States.SingleOrDefault(
                 candidate => candidate.Id == stateId) ??
             throw new InvalidDataException(
-                $"Unknown planned state: {stateId}.");
+                $"Unknown planned surface: {stateId}.");
         var document = await SelectorBindingAmendments.RebindAsync(
             workspace.Target,
             state,
@@ -112,111 +99,27 @@ public sealed class UwpEnforcementRunner
 
     public static async Task<EnforcementSnapshot> AssessAsync(
         DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver,
-        int maximumSignatureAttempts = 2, CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default)
     {
         return await AssessCoreAsync(
             target,
-            maximumSignatureAttempts,
             TimeProvider.System,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
     }
 
-    public async Task<EnforcementSnapshot> WaitForTerminalAsync(
-        DirectoryInfo target,
-        int maximumSignatureAttempts = 2,
-        TimeSpan? timeout = null,
-        TimeSpan? pollInterval = null,
-        CancellationToken cancellationToken = default)
-    {
-        var interval = pollInterval ?? TimeSpan.FromMilliseconds(500);
-        if (interval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(pollInterval), "Poll interval must be positive.");
-        if (timeout is { } timeoutValue && timeoutValue <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be positive.");
-
-        var observationDeadline = timeout is null
-            ? (DateTimeOffset?)null
-            : _timeProvider.GetUtcNow() + timeout.Value;
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var now = _timeProvider.GetUtcNow();
-            if (observationDeadline is not null && now >= observationDeadline.Value)
-                throw new TimeoutException("Runner observation timed out before a terminal disposition was produced.");
-
-            var lockTimeout = observationDeadline is null
-                ? TimeSpan.FromSeconds(10)
-                : observationDeadline.Value - now;
-            using var observationTimeoutSource = observationDeadline is null
-                ? null
-                : new CancellationTokenSource(lockTimeout, _timeProvider);
-            using var assessmentSource = observationTimeoutSource is null
-                ? null
-                : CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken,
-                    observationTimeoutSource.Token);
-            var assessmentToken =
-                assessmentSource?.Token ?? cancellationToken;
-            EnforcementSnapshot snapshot;
-            try
-            {
-                snapshot = await AssessCoreAsync(
-                    target,
-                    maximumSignatureAttempts,
-                    _timeProvider,
-                    assessmentToken,
-                    lockTimeout, _windowOwnerResolver);
-            }
-            catch (OperationCanceledException exception) when (
-                observationTimeoutSource?.IsCancellationRequested == true &&
-                !cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException(
-                    "Runner observation timed out while assessing the enforcement state.",
-                    exception);
-            }
-            catch (EnforcementLockTimeoutException exception) when (
-                observationDeadline is not null)
-            {
-                throw new TimeoutException(
-                    "Runner observation timed out while waiting for the active enforcement operation.",
-                    exception);
-            }
-            catch (EnforcementLockTimeoutException)
-            {
-                continue;
-            }
-            now = _timeProvider.GetUtcNow();
-            if (observationDeadline is not null && now >= observationDeadline.Value)
-                throw new TimeoutException("Runner observation timed out before a terminal disposition was produced.");
-            if (snapshot.Disposition?.Terminal == true)
-                return snapshot;
-
-            var delay = observationDeadline is null
-                ? interval
-                : TimeSpan.FromTicks(Math.Min(
-                    interval.Ticks,
-                    (observationDeadline.Value - now).Ticks));
-            await Task.Delay(delay, _timeProvider, cancellationToken);
-        }
-    }
-
     private static async Task<EnforcementSnapshot> AssessCoreAsync(
         DirectoryInfo target,
-        int maximumSignatureAttempts,
         TimeProvider timeProvider,
         CancellationToken cancellationToken,
-        TimeSpan? lockTimeout = null, IWindowOwnerResolver? windowOwnerResolver = null)
+        IWindowOwnerResolver? windowOwnerResolver = null)
     {
         var lockTarget = ResolveLockTarget(target);
         await using var enforcementLock =
             await EnforcementStore.AcquireLockAsync(
                 lockTarget,
-                lockTimeout,
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts,
             cancellationToken,
             timeProvider, windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
@@ -230,14 +133,16 @@ public sealed class UwpEnforcementRunner
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        using var timing = EnforcementTrace.Measure("attest");
         var lockTarget = ResolveLockTarget(target);
+        EnforcementTrace.Mark("lock.wait");
         await using var enforcementLock =
             await EnforcementStore.AcquireLockAsync(
                 lockTarget,
                 cancellationToken);
+        EnforcementTrace.Mark("lock.acquired");
         var workspace = await LoadWorkspaceAsync(
             target,
-            options.MaximumSignatureAttempts,
             cancellationToken, _timeProvider, _windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         if (WorkflowDispositions.RejectTerminal(snapshot, out _))
@@ -269,7 +174,6 @@ public sealed class UwpEnforcementRunner
             await RunBuildAsync(workspace, snapshot, options, cancellationToken);
             workspace = await LoadWorkspaceAsync(
                 target,
-                options.MaximumSignatureAttempts,
                 cancellationToken, _timeProvider, _windowOwnerResolver);
             snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         }
@@ -277,7 +181,7 @@ public sealed class UwpEnforcementRunner
         var shouldReplay =
             snapshot.Frontier?.Kind == "replay" ||
             options.ForceReplay &&
-            snapshot.Frontier?.Kind is null or "state" or "revalidate" or "finding" or "report-sync" &&
+            snapshot.Frontier?.Kind is null or "state" or "finding" or "report-sync" or "report-closure" &&
             snapshot.Gates.Any(gate =>
                 gate.Id == "fresh-build" &&
                 gate.Status == "passed");
@@ -292,7 +196,6 @@ public sealed class UwpEnforcementRunner
             await RunReplayAsync(workspace, snapshot, options, cancellationToken);
             workspace = await LoadWorkspaceAsync(
                 target,
-                options.MaximumSignatureAttempts,
                 cancellationToken, _timeProvider, _windowOwnerResolver);
             snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         }
@@ -301,31 +204,19 @@ public sealed class UwpEnforcementRunner
         return snapshot;
     }
 
-    public static async Task ConfigurePolicyAsync(
-        DirectoryInfo target,
-        EnforcementPolicy policy,
-        CancellationToken cancellationToken = default)
-    {
-        var lockTarget = ResolveLockTarget(target);
-        await using var enforcementLock =
-            await EnforcementStore.AcquireLockAsync(lockTarget, cancellationToken);
-        await WorkflowPersistence.ConfigureAsync(lockTarget, policy, cancellationToken);
-    }
-
     public static Task<EnforcementSnapshot> RecordFailureAsync(
         DirectoryInfo target,
         string kind,
         string signature,
         string? stateId,
         IReadOnlyList<string> evidence,
-        int maximumSignatureAttempts = 2,
         CancellationToken cancellationToken = default) =>
         RecordFailureAsync(target, WindowsWindowOwnerResolver.Instance, kind, signature, stateId, evidence,
-            maximumSignatureAttempts, cancellationToken);
+            cancellationToken);
 
     public static async Task<EnforcementSnapshot> RecordFailureAsync(
         DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver, string kind, string signature,
-        string? stateId, IReadOnlyList<string> evidence, int maximumSignatureAttempts = 2,
+        string? stateId, IReadOnlyList<string> evidence,
         CancellationToken cancellationToken = default)
     {
         if (kind is not ("build" or "runtime"))
@@ -354,7 +245,6 @@ public sealed class UwpEnforcementRunner
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         if (!string.IsNullOrWhiteSpace(workspace.Input.ArtifactError))
         {
@@ -366,7 +256,7 @@ public sealed class UwpEnforcementRunner
                  state.Id.Equals(stateId, StringComparison.Ordinal))))
         {
             throw new InvalidDataException(
-                $"Failure state ID is not present in the state plan: {stateId}");
+                $"Failure surface ID is not present in the surface plan: {stateId}");
         }
         foreach (var relativePath in evidence)
         {
@@ -421,7 +311,6 @@ public sealed class UwpEnforcementRunner
             cancellationToken);
         var updated = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
@@ -451,7 +340,7 @@ public sealed class UwpEnforcementRunner
             var binding = new StateSliceBinding(operation.StateId, operation.IntendedSliceId);
             StateAttribution.Validate(workspace.Input.StatePlan, binding);
             if (requestedState is not null && requestedState != binding.StateId)
-                throw new InvalidDataException("Caller --state differs from the evidence operation's immutable start intent.");
+                throw new InvalidDataException("Caller --surface differs from the evidence operation's immutable start intent.");
             return (binding, operation.Id);
         }
         return (StateAttribution.Authorize(workspace.Input, requestedState), null);
@@ -467,16 +356,15 @@ public sealed class UwpEnforcementRunner
         string hypothesis,
         string discriminatingTest,
         IReadOnlyList<string> evidence,
-        int maximumSignatureAttempts = 2,
         CancellationToken cancellationToken = default) =>
         RecordDiagnosisAsync(target, WindowsWindowOwnerResolver.Instance, signature, stateId, sourceLocations,
-            targetLocations, sourceInvariant, hypothesis, discriminatingTest, evidence, maximumSignatureAttempts, cancellationToken);
+            targetLocations, sourceInvariant, hypothesis, discriminatingTest, evidence, cancellationToken);
 
     public static async Task<EnforcementSnapshot> RecordDiagnosisAsync(
         DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver, string signature, string? stateId,
         IReadOnlyList<string> sourceLocations, IReadOnlyList<string> targetLocations, string sourceInvariant,
         string hypothesis, string discriminatingTest, IReadOnlyList<string> evidence,
-        int maximumSignatureAttempts = 2, CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(signature))
         {
@@ -511,7 +399,6 @@ public sealed class UwpEnforcementRunner
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         await RequireNonterminalAsync(workspace.Target, EnforcementEvaluator.Evaluate(workspace.Input), cancellationToken);
         if (!string.IsNullOrWhiteSpace(workspace.Input.ArtifactError))
@@ -537,7 +424,7 @@ public sealed class UwpEnforcementRunner
                 $"No recorded runtime failure matches signature {normalizedSignature}" +
                 (string.IsNullOrWhiteSpace(stateId)
                     ? "."
-                    : $" and state {stateId}."));
+                    : $" and surface {stateId}."));
         if (attempt.Diagnosis is not null)
             throw new InvalidDataException("A completed diagnosis for this failure tuple cannot be overwritten or recorded again.");
 
@@ -590,7 +477,6 @@ public sealed class UwpEnforcementRunner
             cancellationToken);
         var updated = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
@@ -610,7 +496,6 @@ public sealed class UwpEnforcementRunner
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
-            options.MaximumSignatureAttempts,
             cancellationToken, _timeProvider, _windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
@@ -621,7 +506,7 @@ public sealed class UwpEnforcementRunner
             throw new InvalidDataException(
                 "A fresh runner-attested build is required before runtime diagnosis.");
         }
-        if (snapshot.Frontier?.Kind is "evidence" or "required-blocked" or "change-required")
+        if (snapshot.Frontier?.Kind == "evidence")
             throw new InvalidDataException(snapshot.Frontier.Reason);
         var failure = workspace.Attempts.Attempts
             .Where(attempt => attempt.Kind == "runtime" && attempt.TargetFingerprint == workspace.Fingerprint)
@@ -687,7 +572,7 @@ public sealed class UwpEnforcementRunner
         await AuthenticateOperationAsync(workspace, snapshot, attestation.Id, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
         if (result.ExitCode != 0 && failure is null)
             await RecordAttemptAsync(workspace, "runtime", attestation.Signature!, snapshot.Workflow.Operations[^1], [stdout, stderr], cancellationToken);
-        var updated = await LoadWorkspaceAsync(target, options.MaximumSignatureAttempts, cancellationToken, _timeProvider, _windowOwnerResolver);
+        var updated = await LoadWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
         await WriteSnapshotAsync(updated.Target, EnforcementEvaluator.Evaluate(updated.Input), cancellationToken);
         return attestation;
     }
@@ -729,7 +614,6 @@ public sealed class UwpEnforcementRunner
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts: 2,
             cancellationToken, _timeProvider, _windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
@@ -738,15 +622,15 @@ public sealed class UwpEnforcementRunner
         if (replayGate.Status != "passed")
         {
             throw new InvalidDataException(
-                "A fresh runner-attested canonical replay is required before target UI automation.");
+                $"A fresh runner-attested canonical replay is required before target UI automation. {replayGate.Reason}");
         }
         MigrationState? plannedState = null;
         if (stateId is not null)
         {
             if (snapshot.Gates.First(gate => gate.Id == "state-plan").Status != "passed")
-                throw new InvalidDataException("A valid state plan is required for state-bound capture.");
+                throw new InvalidDataException("A valid surface plan is required for surface-bound capture.");
             plannedState = workspace.Input.StatePlan!.States.SingleOrDefault(state => state.Id == stateId) ??
-                throw new InvalidDataException($"Unknown planned state: {stateId}.");
+                throw new InvalidDataException($"Unknown planned surface: {stateId}.");
         }
         var stateContractFingerprint = plannedState is null
             ? null : StateClosureProtocol.ContractFingerprint(workspace.Target, plannedState);
@@ -914,6 +798,15 @@ public sealed class UwpEnforcementRunner
         StateClosureSeal.Sign(operation);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, EnforcementStore.ProgressPath, snapshot.Workflow, cancellationToken);
         WorkflowOperationAuthentication.CommitHead(workspace.Target, previousHead, snapshot.Workflow.Operations);
+        if (arguments[0] == "inspect" && arguments.Contains("--json") && plannedState is not null &&
+            windowHandle is not null && result.ExitCode == 0 && !result.InfrastructureFailure)
+        {
+            await SurfaceComparisonArtifacts.CaptureAsync(
+                workspace.Target, _processRunner, _windowOwnerResolver, winAppExecutable,
+                windowHandle.Value, directory, stdout, "target", stateId,
+                workspace.Fingerprint, snapshot.Replay?.Id, cancellationToken);
+            await SurfaceComparisonArtifacts.WriteIndexAsync(workspace.Target, snapshot, cancellationToken);
+        }
         return probe;
     }
 
@@ -960,38 +853,28 @@ public sealed class UwpEnforcementRunner
         return true;
     }
 
-    public static Task<EnforcementSnapshot> RecordStateAsync(
+    public static Task<EnforcementSnapshot> RecordSurfaceAsync(
         DirectoryInfo target, string stateId, IReadOnlyList<string> probes,
         CancellationToken cancellationToken = default) =>
-        RecordStateAsync(target, WindowsWindowOwnerResolver.Instance, stateId, probes, cancellationToken);
+        RecordSurfaceAsync(target, WindowsWindowOwnerResolver.Instance, stateId, probes, cancellationToken);
 
-    public static async Task<EnforcementSnapshot> RecordStateAsync(
+    public static async Task<EnforcementSnapshot> RecordSurfaceAsync(
         DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver, string stateId, IReadOnlyList<string> probes,
         CancellationToken cancellationToken = default)
     {
         await using var enforcementLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken);
-        var workspace = await LoadWorkspaceAsync(target, 2, cancellationToken, windowOwnerResolver: windowOwnerResolver);
+        var workspace = await LoadWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
         if (snapshot.Gates.First(gate => gate.Id == "state-plan").Status != "passed" ||
             snapshot.Gates.First(gate => gate.Id == "canonical-replay").Status != "passed")
-            throw new InvalidDataException("A valid state plan and fresh canonical replay are required before recording state closure.");
+            throw new InvalidDataException("A valid surface plan and fresh canonical replay are required before recording surface closure.");
         var plan = workspace.Input.StatePlan!;
         var state = plan.States.SingleOrDefault(candidate => candidate.Id == stateId) ??
-            throw new InvalidDataException($"Unknown planned state: {stateId}.");
-        var attestation = StateClosureProtocol.Derive(
-            workspace.Target, state, snapshot.Replay!, probes, workspace.Input.GeneratedAt, windowOwnerResolver);
-        StateClosureSeal.Sign(attestation);
-        var path = StateClosureProtocol.AttestationPath(state.Id);
-        await EnforcementStore.WriteAtomicAsync(workspace.Target, path, attestation, cancellationToken);
-        var parityVerified = attestation.VerificationLevel == StateVerificationLevel.ParityVerified;
-        state.Target.Status = parityVerified ? "passed" : "unverified";
-        state.Target.VerificationLevel = attestation.VerificationLevel;
-        state.Target.Reason = parityVerified ? null : string.Join(" ", attestation.Issues);
-        state.Target.Attestation = path;
-        state.Target.Evidence = attestation.Evidence;
-        state.Comparison.Status = parityVerified ? "verified" : "unverified";
-        state.Comparison.Reason = state.Target.Reason;
+            throw new InvalidDataException($"Unknown planned surface: {stateId}.");
+        await StateClosureProtocol.RecordAsync(
+            workspace.Target, state, snapshot.Replay!, probes, workspace.Input.GeneratedAt,
+            windowOwnerResolver, cancellationToken);
         var report = await MigrationReportStore.LoadAsync(workspace.ReportPath, cancellationToken);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, report.Validation.StatePlan, plan, cancellationToken);
         if (workspace.Input.FindingLedger is
@@ -1008,7 +891,7 @@ public sealed class UwpEnforcementRunner
             }
             await EnforcementStore.WriteAtomicAsync(workspace.Target, EnforcementStore.FindingLedgerPath, findings, cancellationToken);
         }
-        var updated = await LoadWorkspaceAsync(target, 2, cancellationToken, windowOwnerResolver: windowOwnerResolver);
+        var updated = await LoadWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var recorded = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, recorded, cancellationToken);
         return recorded;
@@ -1016,13 +899,12 @@ public sealed class UwpEnforcementRunner
 
     public static Task<EnforcementSnapshot> SynchronizeReportAsync(
         DirectoryInfo target,
-        int maximumSignatureAttempts = 2,
         CancellationToken cancellationToken = default) =>
-        SynchronizeReportAsync(target, WindowsWindowOwnerResolver.Instance, maximumSignatureAttempts, cancellationToken);
+        SynchronizeReportAsync(target, WindowsWindowOwnerResolver.Instance, cancellationToken);
 
     public static async Task<EnforcementSnapshot> SynchronizeReportAsync(
         DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver,
-        int maximumSignatureAttempts = 2, CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default)
     {
         var lockTarget = ResolveLockTarget(target);
         await using var enforcementLock =
@@ -1031,14 +913,13 @@ public sealed class UwpEnforcementRunner
                 cancellationToken);
         var workspace = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         if (workspace.Input.StatePlan is null ||
             workspace.Input.StatePlanError is not null)
         {
             throw new InvalidDataException(
                 workspace.Input.StatePlanError ??
-                "A valid state plan is required before synchronizing the report.");
+                "A valid surface plan is required before synchronizing the report.");
         }
         var current = EnforcementEvaluator.Evaluate(workspace.Input);
         await RequireNonterminalAsync(workspace.Target, current, cancellationToken);
@@ -1054,7 +935,7 @@ public sealed class UwpEnforcementRunner
             state.Target.Status == "passed" || state.Comparison.Status == "verified"))
         {
             if (current.Gates.First(gate => gate.Id == "canonical-replay").Status != "passed")
-                throw new InvalidDataException("Successful state summaries require a fresh canonical replay and current state closure attestations.");
+                throw new InvalidDataException("Successful surface summaries require a fresh canonical replay and current surface closure attestations.");
             if (!StateClosureProtocol.Verify(workspace.Target, state, workspace.Input.Replay, workspace.Input.GeneratedAt, out var reason, windowOwnerResolver))
                 throw new InvalidDataException(reason);
         }
@@ -1101,14 +982,8 @@ public sealed class UwpEnforcementRunner
             workspace.ReportPath,
             report,
             cancellationToken);
-        await TodoExecutionService.RecordVerifiedTodosUnlockedAsync(
-            workspace.Target,
-            report,
-            cancellationToken);
-
         var updated = await LoadWorkspaceAsync(
             target,
-            maximumSignatureAttempts,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
@@ -1139,6 +1014,7 @@ public sealed class UwpEnforcementRunner
                 requiredStateIds.Contains(state.Id, StringComparer.Ordinal)).ToArray();
             var projectChecksPass =
                 TodoCompletionContract.ProjectClosureChecksPass(
+                    workspace.Target,
                     todo,
                     report,
                     workspace.Build,
@@ -1147,6 +1023,7 @@ public sealed class UwpEnforcementRunner
                 TodoCompletionContract.StateChecksAreBound(todo, plan);
             if (projectChecksPass &&
                 stateChecksBound &&
+                todo.Guidance?.CompletionChecks.All(TodoCompletionContract.IsMachineCheck) == true &&
                 ((requiredStateIds.Count == 0 &&
                     TodoCompletionContract.UsesProjectClosureOnly(todo)) ||
                 requiredStateIds.Count > 0 &&
@@ -1183,6 +1060,11 @@ public sealed class UwpEnforcementRunner
 
         foreach (var state in plan.States)
         {
+            if (state.Disposition == "excluded")
+            {
+                proofs.Add(state.Id, null);
+                continue;
+            }
             ValidateCanonicalStateId(state.Id);
             ValidateDeclaredEvidencePaths(target, state.Id, "source", state.Source.Evidence);
             ValidateDeclaredEvidencePaths(target, state.Id, "target", state.Target.Evidence);
@@ -1196,63 +1078,36 @@ public sealed class UwpEnforcementRunner
 
         foreach (var state in plan.States)
         {
+            if (state.Disposition == "excluded")
+                continue;
             var proof = proofs[state.Id];
-            var nonvisual = proof?.VerificationLevel == StateVerificationLevel.ParityVerified;
             if (state.Source.Status == "captured")
             {
-                var sourceEvidence = await SelectCanonicalEvidenceAsync(
-                    target,
-                    state.Id,
-                    "source",
-                    state.Source.Evidence,
-                    nonvisual, cancellationToken);
-                if (sourceEvidence.ScreenshotPath is not null)
-                    copies.Add(new CanonicalEvidenceCopy(
-                        sourceEvidence.ScreenshotPath,
-                        ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png"),
-                        ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, sourceEvidence.ScreenshotPath)));
-                else if (nonvisual)
-                    removals.Add(ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png"));
+                if (string.IsNullOrWhiteSpace(state.Source.TreeEvidence))
+                    throw new InvalidDataException(
+                        $"Surface {state.Id} source observation does not identify its UIA tree.");
                 copies.Add(new CanonicalEvidenceCopy(
-                    sourceEvidence.TreePath,
+                    ResolveDeclaredEvidence(target, state.Id, "source", state.Source.TreeEvidence),
                     ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json"),
-                    ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, sourceEvidence.TreePath)));
+                    ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, state.Source.TreeEvidence)));
             }
             else
             {
-                removals.Add(ResolveCanonicalDestination(target, sourceRoot, state.Id, ".png"));
                 removals.Add(ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json"));
             }
 
             if (state.Target.Status == "passed")
             {
-                var targetEvidence = await SelectCanonicalEvidenceAsync(
-                    target,
-                    state.Id,
-                    "target",
-                    state.Target.Evidence,
-                    nonvisual, cancellationToken);
-                if (targetEvidence.ScreenshotPath is not null)
-                    copies.Add(new CanonicalEvidenceCopy(
-                        targetEvidence.ScreenshotPath,
-                        ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"),
-                        ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, targetEvidence.ScreenshotPath)));
-                else if (nonvisual)
-                    removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"));
+                if (string.IsNullOrWhiteSpace(state.Target.TreeEvidence))
+                    throw new InvalidDataException(
+                        $"Surface {state.Id} target observation does not identify its UIA tree.");
                 copies.Add(new CanonicalEvidenceCopy(
-                    targetEvidence.TreePath,
+                    ResolveDeclaredEvidence(target, state.Id, "target", state.Target.TreeEvidence),
                     ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"),
-                    ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, targetEvidence.TreePath)));
+                    ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, state.Target.TreeEvidence)));
             }
             else
             {
-                RejectUnclassifiedPngWithoutNonvisualAttestation(
-                    target,
-                    state.Id,
-                    state.Target.Evidence,
-                    nonvisual,
-                    cancellationToken);
-                removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, ".png"));
                 removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"));
             }
         }
@@ -1270,36 +1125,25 @@ public sealed class UwpEnforcementRunner
         }
     }
 
-    private static void RejectUnclassifiedPngWithoutNonvisualAttestation(
+    private static string ResolveDeclaredEvidence(
         DirectoryInfo target,
         string stateId,
-        IEnumerable<string> evidencePaths,
-        bool nonvisual,
-        CancellationToken cancellationToken)
+        string side,
+        string relativePath)
     {
-        if (nonvisual)
-            return;
-
-        foreach (var relativePath in evidencePaths.Where(path =>
-            Path.GetExtension(path).Equals(".png", StringComparison.OrdinalIgnoreCase)))
+        if (!EnforcementStore.TryResolveContainedPath(
+                target,
+                relativePath,
+                out var fullPath,
+                out var error))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!EnforcementStore.TryResolveContainedPath(
-                    target,
-                    relativePath,
-                    out var fullPath,
-                    out var error))
-            {
-                throw new InvalidDataException(
-                    $"State {stateId} target evidence path '{relativePath}' is invalid: {error}");
-            }
-            if (PngEvidence.Classify(fullPath, cancellationToken) ==
-                PngInformation.ValidUnclassified)
-            {
-                throw new InvalidDataException(
-                    $"State {stateId} target evidence contains a valid-unclassified PNG screenshot that requires verified structured nonvisual assertions.");
-            }
+            throw new InvalidDataException(
+                $"Surface {stateId} {side} evidence path '{relativePath}' is invalid: {error}");
         }
+        if (!File.Exists(fullPath))
+            throw new InvalidDataException(
+                $"Surface {stateId} {side} evidence does not exist: {relativePath}");
+        return fullPath;
     }
 
     private static void ValidateDeclaredEvidencePaths(
@@ -1311,7 +1155,7 @@ public sealed class UwpEnforcementRunner
                 throw new InvalidDataException(error);
             if (!File.Exists(path))
                 throw new InvalidDataException(
-                    $"State {stateId} {side} evidence does not exist: {relativePath}");
+                    $"Surface {stateId} {side} evidence does not exist: {relativePath}");
         }
     }
 
@@ -1320,6 +1164,8 @@ public sealed class UwpEnforcementRunner
         MigrationReport report,
         StatePlanDocument? plan,
         string? statePlanError,
+        BuildAttestation? build,
+        string targetFingerprint,
         ReplayAttestation? replay,
         DateTimeOffset now,
         IWindowOwnerResolver windowOwnerResolver,
@@ -1328,7 +1174,7 @@ public sealed class UwpEnforcementRunner
         if (plan is null || !string.IsNullOrWhiteSpace(statePlanError))
         {
             return (false,
-                statePlanError ?? "A valid state plan is required to validate report closure.");
+                statePlanError ?? "A valid surface plan is required to validate report closure.");
         }
 
         var duplicate = report.Todos
@@ -1342,50 +1188,13 @@ public sealed class UwpEnforcementRunner
         }
 
         foreach (var todo in report.Todos.Where(todo =>
-            string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase) &&
-            !TerminalTodoStatuses.Contains(todo.Status)))
+            string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase)))
         {
-            var requiredStateIds = TodoCompletionContract.StateIds(todo);
-            if (requiredStateIds.Count == 0)
-            {
-                if (TodoCompletionContract.UsesProjectClosureOnly(todo))
-                {
-                    return (false,
-                        $"Required TODO {todo.Id} remains {todo.Status} and must be synchronized from project closure checks.");
-                }
-                return (false,
-                    $"Required TODO {todo.Id} remains {todo.Status} and has no state-backed completion check. " +
-                    "Define an exact completion check before canonical closure.");
-            }
+            if (!TodoCompletionContract.ProjectClosureChecksPass(target, todo, report, build, targetFingerprint))
+                return (false, $"Required TODO {todo.Id} has an unsatisfied current project completion check.");
             if (!TodoCompletionContract.StateChecksAreBound(todo, plan))
-            {
                 return (false,
-                    $"Required TODO {todo.Id} remains {todo.Status}; every state-backed completion check must name existing exact assertion IDs.");
-            }
-
-            var states = plan.States.Where(state =>
-                requiredStateIds.Contains(state.Id, StringComparer.Ordinal)).ToArray();
-            var missing = requiredStateIds
-                .Except(states.Select(state => state.Id), StringComparer.Ordinal)
-                .ToArray();
-            if (missing.Length > 0)
-            {
-                return (false,
-                    $"Required TODO {todo.Id} remains {todo.Status}; completion state(s) " +
-                    $"{string.Join(", ", missing)} are not declared in the state plan.");
-            }
-
-            var incomplete = states.Where(state => !StateIsVerified(state))
-                .Select(state => state.Id)
-                .ToArray();
-            if (incomplete.Length > 0)
-            {
-                return (false,
-                    $"Required TODO {todo.Id} remains {todo.Status}; mapped state(s) {string.Join(", ", incomplete)} are not fully verified.");
-            }
-
-            return (false,
-                $"Required TODO {todo.Id} remains {todo.Status} and must be synchronized to a terminal status.");
+                    $"Required TODO {todo.Id} must map to declared required surfaces with supported exact surface check IDs.");
         }
 
         try
@@ -1402,48 +1211,31 @@ public sealed class UwpEnforcementRunner
             foreach (var state in plan.States)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (state.Disposition == "excluded")
+                    continue;
                 ValidateCanonicalStateId(state.Id);
-                var sourceScreenshot = ResolveCanonicalDestination(
-                    target, sourceRoot, state.Id, ".png");
                 var sourceTree = ResolveCanonicalDestination(
                     target, sourceRoot, state.Id, "-ui.json");
-                var targetScreenshot = ResolveCanonicalDestination(
-                    target, targetRoot, state.Id, ".png");
                 var targetTree = ResolveCanonicalDestination(
                     target, targetRoot, state.Id, "-ui.json");
                 if (!StateClosureProtocol.VerifyEvidence(target, state, replay, now, out var proof, out var closureReason, windowOwnerResolver))
                     return (false, closureReason);
-                var nonvisual = true;
-                var selectedSource = await SelectCanonicalEvidenceAsync(target, state.Id, "source",
-                    state.Source.Evidence, nonvisual, cancellationToken);
-                var selectedTarget = await SelectCanonicalEvidenceAsync(target, state.Id, "target",
-                    state.Target.Evidence, nonvisual, cancellationToken);
-                if (!CanonicalMatches(target, sourceScreenshot, selectedSource.ScreenshotPath, proof.SourceEvidenceHashes) ||
-                    !CanonicalMatches(target, sourceTree, selectedSource.TreePath, proof.SourceEvidenceHashes) ||
-                    !CanonicalMatches(target, targetScreenshot, selectedTarget.ScreenshotPath, proof.TargetEvidenceHashes) ||
-                    !CanonicalMatches(target, targetTree, selectedTarget.TreePath, proof.TargetEvidenceHashes))
-                    return (false, $"Canonical evidence for state {state.Id} does not match the derived source/target evidence hashes (or contains an unbound screenshot).");
-                if ((!nonvisual || File.Exists(sourceScreenshot.FullPath)) &&
-                    !await IsUsablePngAsync(sourceScreenshot.FullPath, nonvisual, cancellationToken))
+                var selectedSource = ResolveDeclaredEvidence(
+                    target, state.Id, "source", state.Source.TreeEvidence!);
+                var selectedTarget = ResolveDeclaredEvidence(
+                    target, state.Id, "target", state.Target.TreeEvidence!);
+                if (!CanonicalMatches(target, sourceTree, selectedSource, proof.SourceEvidenceHashes) ||
+                    !CanonicalMatches(target, targetTree, selectedTarget, proof.TargetEvidenceHashes))
+                    return (false, $"Canonical UIA tree evidence for surface {state.Id} does not match the derived source/target evidence hashes.");
+                if (!SurfaceTreeComparison.IsTree(target, sourceTree.RelativePath, out var sourceReason))
                 {
                     return (false,
-                        $"Canonical source screenshot is missing or invalid for state {state.Id}: {sourceScreenshot.RelativePath}.");
+                        $"Canonical source UIA tree is missing or invalid for surface {state.Id}: {sourceReason}");
                 }
-                if (!await IsValidJsonTreeAsync(sourceTree.FullPath, nonvisual, cancellationToken))
+                if (!SurfaceTreeComparison.IsTree(target, targetTree.RelativePath, out var targetReason))
                 {
                     return (false,
-                        $"Canonical source UI tree is missing or invalid for state {state.Id}: {sourceTree.RelativePath}.");
-                }
-                if ((!nonvisual || File.Exists(targetScreenshot.FullPath)) &&
-                    !await IsUsablePngAsync(targetScreenshot.FullPath, nonvisual, cancellationToken))
-                {
-                    return (false,
-                        $"Canonical target screenshot is missing or invalid for state {state.Id}: {targetScreenshot.RelativePath}.");
-                }
-                if (!await IsValidJsonTreeAsync(targetTree.FullPath, nonvisual, cancellationToken))
-                {
-                    return (false,
-                        $"Canonical target UI tree is missing or invalid for state {state.Id}: {targetTree.RelativePath}.");
+                        $"Canonical target UIA tree is missing or invalid for surface {state.Id}: {targetReason}");
                 }
             }
         }
@@ -1453,20 +1245,31 @@ public sealed class UwpEnforcementRunner
         }
 
         return (true,
-            $"All {plan.States.Count} state(s) have canonical source and target evidence, and all required TODOs are terminal.");
+            $"All required UI surfaces have canonical source and target trees, and all required TODOs are terminal.");
     }
 
     private static string ExpectedEvidenceHash(DirectoryInfo target, IReadOnlyList<StateEvidenceHash>? manifest, string sourcePath)
     {
+        var relativePath = Path.IsPathRooted(sourcePath)
+            ? Path.GetRelativePath(target.FullName, sourcePath)
+            : sourcePath;
         if (manifest is null)
-            return StateClosureProtocol.FileHash(target, Path.GetRelativePath(target.FullName, sourcePath));
+            return StateClosureProtocol.FileHash(target, relativePath);
+        if (!EnforcementStore.TryResolveContainedPath(
+                target,
+                relativePath,
+                out var selectedPath,
+                out var error))
+        {
+            throw new InvalidDataException(error);
+        }
         foreach (var entry in manifest)
         {
             if (EnforcementStore.TryResolveContainedPath(target, entry.Path, out var path, out _) &&
-                path.Equals(sourcePath, StringComparison.OrdinalIgnoreCase))
+                path.Equals(selectedPath, StringComparison.OrdinalIgnoreCase))
                 return entry.Sha256;
         }
-        throw new InvalidDataException("Selected canonical evidence is absent from the re-derived state evidence manifest.");
+        throw new InvalidDataException("Selected canonical evidence is absent from the re-derived surface evidence manifest.");
     }
 
     private static bool CanonicalMatches(DirectoryInfo target, CanonicalEvidenceDestination destination,
@@ -1516,7 +1319,7 @@ public sealed class UwpEnforcementRunner
         if (duplicate is not null)
         {
             throw new InvalidDataException(
-                $"State IDs must also be unique as Windows file names: {duplicate.Key}.");
+                $"Surface IDs must also be unique as Windows file names: {duplicate.Key}.");
         }
     }
 
@@ -1535,7 +1338,7 @@ public sealed class UwpEnforcementRunner
                 out var error))
         {
             throw new InvalidDataException(
-                $"Canonical evidence path for state {stateId} is invalid: {error}");
+                $"Canonical evidence path for surface {stateId} is invalid: {error}");
         }
         var rootPrefix = root.FullPath.TrimEnd(
             Path.DirectorySeparatorChar,
@@ -1543,147 +1346,11 @@ public sealed class UwpEnforcementRunner
         if (!fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
-                $"Canonical evidence for state {stateId} must remain beneath the declared evidence root.");
+                $"Canonical evidence for surface {stateId} must remain beneath the declared evidence root.");
         }
 
         return new CanonicalEvidenceDestination(relativePath, fullPath);
     }
-
-    private static async Task<SelectedCanonicalEvidence> SelectCanonicalEvidenceAsync(
-        DirectoryInfo target,
-        string stateId,
-        string side,
-        IEnumerable<string>? evidencePaths,
-        bool nonvisual,
-        CancellationToken cancellationToken)
-    {
-        var candidates = new List<(string RelativePath, string FullPath)>();
-        foreach (var relativePath in evidencePaths ?? [])
-        {
-            if (!EnforcementStore.TryResolveContainedPath(
-                    target,
-                    relativePath,
-                    out var fullPath,
-                    out var error))
-            {
-                throw new InvalidDataException(
-                    $"State {stateId} {side} evidence path '{relativePath}' is invalid: {error}");
-            }
-            if (!File.Exists(fullPath))
-            {
-                throw new InvalidDataException(
-                    $"State {stateId} {side} evidence file does not exist: {relativePath}");
-            }
-            candidates.Add((relativePath, fullPath));
-        }
-        string? screenshot = null;
-        foreach (var candidate in candidates.AsEnumerable().Reverse().Where(candidate =>
-            Path.GetExtension(candidate.RelativePath)
-                .Equals(".png", StringComparison.OrdinalIgnoreCase)))
-        {
-            if (await IsUsablePngAsync(candidate.FullPath, nonvisual, cancellationToken))
-            {
-                screenshot = candidate.FullPath;
-                break;
-            }
-        }
-        if (screenshot is null && (!nonvisual || candidates.Any(candidate =>
-            Path.GetExtension(candidate.RelativePath).Equals(".png", StringComparison.OrdinalIgnoreCase))))
-        {
-            throw new InvalidDataException(
-                $"State {stateId} {side} evidence does not contain a usable PNG screenshot (low-information or valid-unclassified images require verified structured nonvisual assertions).");
-        }
-
-        string? tree = null;
-        foreach (var candidate in candidates.AsEnumerable().Reverse())
-        {
-            if (await IsValidJsonTreeAsync(candidate.FullPath, nonvisual, cancellationToken))
-            {
-                tree = candidate.FullPath;
-                break;
-            }
-        }
-        if (tree is null)
-        {
-            throw new InvalidDataException(
-                $"State {stateId} {side} evidence does not contain a parseable JSON UI tree or verified property observation.");
-        }
-
-        return new SelectedCanonicalEvidence(screenshot, tree);
-    }
-
-    private static Task<bool> IsUsablePngAsync(
-        string path,
-        bool allowSupplemental,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var information = PngEvidence.Classify(path, cancellationToken);
-        return Task.FromResult(information == PngInformation.Informative ||
-            allowSupplemental && information is PngInformation.LowInformation or PngInformation.ValidUnclassified);
-    }
-
-    private static async Task<bool> IsValidJsonTreeAsync(
-        string path,
-        bool allowPropertyObservation,
-        CancellationToken cancellationToken)
-    {
-        if (!File.Exists(path))
-        {
-            return false;
-        }
-        try
-        {
-            await using var stream = new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            using var document = await JsonDocument.ParseAsync(
-                stream,
-                new JsonDocumentOptions { AllowDuplicateProperties = false },
-                cancellationToken: cancellationToken);
-            return ContainsUiTree(document.RootElement) ||
-                allowPropertyObservation && UiAssertionProtocol.IsPropertyObservation(document.RootElement);
-        }
-        catch (Exception exception) when (
-            exception is JsonException or IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
-
-    private static bool ContainsUiTree(JsonElement root)
-    {
-        if (root.ValueKind == JsonValueKind.Object)
-        {
-            if (root.TryGetProperty("windows", out var windows) &&
-                windows.ValueKind == JsonValueKind.Array &&
-                windows.EnumerateArray().Any(window =>
-                    window.ValueKind == JsonValueKind.Object &&
-                    window.TryGetProperty("elements", out var elements) &&
-                    IsNonEmptyElementArray(elements)))
-            {
-                return true;
-            }
-
-            return root.TryGetProperty("elements", out var rootElements) &&
-                IsNonEmptyElementArray(rootElements);
-        }
-
-        return root.ValueKind == JsonValueKind.Array &&
-            IsNonEmptyElementArray(root);
-    }
-
-    private static bool IsNonEmptyElementArray(JsonElement elements) =>
-        elements.ValueKind == JsonValueKind.Array &&
-        elements.EnumerateArray().Any(element =>
-            element.ValueKind == JsonValueKind.Object &&
-            (element.TryGetProperty("type", out _) ||
-             element.TryGetProperty("controlType", out _) ||
-             element.TryGetProperty("className", out _)));
 
     private static async Task WriteCanonicalEvidenceAsync(
         DirectoryInfo target,
@@ -1739,14 +1406,9 @@ public sealed class UwpEnforcementRunner
             stateId.Contains('\\'))
         {
             throw new InvalidDataException(
-                $"State ID '{stateId}' cannot be used as a canonical evidence file name.");
+                $"Surface ID '{stateId}' cannot be used as a canonical evidence file name.");
         }
     }
-
-    private static bool StateIsVerified(MigrationState state) =>
-        state.Source.Status == "captured" &&
-        state.Target.Status == "passed" &&
-        state.Comparison.Status == "verified";
 
     private sealed record CanonicalEvidenceRoot(
         string RelativePath,
@@ -1755,10 +1417,6 @@ public sealed class UwpEnforcementRunner
     private sealed record CanonicalEvidenceDestination(
         string RelativePath,
         string FullPath);
-
-    private sealed record SelectedCanonicalEvidence(
-        string? ScreenshotPath,
-        string TreePath);
 
     private sealed record CanonicalEvidenceCopy(
         string SourcePath,
@@ -1771,6 +1429,7 @@ public sealed class UwpEnforcementRunner
         UwpEnforcementOptions options,
         CancellationToken cancellationToken)
     {
+        using var timing = EnforcementTrace.Measure("build");
         var intended = snapshot.Workflow!.Operations[^1];
         var id = CreateId("build");
         var directory = $"{EnforcementStore.EnforcementDirectory}/builds/{id}";
@@ -1839,6 +1498,7 @@ public sealed class UwpEnforcementRunner
             attestation,
             cancellationToken);
         await AuthenticateOperationAsync(workspace, snapshot, attestation.Id, EnforcementStore.BuildAttestationPath, cancellationToken);
+        EnforcementTrace.Mark("build.attested", new { id, success });
         if (!success)
         {
             await RecordAttemptAsync(
@@ -1857,6 +1517,7 @@ public sealed class UwpEnforcementRunner
         UwpEnforcementOptions options,
         CancellationToken cancellationToken)
     {
+        using var timing = EnforcementTrace.Measure("replay");
         var intended = snapshot.Workflow!.Operations[^1];
         var id = CreateId("replay");
         var directory = $"{EnforcementStore.EnforcementDirectory}/replays/{id}";
@@ -1933,6 +1594,11 @@ public sealed class UwpEnforcementRunner
             attestation,
             cancellationToken);
         await AuthenticateOperationAsync(workspace, snapshot, attestation.Id, EnforcementStore.ReplayAttestationPath, cancellationToken);
+        EnforcementTrace.Mark("replay.attested", new
+        {
+            id, success, processId = attestation.ProcessId,
+            processStartedAt = attestation.ProcessStartedAt
+        });
         if (!success)
         {
             await RecordAttemptAsync(
@@ -1948,6 +1614,7 @@ public sealed class UwpEnforcementRunner
     private static async Task AuthenticateOperationAsync(Workspace workspace, EnforcementSnapshot snapshot,
         string id, string artifactPath, CancellationToken cancellationToken)
     {
+        using var timing = EnforcementTrace.Measure("operation.authenticate");
         var operation = snapshot.Workflow!.Operations[^1];
         var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
         operation.ArtifactId = id;
@@ -2052,17 +1719,11 @@ public sealed class UwpEnforcementRunner
 
     private static async Task<Workspace> LoadWorkspaceAsync(
         DirectoryInfo requestedTarget,
-        int maximumSignatureAttempts,
         CancellationToken cancellationToken,
         TimeProvider? timeProvider = null, IWindowOwnerResolver? windowOwnerResolver = null)
     {
+        using var timing = EnforcementTrace.Measure("workspace.load");
         using var verification = StateClosureSeal.BeginVerification();
-        if (maximumSignatureAttempts is < 1 or > 10)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(maximumSignatureAttempts),
-                "Maximum signature attempts must be between 1 and 10.");
-        }
         if (!MigrationPathResolver.TryCanonicalizeRoot(
                 requestedTarget.FullName,
                 out var targetRoot,
@@ -2104,9 +1765,9 @@ public sealed class UwpEnforcementRunner
         }
 
         var analyzer = AnalyzerReferenceInspector.Inspect(targetProject);
-        var fingerprint = await TargetFingerprint.ComputeAsync(
-            target,
-            cancellationToken);
+        string fingerprint;
+        using (EnforcementTrace.Measure("workspace.fingerprint"))
+            fingerprint = await TargetFingerprint.ComputeAsync(target, cancellationToken);
         var (statePlan, statePlanError) =
             await EnforcementStore.TryLoadAsync<StatePlanDocument>(
                 target,
@@ -2146,19 +1807,23 @@ public sealed class UwpEnforcementRunner
                 target, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
         var (persistedState, stateError) = await EnforcementStore.TryLoadAsync<EnforcementSnapshot>(
             target, EnforcementStore.StatePath, cancellationToken);
-        stateError ??= WorkflowDispositions.IsRetiredAuthorization(persistedState?.Disposition)
-            ? null
-            : WorkflowValidation.DispositionError(persistedState?.Disposition);
+        if (stateError is null && persistedState is not null &&
+            persistedState.SchemaVersion != EnforcementSnapshot.CurrentSchemaVersion)
+            stateError = $"Unsupported enforcement snapshot schema {persistedState.SchemaVersion}; only {EnforcementSnapshot.CurrentSchemaVersion} is supported.";
+        stateError ??= WorkflowValidation.DispositionError(persistedState?.Disposition);
         var artifactError = buildError ?? replayError ?? attemptsError ??
             diagnosticError ?? stateError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
             WorkflowValidation.DiagnosticError(diagnostic);
-        var policy = EnforcementPolicy.Balanced();
         var generatedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
         WorkflowProgress? progress = null;
         string? workflowError = null;
         if (artifactError is null)
-            (policy, progress, workflowError) = await WorkflowPersistence.LoadAsync(
-                target, build, replay, attempts, fingerprint, cancellationToken, generatedAt);
+            (progress, workflowError) = await WorkflowPersistence.LoadAsync(
+                target, build is not null || replay is not null || diagnostic is not null ||
+                    attempts.Attempts.Count > 0 ||
+                    persistedState?.Workflow is { OperationsStartedAt: not null } ||
+                    persistedState?.Workflow?.Operations.Count > 0,
+                generatedAt, cancellationToken);
         if (workflowError is null && progress is not null &&
             !WorkflowOperationAuthentication.VerifyAnchored(target, progress.Operations))
             workflowError = "Operation history does not match the independently committed local head (rollback, omission, or legacy unordered history).";
@@ -2175,21 +1840,29 @@ public sealed class UwpEnforcementRunner
             TargetObservations = report.Validation.TargetReplay.States.Select(state =>
                 new PipelineValidationState(state.Id, state.Status, state.Reason)).ToArray()
         };
+        var incompatibleUwpResiduals =
+            MechanicalMigration.Engine.FindIncompatibleUwpResiduals(targetRoot);
         var mechanicalReady =
             report.Status == "mechanical-migration-complete" &&
-            report.MechanicalVerification.Status == "passed";
+            report.MechanicalVerification.Status == "passed" &&
+            incompatibleUwpResiduals.Count == 0;
+        EnforcementTrace.Mark("workspace.report-closure.begin");
         var (reportClosureReady, reportClosureReason) =
             await AssessReportClosureAsync(
                 target,
                 report,
                 statePlan,
                 statePlanError,
+                build,
+                fingerprint,
                 replay,
                 generatedAt,
                 windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
                 cancellationToken);
+        EnforcementTrace.Mark("workspace.report-closure.end");
         var input = new EnforcementEvaluationInput
         {
+            HumanValidationItems = report.Todos.SelectMany(TodoExecutionService.OutOfScopeHandoffs).ToList(),
             RequiredContractHash = requiredHash,
             RequiredContractError = requiredError,
             WindowOwnerResolver = windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
@@ -2198,7 +1871,9 @@ public sealed class UwpEnforcementRunner
             MechanicalReady = mechanicalReady,
             MechanicalReason = mechanicalReady
                 ? "Mechanical verification passed."
-                : $"Mechanical status is report={report.Status}, verification={report.MechanicalVerification.Status}.",
+                : incompatibleUwpResiduals.Count > 0
+                    ? $"Incompatible UWP residue in current target files: {string.Join(" ", incompatibleUwpResiduals.Take(5).Select(issue => $"{issue.RuleId} {issue.Location.Path}:{issue.Location.Line}: {issue.Reason} {issue.RequiredResolution}"))} Run 'winapp-migrate uwp verify' for the current report and repair TODO."
+                    : $"Mechanical status is report={report.Status}, verification={report.MechanicalVerification.Status}.",
             AnalyzerReferencePresent = analyzer.Present,
             AnalyzerPrivateAssets = analyzer.PrivateAssets,
             StatePlan = statePlan,
@@ -2210,17 +1885,14 @@ public sealed class UwpEnforcementRunner
             Replay = replay,
             Diagnostic = diagnostic,
             Attempts = attempts,
-            Policy = policy,
             Progress = progress,
             PersistedDisposition = persistedState?.Disposition,
             ReportValidation = summary,
             ReportClosureReady = reportClosureReady,
             ReportClosureReason = reportClosureReason,
-            MaximumSignatureAttempts = maximumSignatureAttempts,
             GeneratedAt = generatedAt
         };
-        if ((persistedState?.Disposition is not { Terminal: true } ||
-             WorkflowDispositions.IsRetiredAuthorization(persistedState.Disposition)) && input.ArtifactError is null)
+        if (persistedState?.Disposition is not { Terminal: true } && input.ArtifactError is null)
         {
             try
             {
@@ -2285,6 +1957,9 @@ public sealed class UwpEnforcementRunner
         EnforcementSnapshot snapshot,
         CancellationToken cancellationToken)
     {
+        using var timing = EnforcementTrace.Measure("snapshot.write");
+        if (snapshot.Gates.Any(gate => gate.Id == "enforcement-artifacts" && gate.Status != "passed"))
+            return;
         if (snapshot.Workflow is not null)
             await EnforcementStore.WriteAtomicAsync(
                 target, EnforcementStore.ProgressPath, snapshot.Workflow, cancellationToken);
@@ -2293,6 +1968,7 @@ public sealed class UwpEnforcementRunner
             EnforcementStore.StatePath,
             snapshot,
             cancellationToken);
+        await SurfaceComparisonArtifacts.WriteIndexAsync(target, snapshot, cancellationToken);
     }
 
     private static async Task RequireNonterminalAsync(
@@ -2340,11 +2016,7 @@ public sealed class UwpEnforcementRunner
         var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
         const string kind = "infrastructure-failure";
         WorkflowController.CloseActiveEpochs(progress, observedAt, $"terminal:{kind}");
-        snapshot.Budget = WorkflowBudgets.Evaluate(
-            workspace.Input.Policy, progress, unit, observedAt);
-        var budgetGate = snapshot.Gates.First(gate => gate.Id == "stage-budget");
-        budgetGate.Status = "passed";
-        budgetGate.Reason = snapshot.Budget.Reason;
+        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, unit, observedAt);
         snapshot.Disposition = new RunDisposition
         {
             Kind = kind,
@@ -2373,11 +2045,10 @@ public sealed class UwpEnforcementRunner
         var previousHead = WorkflowOperationAuthentication.ReadHead(workspace.Target);
         if (!WorkflowOperations.TryBegin(workspace.Input, snapshot, operation, evidence, signature, out var reason, intended))
         {
-            snapshot.Status = snapshot.Budget?.Decision == "continue-with-debt" ? "continue-with-debt" : "blocked";
+            snapshot.Status = "blocked";
             snapshot.Frontier = new EnforcementFrontier
             {
-                Kind = snapshot.Disposition?.Kind == "continue-with-debt"
-                    ? "continue-with-debt" : "evidence-required",
+                Kind = "evidence-required",
                 Reason = reason,
                 SliceId = snapshot.ActiveSlice,
                 StateIds = snapshot.ActiveStateIds

@@ -19,8 +19,7 @@ public enum WorkflowStage
 [JsonConverter(typeof(StateCriticalityConverter))]
 public enum StateCriticality
 {
-    Required,
-    Optional
+    Required
 }
 
 [JsonConverter(typeof(WorkflowOperationConverter))]
@@ -79,65 +78,6 @@ public sealed record OperationCounts
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record StageBudgetPolicy
-{
-    [JsonRequired, JsonPropertyName("softMinutes")]
-    public int SoftMinutes { get; set; }
-    [JsonRequired, JsonPropertyName("hardMinutes")]
-    public int HardMinutes { get; set; }
-    [JsonRequired, JsonPropertyName("operations")]
-    public OperationCounts Operations { get; set; } = new();
-}
-
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record EnforcementPolicy
-{
-    public const string CurrentSchemaVersion = "1.0";
-
-    [JsonRequired, JsonPropertyName("schemaVersion")]
-    public string SchemaVersion { get; set; } = CurrentSchemaVersion;
-    [JsonRequired, JsonPropertyName("totalHardMinutes")]
-    public int TotalHardMinutes { get; set; } = 150;
-    [JsonRequired, JsonPropertyName("extensionMinutes")]
-    public int ExtensionMinutes { get; set; } = 10;
-    [JsonRequired, JsonPropertyName("maximumProgressExtensionsPerUnit")]
-    public int MaximumProgressExtensionsPerUnit { get; set; } = 1;
-    [JsonRequired, JsonPropertyName("sourceOracle")]
-    public StageBudgetPolicy SourceOracle { get; set; } = DefaultStage(20, 30, new());
-    [JsonRequired, JsonPropertyName("mechanicalStabilization")]
-    public StageBudgetPolicy MechanicalStabilization { get; set; } = DefaultStage(15, 25,
-        new() { Builds = 3 });
-    [JsonRequired, JsonPropertyName("targetBootstrap")]
-    public StageBudgetPolicy TargetBootstrap { get; set; } = DefaultStage(10, 15,
-        new() { Replays = 2, DiagnosticRuns = 1, Hypotheses = 1 });
-    [JsonRequired, JsonPropertyName("semanticConvergence")]
-    public StageBudgetPolicy SemanticConvergence { get; set; } = DefaultStage(15, 25,
-        new() { Builds = 3, Replays = 2, DiagnosticRuns = 1, Hypotheses = 1, UiActions = 40 });
-    [JsonRequired, JsonPropertyName("closure")]
-    public StageBudgetPolicy Closure { get; set; } = DefaultStage(15, 25,
-        new() { Builds = 1, Replays = 1, UiActions = 10 });
-
-    public static EnforcementPolicy Balanced() => new();
-
-    public StageBudgetPolicy For(WorkflowStage stage) => stage switch
-    {
-        WorkflowStage.SourceOracle => SourceOracle,
-        WorkflowStage.MechanicalStabilization => MechanicalStabilization,
-        WorkflowStage.TargetBootstrap => TargetBootstrap,
-        WorkflowStage.SemanticConvergence => SemanticConvergence,
-        WorkflowStage.Closure => Closure,
-        _ => throw new ArgumentOutOfRangeException(nameof(stage))
-    };
-
-    private static StageBudgetPolicy DefaultStage(int soft, int hard, OperationCounts operations) => new()
-    {
-        SoftMinutes = soft,
-        HardMinutes = hard,
-        Operations = operations
-    };
-}
-
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowUnitProgress
 {
     [JsonPropertyName("accountId")]
@@ -149,12 +89,6 @@ public sealed record WorkflowUnitProgress
     public string? SliceId { get; set; }
     [JsonPropertyName("startedAt")]
     public DateTimeOffset? StartedAt { get; set; }
-    [JsonPropertyName("extensionGrantedAt")]
-    public DateTimeOffset? ExtensionGrantedAt { get; set; }
-    [JsonPropertyName("blockedAt")]
-    public DateTimeOffset? BlockedAt { get; set; }
-    [JsonPropertyName("blockedReason")]
-    public string? BlockedReason { get; set; }
     [JsonRequired, JsonPropertyName("operations")]
     public OperationCounts Operations { get; set; } = new();
     [JsonPropertyName("epochs")]
@@ -273,15 +207,6 @@ public sealed record WorkflowOperationRecord
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record WorkflowDebt
-{
-    [JsonRequired, JsonPropertyName("sliceId")]
-    public required string SliceId { get; init; }
-    [JsonRequired, JsonPropertyName("reason")]
-    public required string Reason { get; init; }
-}
-
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkflowProgress
 {
     [JsonPropertyName("activeStateId")]
@@ -290,8 +215,6 @@ public sealed record WorkflowProgress
 
     [JsonRequired, JsonPropertyName("schemaVersion")]
     public string SchemaVersion { get; set; } = CurrentSchemaVersion;
-    [JsonRequired, JsonPropertyName("policyFingerprint")]
-    public required string PolicyFingerprint { get; set; }
     [JsonRequired, JsonPropertyName("stage")]
     public WorkflowStage Stage { get; set; }
     [JsonPropertyName("activeSliceId")]
@@ -314,44 +237,27 @@ public sealed record WorkflowProgress
     public List<WorkflowProgressEvent> Events { get; set; } = [];
     [JsonRequired, JsonPropertyName("operations")]
     public List<WorkflowOperationRecord> Operations { get; set; } = [];
-    [JsonRequired, JsonPropertyName("debt")]
-    public List<WorkflowDebt> Debt { get; set; } = [];
     [JsonPropertyName("slices")]
     public List<WorkflowSliceProgress> Slices { get; set; } = [];
     [JsonPropertyName("disposition")]
     public RunDisposition? Disposition { get; set; }
 }
 
-public sealed class WorkflowBudgetSnapshot
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class WorkflowTelemetrySnapshot
 {
     [JsonPropertyName("stage")]
     public WorkflowStage Stage { get; init; }
     [JsonPropertyName("sliceId")]
     public string? SliceId { get; init; }
-    [JsonPropertyName("decision")]
-    public required string Decision { get; init; }
-    [JsonPropertyName("reason")]
-    public required string Reason { get; init; }
-    [JsonPropertyName("reasonCode")]
-    public string ReasonCode { get; init; } = "within-budget";
     [JsonPropertyName("elapsedMinutes")]
     public double ElapsedMinutes { get; init; }
     [JsonPropertyName("totalElapsedMinutes")]
     public double TotalElapsedMinutes { get; init; }
-    [JsonPropertyName("softDeadline")]
-    public DateTimeOffset? SoftDeadline { get; init; }
-    [JsonPropertyName("hardDeadline")]
-    public DateTimeOffset? HardDeadline { get; init; }
-    [JsonPropertyName("totalHardDeadline")]
-    public DateTimeOffset? TotalHardDeadline { get; init; }
-    [JsonPropertyName("extensionsUsed")]
-    public int ExtensionsUsed { get; init; }
     [JsonPropertyName("measuredProgress")]
     public bool MeasuredProgress { get; init; }
     [JsonPropertyName("operations")]
     public required OperationCounts Operations { get; init; }
-    [JsonPropertyName("operationCeilings")]
-    public required OperationCounts OperationCeilings { get; init; }
     [JsonPropertyName("totalOperations")]
     public required OperationCounts TotalOperations { get; init; }
 }

@@ -14,11 +14,11 @@ public static class StateAttribution
     {
         if (binding.StateId is null && binding.SliceId is null) return;
         if (plan?.States is null || plan.States.Any(state => state is null))
-            throw new InvalidDataException("A bound state/slice tuple requires a valid state plan.");
+            throw new InvalidDataException("A bound surface/slice tuple requires a valid surface plan.");
         if (binding.SliceId is null || !plan.States.Any(state => SemanticSlicePlanner.SliceId(state) == binding.SliceId) ||
             binding.StateId is not null && !plan.States.Any(state =>
                 state.Id == binding.StateId && SemanticSlicePlanner.SliceId(state) == binding.SliceId))
-            throw new InvalidDataException("Unknown or inconsistent state/slice attribution; a failure cannot be silently rebound.");
+            throw new InvalidDataException("Unknown or inconsistent surface/slice attribution; a failure cannot be silently rebound.");
     }
 
     public static StateSliceBinding Authorize(EnforcementEvaluationInput input, string? requestedState = null)
@@ -26,7 +26,7 @@ public static class StateAttribution
         var plan = input.StatePlan;
         if (plan is null)
         {
-            if (requestedState is not null) throw new InvalidDataException("State authorization requires a plan.");
+            if (requestedState is not null) throw new InvalidDataException("Surface authorization requires a plan.");
             return StateSliceBinding.Unbound;
         }
         if (!EnforcementEvaluator.ValidateStatePlan(plan, input.StatePlanError, out var reason))
@@ -34,40 +34,18 @@ public static class StateAttribution
         if (requestedState is not null)
         {
             var state = plan.States.SingleOrDefault(candidate => candidate.Id == requestedState) ??
-                throw new InvalidDataException($"Unknown planned state: {requestedState}.");
+                throw new InvalidDataException($"Unknown planned surface: {requestedState}.");
             return new StateSliceBinding(state.Id, SemanticSlicePlanner.SliceId(state));
         }
         var slices = EnforcementEvaluator.AssessSlices(input, EnforcementEvaluator.FreshReplay(input));
-        var debt = input.Progress?.Debt ?? [];
-        var selected = SemanticSlicePlanner.Select(slices, debt);
-        var revalidate = selected is null && slices.All(slice => slice.Resolved ||
-            slice.Criticality == StateCriticality.Optional && debt.Any(item => item.SliceId == slice.Id));
+        var selected = SemanticSlicePlanner.Select(slices);
+        var revalidate = selected is null && slices.All(slice => slice.Resolved);
         if (revalidate)
-            selected = slices.FirstOrDefault(slice => slice.Resolved && !slice.Complete &&
-                !debt.Any(item => item.SliceId == slice.Id));
+            selected = slices.FirstOrDefault(slice => slice.Resolved && !slice.Complete);
         var candidates = selected?.States.Where(state => revalidate ||
             EnforcementEvaluator.StateRequiresWork(input, state)).ToArray() ?? [];
         return selected is null ? StateSliceBinding.Unbound :
             new StateSliceBinding(candidates.Length == 1 ? candidates[0].Id : null, selected.Id);
-    }
-
-    public static StateSliceBinding PersistedFallback(EnforcementEvaluationInput input)
-    {
-        if (input.Progress is null) return StateSliceBinding.Unbound;
-        var persisted = new StateSliceBinding(input.Progress.ActiveStateId, input.Progress.ActiveSliceId);
-        Validate(input.StatePlan, persisted);
-        if (persisted.SliceId is null) return StateSliceBinding.Unbound;
-        if (!EnforcementEvaluator.ValidateStatePlan(input.StatePlan, input.StatePlanError, out var reason))
-            throw new InvalidDataException(reason);
-        if (input.StatePlan!.States.Where(state => SemanticSlicePlanner.SliceId(state) == persisted.SliceId)
-            .All(state => !EnforcementEvaluator.StateRequiresWork(input, state)))
-            return StateSliceBinding.Unbound;
-        var authorized = Authorize(input);
-        if (authorized.SliceId != persisted.SliceId) return StateSliceBinding.Unbound;
-        if (persisted.StateId is { } id && input.StatePlan!.States.Any(state =>
-            state.Id == id && !EnforcementEvaluator.StateRequiresWork(input, state)))
-            return StateSliceBinding.Unbound;
-        return persisted;
     }
 
     internal static void ValidateFailures(EnforcementEvaluationInput input)
@@ -95,7 +73,7 @@ public static class StateAttribution
     internal static WorkflowOperationRecord AuthenticatedOperation(DirectoryInfo root, string operationId)
     {
         var (progress, error) = EnforcementStore.TryLoadAsync<WorkflowProgress>(root, EnforcementStore.ProgressPath).GetAwaiter().GetResult();
-        if (error is not null || progress?.Operations is null ||
+        if (error is not null || progress is not { SchemaVersion: WorkflowProgress.CurrentSchemaVersion, Operations: not null } ||
             !WorkflowOperationAuthentication.VerifyAnchored(root, progress.Operations))
             throw new InvalidDataException(error ?? "Operation attribution requires a complete authenticated history.");
         return progress.Operations.SingleOrDefault(operation => operation.Id == operationId) ??

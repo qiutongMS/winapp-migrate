@@ -16,37 +16,35 @@ internal sealed class UwpTodoCommand : Command
             "Assess implementation progress, preserve failed approach knowledge, and record discovered migration work.")
     {
         windowOwnerResolver ??= WindowsWindowOwnerResolver.Instance;
-        Subcommands.Add(new AssessCommand());
+        Subcommands.Add(new AssessCommand(windowOwnerResolver));
         Subcommands.Add(new StatusCommand(windowOwnerResolver));
         Subcommands.Add(new SelectApproachCommand());
         Subcommands.Add(new RecordCommand());
-        Subcommands.Add(new BindStateCommand());
-        Subcommands.Add(new RecordDevelopmentCommand(
-            windowOwnerResolver));
+        Subcommands.Add(new BindSurfaceCommand());
         Subcommands.Add(new DiscoverCommand());
     }
 
-    private sealed class BindStateCommand : Command
+    private sealed class BindSurfaceCommand : Command
     {
-        internal BindStateCommand()
+        internal BindSurfaceCommand()
             : base(
-                "bind-state",
-                "Bind one exact state-backed completion check to a TODO whose semantic proof state was not mechanically knowable.")
+                "bind-surface",
+                "Bind one exact surface-backed completion check to a TODO whose UI surface was not mechanically knowable.")
         {
             var target = TargetArgument();
             var todoId = TodoIdArgument();
             var state = RequiredStringOption(
-                "--state",
-                "Exact existing state-plan ID.");
+                "--surface",
+                "Exact existing surface-plan ID.");
             var checkId = RequiredStringOption(
                 "--check-id",
                 "Stable globally unique completion-check ID.");
             var summary = RequiredStringOption(
                 "--summary",
-                "Why these assertions prove the TODO source invariant.");
+                "Why these surface checks prove the TODO source invariant.");
             var assertions = RepeatedRequiredOption(
-                "--assertion",
-                "Exact state assertion ID required by this TODO.");
+                "--check",
+                "Exact supported surface check ID required by this TODO.");
             Arguments.Add(target);
             Arguments.Add(todoId);
             Options.Add(state);
@@ -74,7 +72,7 @@ internal sealed class UwpTodoCommand : Command
         internal StatusCommand(IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "status",
-                "Emit authoritative closure progress with TODO/state development readiness and the next checkpoint.")
+                "Emit implementation progress, current scoped project/surface verification, and human handoff items.")
         {
             var target = TargetArgument();
             Arguments.Add(target);
@@ -84,11 +82,11 @@ internal sealed class UwpTodoCommand : Command
                 var closure = await UwpEnforcementRunner.AssessAsync(
                     targetValue,
                     windowOwnerResolver,
-                    2,
                     token);
                 var todos = await TodoExecutionService.StatusAsync(
                     targetValue,
                     closure.TargetFingerprint,
+                    windowOwnerResolver,
                     token);
                 Write(new
                 {
@@ -97,7 +95,7 @@ internal sealed class UwpTodoCommand : Command
                     closure.Phase,
                     closure.Stage,
                     closure.Status,
-                    closure.Budget,
+                    closure.Telemetry,
                     lastObservedAt = closure.Workflow?.LastObservedAt,
                     closure.Frontier,
                     closure.Disposition,
@@ -110,57 +108,9 @@ internal sealed class UwpTodoCommand : Command
         }
     }
 
-    private sealed class RecordDevelopmentCommand : Command
-    {
-        internal RecordDevelopmentCommand(
-            IWindowOwnerResolver windowOwnerResolver)
-            : base(
-                "record-development",
-                "Derive a conclusive state-bound development result, or emit human validation when automation is inconclusive. This never verifies a TODO.")
-        {
-            var target = TargetArgument();
-            var state = RequiredStringOption(
-                "--state",
-                "Exact mapped state-plan ID.");
-            var summary = RequiredStringOption(
-                "--summary",
-                "Concise description of the attempted validation.");
-            var inconclusiveReason =
-                new Option<string?>("--inconclusive-reason")
-            {
-                Description =
-                    "Why automation could not produce product evidence. This can only create human-validation-required."
-            };
-            var evidence = RepeatedOption(
-                "--evidence",
-                "Product-generated state-bound probe paths, or diagnostic evidence supporting an inconclusive reason.");
-            Arguments.Add(target);
-            Options.Add(state);
-            Options.Add(summary);
-            Options.Add(inconclusiveReason);
-            Options.Add(evidence);
-            SetAction((result, token) => InvokeGuardedAsync(async () =>
-            {
-                var assessments =
-                    await TodoExecutionService.RecordDevelopmentStateAsync(
-                        result.GetValue(target)!,
-                        result.GetValue(state)!,
-                        result.GetValue(summary)!,
-                        result.GetValue(evidence) ?? [],
-                        result.GetValue(inconclusiveReason),
-                        windowOwnerResolver,
-                        token);
-                Write<object>(assessments.Count == 1
-                    ? assessments[0]
-                    : assessments);
-                return 0;
-            }));
-        }
-    }
-
     private sealed class AssessCommand : Command
     {
-        internal AssessCommand()
+        internal AssessCommand(IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "assess",
                 "Emit implementation progress for one TODO, or all TODOs when no ID is supplied.")
@@ -178,6 +128,7 @@ internal sealed class UwpTodoCommand : Command
                 var assessments = await TodoExecutionService.AssessAsync(
                     result.GetValue(target)!,
                     result.GetValue(todoId),
+                    windowOwnerResolver,
                     token);
                 Write<object>(assessments.Count == 1
                     ? assessments[0]
@@ -192,7 +143,7 @@ internal sealed class UwpTodoCommand : Command
         internal SelectApproachCommand()
             : base(
                 "select-approach",
-                "Select an implementation approach. A previously rejected approach requires retry evidence.")
+                "Optionally record an implementation approach and preserve retry notes; this is not an acceptance prerequisite.")
         {
             var target = TargetArgument();
             var todoId = TodoIdArgument();
@@ -303,7 +254,7 @@ internal sealed class UwpTodoCommand : Command
                 "--evidence",
                 "Target-relative evidence that proves the missing migration obligation.");
             var locations = RepeatedOption("--location", "Affected target path.");
-            var affectedStates = RepeatedOption("--affected-state", "Affected state-plan ID.");
+            var affectedStates = RepeatedOption("--affected-surface", "Affected surface-plan ID.");
             var affectedFeatures = RepeatedOption("--affected-feature", "Affected feature ID.");
             var touchPaths = RepeatedOption("--touch-path", "Expected implementation path.");
             var conflictKeys = RepeatedOption(
