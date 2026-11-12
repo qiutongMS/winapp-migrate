@@ -108,6 +108,7 @@ public static class StateClosureProtocol
             Dependencies = state.Dependencies,
             Criticality = state.Criticality,
             FeaturePaths = state.FeaturePaths,
+            UiSurfaces = state.UiSurfaces,
             Preconditions = state.Preconditions,
             Actions = state.Actions,
             ExpectedOutcome = state.ExpectedOutcome,
@@ -278,9 +279,9 @@ public static class StateClosureProtocol
                 if (!comparison.ParityVerified) issues.Add(comparison.Reason);
                 continue;
             }
-            if (assertion.Kind != "ui-property-equals-source" ||
-                !UiAssertionProtocol.Supports(assertion.Property) ||
-                string.IsNullOrWhiteSpace(assertion.AutomationId) ||
+            if (assertion.Kind is not ("ui-property-equals-source" or "ui-structure-equals-source") ||
+                assertion.Kind == "ui-property-equals-source" &&
+                    (!UiAssertionProtocol.Supports(assertion.Property) || string.IsNullOrWhiteSpace(assertion.AutomationId)) ||
                 !state.Source.Evidence.Contains(assertion.SourceEvidence, StringComparer.Ordinal) ||
                 assertion.ProbeIndex < 0 || assertion.ProbeIndex >= probes.Count)
                 throw new InvalidDataException($"Assertion {assertion.Id} is unsupported or lacks a mapped source observation/probe.");

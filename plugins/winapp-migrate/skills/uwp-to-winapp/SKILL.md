@@ -15,6 +15,42 @@ closure determines whether the resulting app is mechanically and behaviorally
 complete. TODO touch sets partition implementation work; build and runtime
 stabilization remain project-level.
 
+## Acceptance scope
+
+Follow the user's explicit scope; otherwise ask whether they want the existing
+strict closure or bounded four-check acceptance. Existing defaults stay strict.
+For four checks, use the same source/closure gateways, state plan and frozen
+contracts, then `uwp closure assess "<target>" --acceptance four-checks --strict`.
+This is a view of existing evidence, not strict finalize or TODO verification.
+The strict completion instructions below apply only to strict scope.
+
+Refresh `uwp verify` and review its accounted source inputs before capturing.
+Record reviewed XAML/code paths in the existing state-plan's `uiReviewedFiles`,
+including dynamic UI, navigation and modes. In each state's `uiSurfaces`, map
+major source surfaces as `<report item path>#<zero-based XML preorder index>`;
+declare reviewed runtime-only surfaces with `dynamic:<description>`. These
+state mappings are frozen with the existing requirements. Page, Window,
+UserControl, dialog, flyout and page-level VisualState declarations need states;
+template interaction states do not automatically become major modes.
+Missing input/review/mapping coverage remains unknown. Linked/referenced inputs
+that the existing inventory cannot safely account for are a capability gap,
+not permission to build another discovery system or claim universal coverage.
+
+Add `ui-structure-equals-source` assertions using the existing `sourceEvidence`
+and `probeIndex`; capture unfiltered whole-window inspect JSON on both sides.
+Omit `property` and `selector`. Empty `automationId` compares the entire window;
+an observed stable AutomationId may anchor the complete application content
+on both sides, excluding desktop host chrome, never just a passing control.
+Comparison preserves roles, hierarchy/order, names, enabled and offscreen
+states; values/selection use existing property assertions when needed.
+Malformed/truncated/missing observations are unknown, not equal.
+
+Stop after startup, surface accounting, major-state reachability and semantic
+structure pass, or report a concrete partial/failed result. Do not add pixel,
+font/color/geometry, lazy lifecycle, performance or full-functional gates.
+Do not weaken an already frozen contract that demands off-scope work.
+Dynamic discovery remains reviewed, not automatically exhaustive.
+
 ## Tool and contract compatibility
 
 Treat three capabilities as independent:

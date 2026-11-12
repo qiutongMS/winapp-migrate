@@ -21,6 +21,10 @@ public sealed class StatePlanDocument
 
     [JsonPropertyName("states")]
     public List<MigrationState> States { get; set; } = [];
+
+    [JsonPropertyName("uiReviewedFiles")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? UiReviewedFiles { get; set; }
 }
 
 public sealed class MigrationState
@@ -40,6 +44,10 @@ public sealed class MigrationState
 
     [JsonPropertyName("featurePaths")]
     public List<string> FeaturePaths { get; set; } = [];
+
+    [JsonPropertyName("uiSurfaces")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? UiSurfaces { get; set; }
 
     [JsonPropertyName("todoIds")]
     public List<string> TodoIds { get; set; } = [];

@@ -185,15 +185,30 @@ internal sealed class UwpEnforceCommand : Command
             var full = FullOutputOption();
             var strict = new Option<bool>("--strict")
             {
-                Description = "Return a nonzero exit code unless migration closure is fully verified."
+                Description = "Return nonzero unless requested acceptance passes; without --acceptance, require full migration closure."
+            };
+            var acceptance = new Option<string?>("--acceptance")
+            {
+                Description = "Optional four-checks view of existing evidence; never finalizes strict closure."
             };
             Arguments.Add(target);
             Options.Add(attempts);
             Options.Add(full);
             Options.Add(strict);
+            Options.Add(acceptance);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
+                    if (parseResult.GetValue(acceptance) is { } scope)
+                    {
+                        if (scope != "four-checks") throw new ArgumentException("Supported acceptance scope: four-checks.");
+                        var gates = await UwpEnforcementRunner.AssessFourChecksAsync(
+                            parseResult.GetValue(target)!, windowOwnerResolver, cancellationToken);
+                        var status = gates.All(gate => gate.Status == "passed") ? "passed" :
+                            gates.Any(gate => gate.Status == "failed") ? "failed" : "partial";
+                        Console.Out.WriteLine(JsonSerializer.Serialize(new { acceptance = scope, status, gates }, EnforcementStore.JsonOptions));
+                        return parseResult.GetValue(strict) && status != "passed" ? 1 : 0;
+                    }
                     var snapshot = await UwpEnforcementRunner.AssessAsync(
                         parseResult.GetValue(target)!,
                         windowOwnerResolver,

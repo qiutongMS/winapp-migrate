@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace WinAppMigration.Enforcement;
 
@@ -32,6 +33,8 @@ internal static class UiAssertionProtocol
 
     internal static string Read(JsonElement root, StateAssertion assertion, IReadOnlyList<string>? arguments = null)
     {
+        if (assertion.Kind == "ui-structure-equals-source")
+            return ReadStructure(root, assertion.AutomationId, arguments);
         var property = Properties.FirstOrDefault(item => item.Name == assertion.Property) ??
             throw new InvalidDataException($"Unsupported assertion property: {assertion.Property}.");
         var selector = assertion.Selector ?? assertion.AutomationId;
@@ -61,6 +64,64 @@ internal static class UiAssertionProtocol
             throw new InvalidDataException($"Assertion {assertion.Id} requires one matching inspect element with property {property.Name}.");
         }
         return NormalizeInspectValue(observed, property);
+    }
+
+    private static string ReadStructure(JsonElement root, string automationId, IReadOnlyList<string>? arguments)
+    {
+        if (arguments is not null)
+        {
+            if (arguments.Count == 0 || arguments[0] != "inspect" || !arguments.Contains("--json"))
+                throw new InvalidDataException("Structure assertions require inspect --json.");
+            for (var index = 1; index < arguments.Count; index++)
+            {
+                if (WinAppUiArguments.TryOption(arguments, ref index, "-w", "--window", out _) ||
+                    WinAppUiArguments.TryOption(arguments, ref index, "-d", "--depth", out _))
+                    continue;
+                if (arguments[index] != "--json")
+                    throw new InvalidDataException("Structure assertions require unfiltered whole-window capture.");
+            }
+        }
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("windows", out var windows) ||
+            windows.ValueKind != JsonValueKind.Array || windows.GetArrayLength() != 1 ||
+            windows[0].ValueKind != JsonValueKind.Object ||
+            !windows[0].TryGetProperty("elements", out var elements) || elements.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Structure assertions require one genuine inspect window.");
+        var matches = new List<JsonElement>();
+        if (string.IsNullOrWhiteSpace(automationId)) matches.AddRange(elements.EnumerateArray());
+        else CollectElements(root, automationId, matches);
+        if (matches.Count == 0 || !string.IsNullOrWhiteSpace(automationId) && matches.Count != 1)
+            throw new InvalidDataException("The complete application root must be observed unambiguously.");
+        if (!string.IsNullOrWhiteSpace(automationId) &&
+            (!matches[0].TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String ||
+             type.GetString() is not ("Window" or "Pane" or "Group")))
+            throw new InvalidDataException("A structure anchor must be an application container, not a selected leaf control.");
+        return new JsonArray(matches.Select(StructureNode).ToArray()).ToJsonString();
+    }
+
+    private static JsonNode StructureNode(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(type.GetString()) ||
+            element.TryGetProperty("hasMoreChildren", out var more) && more.ValueKind != JsonValueKind.False)
+            throw new InvalidDataException("Malformed or truncated UIA trees cannot prove structural equivalence.");
+        var node = new JsonObject { ["type"] = type.GetString() };
+        foreach (var property in Properties.Where(property =>
+                     property.Name is "name" or "isEnabled" or "isOffscreen"))
+        {
+            if (!element.TryGetProperty(property.Name, out var value))
+                throw new InvalidDataException($"Structure observation omitted {property.Name}.");
+            node[property.Name] = NormalizeInspectValue(value, property);
+        }
+        var children = new JsonArray();
+        if (element.TryGetProperty("children", out var observedChildren))
+        {
+            if (observedChildren.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("UIA children must be an array.");
+            foreach (var child in observedChildren.EnumerateArray()) children.Add(StructureNode(child));
+        }
+        node["children"] = children;
+        return node;
     }
 
     internal static bool IsPropertyObservation(JsonElement root)
