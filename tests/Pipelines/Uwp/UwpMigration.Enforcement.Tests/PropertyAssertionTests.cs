@@ -3,12 +3,145 @@
 
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using UwpMigration.Contracts;
+using UwpMigration.Enforcement;
+using WinAppMigration.Cli.Pipelines.Uwp;
 using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement.Tests;
 
 public sealed partial class RunnerAcceptanceTests
 {
+    private const string SemanticTree = """
+        {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isEnabled":true,"isOffscreen":false,
+          "children":[{"type":"Group","name":"","isEnabled":true,"isOffscreen":false,
+            "children":[{"type":"Button","name":"Open","isEnabled":true,"isOffscreen":false}]}]}]}]}
+        """;
+
+    [TestMethod]
+    [DataRow("hierarchy")]
+    [DataRow("role")]
+    [DataRow("enabled")]
+    [DataRow("name")]
+    public void StructureAssertions_CompareSemanticTreeNotFlatNames(string change)
+    {
+        var target = JsonNode.Parse(SemanticTree)!;
+        var window = target["windows"]![0]!["elements"]![0]!;
+        var group = window["children"]![0]!;
+        var button = group["children"]![0]!;
+        switch (change)
+        {
+            case "hierarchy":
+                var moved = button.DeepClone();
+                group["children"]!.AsArray().Clear();
+                window["children"]!.AsArray().Add(moved);
+                break;
+            case "role": button["type"] = "TextBox"; break;
+            case "enabled": button["isEnabled"] = false; break;
+            case "name": button["name"] = "Save"; break;
+        }
+        var assertion = new StateAssertion { Id = "tree", Kind = "ui-structure-equals-source", SourceEvidence = "source.json" };
+        Assert.AreNotEqual(
+            UiAssertionProtocol.Read(JsonSerializer.Deserialize<JsonElement>(SemanticTree), assertion),
+            UiAssertionProtocol.Read(JsonSerializer.Deserialize<JsonElement>(target.ToJsonString()), assertion));
+    }
+
+    [TestMethod]
+    [DataRow("""{"windows":[{"elements":[{"type":"Pane","name":"","isEnabled":true,"isOffscreen":false,"hasMoreChildren":true}]}]}""")]
+    [DataRow("""{"windows":[{"elements":[{"type":"Pane","name":""}]}]}""")]
+    [DataRow("""{"windows":[null]}""")]
+    [DataRow("""{"passed":true}""")]
+    public void StructureAssertions_IncompleteTreesCannotPassAsEqual(string tree)
+    {
+        var assertion = new StateAssertion { Id = "tree", Kind = "ui-structure-equals-source", SourceEvidence = "source.json" };
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            UiAssertionProtocol.Read(JsonSerializer.Deserialize<JsonElement>(tree), assertion));
+    }
+
+    [TestMethod]
+    public void StructureAssertions_IgnoreRuntimeIdentityButRejectFilteredCaptures()
+    {
+        var assertion = new StateAssertion { Id = "tree", Kind = "ui-structure-equals-source", SourceEvidence = "source.json" };
+        var source = JsonSerializer.Deserialize<JsonElement>(SemanticTree);
+        var target = JsonSerializer.Deserialize<JsonElement>(SemanticTree.Replace("\"main\"", "\"generated-id\"", StringComparison.Ordinal));
+        Assert.AreEqual(UiAssertionProtocol.Read(source, assertion), UiAssertionProtocol.Read(target, assertion));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            UiAssertionProtocol.Read(source, assertion, ["inspect", "--hide-offscreen", "--json", "-w", "42"]));
+    }
+
+    [TestMethod]
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(false, true, false)]
+    [DataRow(false, false, true)]
+    public async Task FourChecks_ReuseStateClosureAndKeepStrictSnapshotUnchanged(bool missingSurface, bool mismatch, bool exclusiveModes)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await File.WriteAllTextAsync(fixture.Path("Source.csproj"), "<Project />");
+        await File.WriteAllTextAsync(fixture.Path("MainPage.xaml"), exclusiveModes
+            ? "<Page><VisualStateGroup><VisualState /><VisualState /></VisualStateGroup></Page>" : "<Page><Button /></Page>");
+        var report = await fixture.LoadReportAsync();
+        report.MechanicalVerification.ProjectItems.AccountedItems =
+            [new MigrationProjectItem { Kind = "Page", Path = "MainPage.xaml" }];
+        await fixture.SaveReportAsync(report);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        plan.UiReviewedFiles = ["MainPage.xaml"];
+        plan.States[0].UiSurfaces = missingSurface ? [] : exclusiveModes
+            ? ["MainPage.xaml#0", "MainPage.xaml#2", "MainPage.xaml#3"] : ["MainPage.xaml#0"];
+        plan.States[0].Assertions[0].Kind = "ui-structure-equals-source";
+        plan.States[0].Assertions[0].Property = "";
+        plan.States[0].Assertions[0].AutomationId = "";
+        await File.WriteAllTextAsync(fixture.Path(plan.States[0].Assertions[0].SourceEvidence), SemanticTree);
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+        var probe = await CaptureClosureProbeAsync(fixture, new EnforcementProcessResult(0,
+            mismatch ? SemanticTree.Replace("Open", "Wrong", StringComparison.Ordinal) : SemanticTree, ""));
+        await UwpEnforcementRunner.RecordStateAsync(fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ".migration-evidence/source/gateway/current-run.json",
+            new SourceRunAttestation
+            {
+                Id = "source-run",
+                Mode = "detached",
+                StandardOutputPath = "stdout.log",
+                StandardErrorPath = "stderr.log",
+                SourceRoot = fixture.Root.FullName,
+                SourceProject = fixture.Path("Source.csproj"),
+                SourceFingerprint = TargetFingerprint.Compute(fixture.Root),
+                SourceProjectSha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(fixture.Path("Source.csproj"))))
+            });
+        var before = await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath));
+        var stateBefore = await File.ReadAllTextAsync(fixture.Path(ClosurePlan));
+        var reportBefore = await File.ReadAllTextAsync(fixture.Path("migration-report.json"));
+
+        var gates = await UwpEnforcementRunner.AssessFourChecksAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+
+        Assert.HasCount(4, gates);
+        Assert.AreEqual(missingSurface || exclusiveModes ? "unknown" : "passed", gates.Single(gate => gate.Id == "surface-accounting").Status);
+        Assert.AreEqual(mismatch ? "failed" : "passed", gates.Single(gate => gate.Id == "semantic-structure").Status);
+        Assert.AreEqual(before, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath)));
+        Assert.AreEqual(stateBefore, await File.ReadAllTextAsync(fixture.Path(ClosurePlan)));
+        Assert.AreEqual(reportBefore, await File.ReadAllTextAsync(fixture.Path("migration-report.json")));
+        Assert.IsFalse(Directory.Exists(fixture.Path(".migration-evidence/acceptance")));
+        var command = new UwpEnforceCommand(new FakeProcessRunner(), TestWindowOwnerResolver.Shared);
+        var parsed = command.Parse(["assess", fixture.Root.FullName, "--acceptance", "four-checks", "--strict"]);
+        using var output = new StringWriter();
+        var original = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            Assert.AreEqual(missingSurface || mismatch || exclusiveModes ? 1 : 0, await parsed.InvokeAsync());
+        }
+        finally { Console.SetOut(original); }
+        if (!missingSurface && !mismatch && !exclusiveModes)
+        {
+            plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+            plan.States[0].UiSurfaces!.Add("dynamic:changed-after-capture");
+            await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+            var changed = await UwpEnforcementRunner.AssessFourChecksAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+            Assert.AreEqual("unknown", changed.Single(gate => gate.Id == "reachability").Status);
+        }
+    }
+
     [TestMethod]
     [DataRow("isSelected", "IsSelected", "True")]
     [DataRow("hasKeyboardFocus", "HasKeyboardFocus", "False")]

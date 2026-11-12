@@ -15,41 +15,41 @@ closure determines whether the resulting app is mechanically and behaviorally
 complete. TODO touch sets partition implementation work; build and runtime
 stabilization remain project-level.
 
-## Choose the acceptance scope
+## Acceptance scope
 
-Follow an explicit user choice. If acceptance scope has not been specified,
-ask whether the user wants bounded **four-checks** acceptance or the existing
-strict behavioral closure. Do not silently downgrade existing strict workflows;
-the CLI default and strict closure contracts are unchanged.
+Follow the user's explicit scope; otherwise ask whether they want the existing
+strict closure or bounded four-check acceptance. Existing defaults stay strict.
+For four checks, use the same source/closure gateways, state plan and frozen
+contracts, then `uwp closure assess "<target>" --acceptance four-checks --strict`.
+This is a view of existing evidence, not strict finalize or TODO verification.
+The strict completion instructions below apply only to strict scope.
 
-For four-checks, read [bounded four-check acceptance](references/four-check-acceptance.md)
-before authoring runtime requirements. Use the explicit
-`uwp acceptance ... --profile four-checks` commands. They assess startup,
-complete declared/discovered surface accounting, major-state reachability and
-semantic UIA structure independently of strict closure. A completed list of
-hand-picked states is not an exhaustive surface inventory.
-Reuse the report's existing state plan, assertions and canonical state-evidence
-derivation; do not author a second set of acceptance states or predicates.
+Refresh `uwp verify` and review its accounted source inputs before capturing.
+Record reviewed XAML/code paths in the existing state-plan's `uiReviewedFiles`,
+including dynamic UI, navigation and modes. In each state's `uiSurfaces`, map
+major source surfaces as `<report item path>#<zero-based XML preorder index>`;
+declare reviewed runtime-only surfaces with `dynamic:<description>`. These
+state mappings are frozen with the existing requirements. Page, Window,
+UserControl, dialog, flyout and page-level VisualState declarations need states;
+template interaction states do not automatically become major modes.
+Missing input/review/mapping coverage remains unknown. Linked/referenced inputs
+that the existing inventory cannot safely account for are a capability gap,
+not permission to build another discovery system or claim universal coverage.
 
-In this mode, do not add pixel/visual parity, internal lazy-object lifetime,
-performance, draft retention or full functional parity as completion gates.
-Fix only defects that prevent one of the four agreed checks. Record other
-differences as excluded follow-up work; do not repeatedly rebuild to refine
-fonts, colors or initial window geometry unless they obstruct those checks.
-Do not treat every template interaction state as a major application mode.
+Add `ui-structure-equals-source` assertions using the existing `sourceEvidence`
+and `probeIndex`; capture unfiltered whole-window inspect JSON on both sides.
+Omit `property` and `selector`. Empty `automationId` compares the entire window;
+an observed stable AutomationId may anchor the complete application content
+on both sides, excluding desktop host chrome, never just a passing control.
+Comparison preserves roles, hierarchy/order, names, enabled and offscreen
+states; values/selection use existing property assertions when needed.
+Malformed/truncated/missing observations are unknown, not equal.
 
-The source and closure gateways, mechanical safety, provenance and frozen
-gateway contracts still apply. Build the smallest observable nonvisual gateway
-contract consistent with the chosen scope. Do not invent a selector from
-`x:Name`, weaken an existing sealed contract, manually verify TODOs, or bypass a
-gateway to obtain a four-checks pass. If gateway prerequisites cannot be
-satisfied within scope, stop with the concrete capability gap rather than
-expanding into tool development or full behavioral verification.
-
-The strict completion/falsification instructions below apply when strict
-closure is selected. In four-checks mode, stop at the separately reported
-four-check result or an explicit blocked/unknown handoff. A four-checks pass
-never means `parityStatus: verified` or strict migration closure.
+Stop after startup, surface accounting, major-state reachability and semantic
+structure pass, or report a concrete partial/failed result. Do not add pixel,
+font/color/geometry, lazy lifecycle, performance or full-functional gates.
+Do not weaken an already frozen contract that demands off-scope work.
+Dynamic discovery remains reviewed, not automatically exhaustive.
 
 ## Tool and contract compatibility
 

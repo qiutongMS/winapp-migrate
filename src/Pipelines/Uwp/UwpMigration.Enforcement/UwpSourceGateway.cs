@@ -54,15 +54,6 @@ public sealed class SourceWindow
 
 public sealed class SourceRunAttestation
 {
-    [JsonPropertyName("acceptanceSourceInputFingerprint")]
-    public string? AcceptanceSourceInputFingerprint { get; set; }
-
-    [JsonPropertyName("seal")]
-    public string? Seal { get; set; }
-
-    [JsonPropertyName("sealPublicKey")]
-    public string? SealPublicKey { get; set; }
-
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -146,18 +137,6 @@ public sealed class SourceRunAttestation
 
 public sealed class SourceUiProbe
 {
-    [JsonPropertyName("seal")]
-    public string? Seal { get; set; }
-
-    [JsonPropertyName("sealPublicKey")]
-    public string? SealPublicKey { get; set; }
-
-    [JsonPropertyName("stdoutSha256")]
-    public string? StandardOutputSha256 { get; set; }
-
-    [JsonPropertyName("stderrSha256")]
-    public string? StandardErrorSha256 { get; set; }
-
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -247,21 +226,6 @@ public sealed class UwpSourceGateway
         await using var workspace = await LoadWorkspaceAsync(
             target,
             cancellationToken);
-        string? acceptanceInputFingerprint = null;
-        if (EnforcementStore.TryResolveContainedPath(
-                workspace.Target, FourCheckAcceptance.SurfaceMapPath, out var acceptancePlanPath, out _) &&
-            File.Exists(acceptancePlanPath))
-        {
-            var inventory = await new FourCheckInventoryBuilder(
-                new UwpSourceBuilder(_processRunner).InspectItemsAsync).BuildAsync(
-                    new FileInfo(workspace.SourceProject), cancellationToken);
-            if (inventory.DiscoveryIssues.Count > 0)
-                throw new InvalidDataException("Four-check source inventory is incomplete; source capture cannot establish its input binding.");
-            var acceptancePlan = FourCheckJson.Read<FourCheckSurfaceMap>(workspace.Target, FourCheckAcceptance.SurfaceMapPath);
-            if (acceptancePlan.SourceInputFingerprint != inventory.SourceInputFingerprint)
-                throw new InvalidDataException("Four-check source inputs changed before source launch. Review the inventory first.");
-            acceptanceInputFingerprint = inventory.SourceInputFingerprint;
-        }
         var id = CreateId("source-run");
         var directory = $"{workspace.GatewayRoot}/runs/{id}";
         var beforePath = $"{directory}/windows-before.json";
@@ -370,7 +334,6 @@ public sealed class UwpSourceGateway
 
         var attestation = new SourceRunAttestation
         {
-            AcceptanceSourceInputFingerprint = acceptanceInputFingerprint,
             Id = id,
             Mode = "detached",
             SourceRoot = workspace.SourceRoot.FullName,
@@ -625,11 +588,8 @@ public sealed class UwpSourceGateway
             ExitCode = result.ExitCode,
             ArtifactPath = artifactPath,
             StandardOutputPath = stdoutPath,
-            StandardErrorPath = stderrPath,
-            StandardOutputSha256 = StateClosureProtocol.FileHash(workspace.Target, stdoutPath),
-            StandardErrorSha256 = StateClosureProtocol.FileHash(workspace.Target, stderrPath)
+            StandardErrorPath = stderrPath
         };
-        SourceAcceptanceSeal.Sign(probe);
         await EnforcementStore.WriteAtomicAsync(
             workspace.Target,
             artifactPath,
@@ -975,7 +935,6 @@ public sealed class UwpSourceGateway
         string directory,
         CancellationToken cancellationToken)
     {
-        SourceAcceptanceSeal.Sign(attestation);
         await EnforcementStore.WriteAtomicAsync(
             workspace.Target,
             $"{directory}/attestation.json",

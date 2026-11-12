@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Xml.Linq;
 using UwpMigration.Contracts;
 using UwpMigration.Mechanical;
 using WinAppMigration.Enforcement;
@@ -37,6 +38,129 @@ public sealed class UwpEnforcementRunner
         int maximumSignatureAttempts = 2,
         CancellationToken cancellationToken = default) =>
         AssessAsync(target, WindowsWindowOwnerResolver.Instance, maximumSignatureAttempts, cancellationToken);
+
+    public static async Task<IReadOnlyList<EnforcementGate>> AssessFourChecksAsync(
+        DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver, CancellationToken cancellationToken = default)
+    {
+        await using var operationLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken);
+        var workspace = await LoadWorkspaceAsync(target, 2, cancellationToken, windowOwnerResolver: windowOwnerResolver);
+        var input = workspace.Input;
+        var replay = input.ArtifactError is null ? EnforcementEvaluator.FreshReplay(input) : null;
+        var planValid = EnforcementEvaluator.ValidateStatePlan(input.StatePlan, input.StatePlanError, out var planReason) &&
+            input.RequiredContractHash is not null;
+        var issues = new List<string>();
+        var levels = new List<string>();
+        if (planValid)
+            foreach (var state in input.StatePlan!.States)
+            {
+                if (state.Assertions.Any(assertion => assertion.Kind == "visual-region-equals-source"))
+                    issues.Add($"{state.Id}: the frozen contract includes visual work outside four-check scope.");
+                else if (StateClosureProtocol.VerifyRecordedLevel(target, state, replay, input.GeneratedAt,
+                    out var proof, out var reason, windowOwnerResolver))
+                {
+                    if (!state.Assertions.Any(assertion => assertion.Kind == "ui-structure-equals-source"))
+                        issues.Add($"{state.Id}: no whole-application structure assertion.");
+                    levels.Add(proof.VerificationLevel);
+                }
+                else issues.Add($"{state.Id}: {reason}");
+            }
+        else issues.Add(input.RequiredContractError ?? planReason);
+        var allVerified = issues.Count == 0 && levels.Count > 0 &&
+            levels.All(level => level == StateVerificationLevel.ParityVerified);
+        var report = await MigrationReportStore.LoadAsync(workspace.ReportPath, cancellationToken);
+        return
+        [
+            new() { Id = "startup", Status = replay is not null && levels.Count > 0 ? "passed" : "unknown",
+                Reason = replay is null ? "A fresh canonical build/replay is required." :
+                    levels.Count > 0 ? "Fresh build/replay and a responsive state endpoint were observed." : "A post-launch state observation is required." },
+            await AssessUiCoverageAsync(target, report, planValid ? input.StatePlan : null, cancellationToken),
+            new() { Id = "reachability", Status = allVerified ? "passed" : "unknown",
+                Reason = allVerified ? "All declared state contracts have fresh matching observations." : string.Join(" ", issues.Append("State endpoints must be verified; successful actions alone are insufficient.")) },
+            new() { Id = "semantic-structure", Status = allVerified ? "passed" :
+                    levels.Contains(StateVerificationLevel.ContractSatisfied) ? "failed" : "unknown",
+                Reason = allVerified ? "Existing state assertions verify the complete application trees." :
+                    string.Join(" ", issues.Append("Missing/truncated observations are unknown; differing observed semantics fail.")) }
+        ];
+    }
+
+    private static async Task<EnforcementGate> AssessUiCoverageAsync(
+        DirectoryInfo target, MigrationReport report, StatePlanDocument? plan, CancellationToken cancellationToken)
+    {
+        var issues = new List<string>();
+        var surfaces = new Dictionary<string, XElement>(StringComparer.Ordinal);
+        try
+        {
+            if (plan?.UiReviewedFiles is null)
+                throw new InvalidDataException("Review the existing source item inventory and set state-plan uiReviewedFiles; discovery is not automatic behavior coverage.");
+            var source = Path.GetFullPath(report.Source.Root, target.FullName);
+            if (!MigrationPathResolver.TryCanonicalizeRoot(source, out source, out var error))
+                throw new InvalidDataException(error);
+            var (run, runError) = await EnforcementStore.TryLoadAsync<SourceRunAttestation>(target,
+                $"{report.Validation.SourceBaseline.EvidenceRoot.TrimEnd('/')}/gateway/current-run.json", cancellationToken);
+            if (run is null || runError is not null || run.Mode != "detached" || run.ExitCode != 0 || run.SourceBuildExitCode != 0 ||
+                run.SourceFingerprint != TargetFingerprint.Compute(new DirectoryInfo(source), cancellationToken) ||
+                !string.Equals(run.SourceRoot, source, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("A current unchanged source gateway baseline is required.");
+            if (!MigrationPathResolver.TryResolveContainedRelativePath(source, report.Source.ProjectFile,
+                    out var sourceProject, out _, out error) ||
+                !string.Equals(run.SourceProject, sourceProject, StringComparison.OrdinalIgnoreCase) ||
+                run.SourceProjectSha256 != Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(sourceProject, cancellationToken))))
+                throw new InvalidDataException("The source baseline does not match the recorded project.");
+            var inventory = report.MechanicalVerification.ProjectItems;
+            if (report.MechanicalVerification.Status != "passed" || inventory.UnresolvedItems.Count > 0 ||
+                inventory.ReviewRequiredItems.Count > 0 || report.DependencyAnalysis.ProjectReferences.Count > 0)
+                throw new InvalidDataException("Existing project-item/dependency inventory does not establish complete UI input coverage; resolve it before claiming acceptance.");
+            var items = inventory.AccountedItems.Where(item => item.Kind is "Compile" or "Page" or "ApplicationDefinition" ||
+                item.Path.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
+                .DistinctBy(item => item.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (items.Length == 0) throw new InvalidDataException("The existing report contains no accounted UI/code inputs.");
+            foreach (var item in items)
+            {
+                var identity = item.Path.Replace('\\', '/');
+                if (!plan.UiReviewedFiles.Contains(identity, StringComparer.Ordinal))
+                    issues.Add($"Source review missing: {identity} (include dynamic UI and modes).");
+                if (!MigrationPathResolver.TryResolveContainedRelativePath(source, item.Path, out var file, out _, out error) ||
+                    !File.Exists(file))
+                    throw new InvalidDataException($"Source item cannot be inspected safely: {identity}. {error}");
+                if (!item.Path.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase)) continue;
+                var elements = XDocument.Load(file).Root!.DescendantsAndSelf().ToArray();
+                for (var index = 0; index < elements.Length; index++)
+                {
+                    var element = elements[index];
+                    if (element.Name.LocalName is "Page" or "Window" or "UserControl" or "ContentDialog" or "Flyout" or "MenuFlyout" ||
+                        element.Name.LocalName == "VisualState" && !element.Ancestors().Any(ancestor =>
+                            ancestor.Name.LocalName is "ControlTemplate" or "DataTemplate" or "Style"))
+                    {
+                        var id = $"{identity}#{index}";
+                        surfaces.Add(id, element);
+                        if (!plan.States.Any(state => state.UiSurfaces?.Contains(id, StringComparer.Ordinal) == true))
+                            issues.Add($"Unmapped UI surface: {id} ({element.Name.LocalName}).");
+                    }
+                }
+            }
+            foreach (var state in plan.States)
+                foreach (var id in state.UiSurfaces ?? [])
+                    if (!surfaces.ContainsKey(id) && !id.StartsWith("dynamic:", StringComparison.Ordinal))
+                        issues.Add($"Unknown/stale UI surface: {id}.");
+            foreach (var group in surfaces.Where(pair => pair.Value.Name.LocalName == "VisualState").GroupBy(pair => pair.Value.Parent))
+            {
+                var observations = group.SelectMany(pair => plan.States.Where(state =>
+                    state.UiSurfaces?.Contains(pair.Key, StringComparer.Ordinal) == true)).Select(state => state.Id).ToArray();
+                if (observations.Distinct(StringComparer.Ordinal).Count() != observations.Length)
+                    issues.Add("Mutually exclusive VisualStates cannot share one state observation.");
+            }
+            if (surfaces.Count == 0 && !plan.States.Any(state => state.UiSurfaces?.Any(id =>
+                    id.StartsWith("dynamic:", StringComparison.Ordinal)) == true))
+                issues.Add("No application surfaces have been accounted for.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+            InvalidDataException or System.Xml.XmlException or ArgumentException)
+        {
+            issues.Add(exception.Message);
+        }
+        return new EnforcementGate { Id = "surface-accounting", Status = issues.Count == 0 ? "passed" : "unknown",
+            Reason = issues.Count == 0 ? $"All {surfaces.Count} static surfaces and declared dynamic surfaces are mapped; source-file review recorded." : string.Join(" ", issues) };
+    }
 
     public static async Task<RequiredStateContractDocument> SealContractAsync(DirectoryInfo target,
         bool extend = false, bool upgradePlan = false, CancellationToken cancellationToken = default)

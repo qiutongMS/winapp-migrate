@@ -114,6 +114,7 @@ public static class RequiredStateContracts
         {
             Id = state.Id,
             Criticality = state.Criticality,
+            UiSurfaces = state.UiSurfaces is null ? null : [.. state.UiSurfaces],
             Preconditions = [.. state.Preconditions],
             Actions = [.. state.Actions],
             ExpectedOutcome = state.ExpectedOutcome,
@@ -181,9 +182,11 @@ public static class RequiredStateContracts
                     action.Command is not { Count: > 0 } || action.Command.Any(string.IsNullOrWhiteSpace)) ||
                 state.Assertions.Any(assertion => assertion is null || string.IsNullOrWhiteSpace(assertion.Id) ||
                     assertion.ProbeIndex < 0 ||
-                    assertion.Kind is not ("ui-property-equals-source" or "visual-region-equals-source") ||
+                    assertion.Kind is not ("ui-property-equals-source" or "ui-structure-equals-source" or "visual-region-equals-source") ||
                     assertion.Kind == "ui-property-equals-source" &&
                         (!UiAssertionProtocol.Supports(assertion.Property) || string.IsNullOrWhiteSpace(assertion.AutomationId))) ||
+                state.Assertions.Any(assertion => assertion.Kind == "ui-structure-equals-source" &&
+                    (assertion.Selector is not null || !string.IsNullOrEmpty(assertion.Property))) ||
                 spec.RequiredActions.Select(action => action.Id).Distinct(StringComparer.Ordinal).Count() != spec.RequiredActions.Count ||
                 state.Assertions.Select(assertion => assertion.Id).Distinct(StringComparer.Ordinal).Count() != state.Assertions.Count ||
                 spec.Steps.Any(step => step is null || step.Kind is not ("action" or "assertion")) ||
@@ -191,6 +194,10 @@ public static class RequiredStateContracts
                 !spec.Steps.Where(step => step.Kind == "assertion").Select(step => step.Id).SequenceEqual(state.Assertions.Select(assertion => assertion.Id)) ||
                 spec.Kind == "visual" && !state.Assertions.Any(assertion => assertion.Kind == "visual-region-equals-source"))
                 throw new InvalidDataException($"State {state.Id} requires explicit unique ordered action/assertion IDs covering all declared actions.");
+            if (state.UiSurfaces is not null &&
+                (state.UiSurfaces.Any(string.IsNullOrWhiteSpace) ||
+                 state.UiSurfaces.Distinct(StringComparer.Ordinal).Count() != state.UiSurfaces.Count))
+                throw new InvalidDataException($"State {state.Id} requires unique nonempty UI surface identities.");
             foreach (var restore in spec.Restorations)
                 if (restore is null || string.IsNullOrWhiteSpace(restore.Id) ||
                     !spec.RequiredActions.Any(action => action.Id == restore.ReturnActionId) ||
