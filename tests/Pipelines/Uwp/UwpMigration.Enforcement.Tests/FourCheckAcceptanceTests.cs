@@ -12,7 +12,7 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class RunnerAcceptanceTests
 {
     private const string FourCheckTree = """
-        {"windows":[{"hwnd":42,"elements":[{"type":"Window","name":"Ready","isEnabled":true,"isOffscreen":false,
+        {"windows":[{"hwnd":42,"elements":[{"type":"Window","automationId":"main","name":"Ready","isEnabled":true,"isOffscreen":false,
           "children":[{"type":"Button","name":"Open","isEnabled":true,"isOffscreen":false}]}]}]}
         """;
 
@@ -40,9 +40,9 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var service = await PrepareFourChecksAsync(fixture);
-        var plan = FourCheckJson.Read<FourCheckPlan>(fixture.Root, FourCheckAcceptance.PlanPath);
+        var plan = FourCheckJson.Read<FourCheckSurfaceMap>(fixture.Root, FourCheckAcceptance.SurfaceMapPath);
         plan.Mappings.Clear();
-        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.PlanPath, plan, CancellationToken.None);
+        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.SurfaceMapPath, plan, CancellationToken.None);
 
         var result = await service.AssessAsync(fixture.Root);
 
@@ -70,8 +70,8 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var service = await PrepareFourChecksAsync(fixture);
-        var plan = FourCheckJson.Read<FourCheckPlan>(fixture.Root, FourCheckAcceptance.PlanPath);
-        var probe = await fixture.LoadAsync<UiDevelopmentProbe>(plan.States[0].TargetProbes[0]);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var probe = await fixture.LoadAsync<UiDevelopmentProbe>(plan.States[0].Target.Evidence[0]);
         await File.AppendAllTextAsync(fixture.Path(probe.StandardOutputPath), " ");
 
         var result = await service.AssessAsync(fixture.Root);
@@ -84,10 +84,8 @@ public sealed partial class RunnerAcceptanceTests
     public async Task FourChecks_EndpointMustBeObservedNotMerelyDeclared()
     {
         using var fixture = await RunnerFixture.CreateAsync();
-        var service = await PrepareFourChecksAsync(fixture);
-        var plan = FourCheckJson.Read<FourCheckPlan>(fixture.Root, FourCheckAcceptance.PlanPath);
-        plan.States[0].Predicates[0].Expected = JsonSerializer.Deserialize<JsonElement>("\"Different page\"");
-        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.PlanPath, plan, CancellationToken.None);
+        var service = await PrepareFourChecksAsync(fixture,
+            targetTree: FourCheckTree.Replace("Ready", "Different page", StringComparison.Ordinal));
 
         var result = await service.AssessAsync(fixture.Root);
 
@@ -114,8 +112,8 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var service = await PrepareFourChecksAsync(fixture);
-        var plan = FourCheckJson.Read<FourCheckPlan>(fixture.Root, FourCheckAcceptance.PlanPath);
-        var probe = await fixture.LoadAsync<SourceUiProbe>(plan.States[0].SourceProbes[0]);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var probe = await fixture.LoadAsync<SourceUiProbe>(plan.States[0].Source.Evidence[^1]);
         await File.AppendAllTextAsync(fixture.Path(probe.StandardOutputPath), " ");
 
         var result = await service.AssessAsync(fixture.Root);
@@ -129,9 +127,9 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var service = await PrepareFourChecksAsync(fixture);
-        var plan = FourCheckJson.Read<FourCheckPlan>(fixture.Root, FourCheckAcceptance.PlanPath);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         plan.States.Clear();
-        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.PlanPath, plan, CancellationToken.None);
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
 
         var result = await service.AssessAsync(fixture.Root);
 
@@ -156,14 +154,30 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var service = await PrepareFourChecksAsync(fixture);
-        var plan = FourCheckJson.Read<FourCheckPlan>(fixture.Root, FourCheckAcceptance.PlanPath);
+        var plan = FourCheckJson.Read<FourCheckSurfaceMap>(fixture.Root, FourCheckAcceptance.SurfaceMapPath);
         plan.AdditionalSurfaces.Add(new("dialog", "runtime-uia", "Requires a real major-state mapping."));
-        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.PlanPath, plan, CancellationToken.None);
+        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.SurfaceMapPath, plan, CancellationToken.None);
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() => service.AssessAsync(fixture.Root));
     }
 
-    private static async Task<FourCheckAcceptance> PrepareFourChecksAsync(RunnerFixture fixture, bool withModes = false)
+    [TestMethod]
+    public async Task FourChecks_ReusesTheExistingImmutableStateContract()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var service = await PrepareFourChecksAsync(fixture);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        plan.States[0].Actions[0] = "Replace the already frozen requirement.";
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+
+        var result = await service.AssessAsync(fixture.Root);
+
+        Assert.AreEqual("unknown", result.States[0].Reachability);
+        StringAssert.Contains(result.States[0].Issue!, "immutable required contract");
+    }
+
+    private static async Task<FourCheckAcceptance> PrepareFourChecksAsync(
+        RunnerFixture fixture, bool withModes = false, string? targetTree = null)
     {
         await File.WriteAllTextAsync(fixture.Path("Source.csproj"), "<Project />");
         var modes = withModes
@@ -171,8 +185,6 @@ public sealed partial class RunnerAcceptanceTests
             : "";
         await File.WriteAllTextAsync(fixture.Path("MainPage.xaml"),
             $"""<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><Button Content="Open" />{modes}</Page>""");
-        var targetProbe = await CaptureClosureProbeAsync(fixture,
-            new EnforcementProcessResult(0, FourCheckTree, ""));
         var sourceProbe = new SourceUiProbe
         {
             Id = "source-inspect",
@@ -214,9 +226,9 @@ public sealed partial class RunnerAcceptanceTests
         await EnforcementStore.WriteAtomicAsync(fixture.Root, sourceProbe.ArtifactPath, sourceProbe);
         var service = new FourCheckAcceptance((_, _) =>
             Task.FromResult<IReadOnlyList<(string Kind, string Path)>>(
-                [("Page", fixture.Path("MainPage.xaml"))]));
+                [("Page", fixture.Path("MainPage.xaml"))]), TestWindowOwnerResolver.Shared);
         await service.InventoryAsync(fixture.Root);
-        var plan = FourCheckJson.Read<FourCheckPlan>(fixture.Root, FourCheckAcceptance.PlanPath);
+        var plan = FourCheckJson.Read<FourCheckSurfaceMap>(fixture.Root, FourCheckAcceptance.SurfaceMapPath);
         run.AcceptanceSourceInputFingerprint = plan.SourceInputFingerprint;
         SourceAcceptanceSeal.Sign(run);
         await EnforcementStore.WriteAtomicAsync(fixture.Root,
@@ -227,17 +239,20 @@ public sealed partial class RunnerAcceptanceTests
             mapping.TargetFile = "MainPage.xaml";
             mapping.TargetNode = mapping.SurfaceId[(mapping.SurfaceId.LastIndexOf(':') + 1)..];
             mapping.Reason = "Source XAML declaration is present in the target.";
-            mapping.StateIds = ["page"];
+            mapping.StateIds = ["state-1"];
         }
-        plan.States.Add(new()
-        {
-            Id = "page",
-            SourceProbes = [sourceProbe.ArtifactPath],
-            TargetProbes = [targetProbe.ArtifactPath],
-            Predicates = [new() { SourceNode = "0", TargetNode = "0", Property = "name",
-                Expected = JsonSerializer.Deserialize<JsonElement>("\"Ready\"") }]
-        });
-        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.PlanPath, plan, CancellationToken.None);
+        await FourCheckJson.WriteAsync(fixture.Root, FourCheckAcceptance.SurfaceMapPath, plan, CancellationToken.None);
+        var statePlan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var state = statePlan.States[0];
+        await EnforcementStore.WriteTextAtomicAsync(fixture.Root, state.Assertions[0].SourceEvidence,
+            await File.ReadAllTextAsync(fixture.Path(sourceProbe.StandardOutputPath)));
+        state.Source.Evidence = [state.Assertions[0].SourceEvidence, sourceProbe.ArtifactPath];
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, statePlan);
+        var targetProbe = await CaptureClosureProbeAsync(fixture,
+            new EnforcementProcessResult(0, targetTree ?? FourCheckTree, ""));
+        statePlan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        statePlan.States[0].Target.Evidence = [targetProbe.ArtifactPath];
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, statePlan);
         return service;
     }
 }

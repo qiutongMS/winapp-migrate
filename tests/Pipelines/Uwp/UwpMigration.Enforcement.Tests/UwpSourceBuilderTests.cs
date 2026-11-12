@@ -20,7 +20,7 @@ public sealed class UwpSourceBuilderTests
             Items = new
             {
                 Compile = Array.Empty<object>(),
-                Page = new[] { new { FullPath = linked } },
+                Page = new[] { new { Identity = "..\\Shared.xaml", FullPath = linked, DefiningProjectFullPath = fixture.Project.FullName } },
                 ApplicationDefinition = Array.Empty<object>(),
                 ProjectReference = Array.Empty<object>()
             }

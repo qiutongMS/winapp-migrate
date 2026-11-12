@@ -28,6 +28,8 @@ before authoring runtime requirements. Use the explicit
 complete declared/discovered surface accounting, major-state reachability and
 semantic UIA structure independently of strict closure. A completed list of
 hand-picked states is not an exhaustive surface inventory.
+Reuse the report's existing state plan, assertions and canonical state-evidence
+derivation; do not author a second set of acceptance states or predicates.
 
 In this mode, do not add pixel/visual parity, internal lazy-object lifetime,
 performance, draft retention or full functional parity as completion gates.

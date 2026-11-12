@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Xml.Linq;
 using Microsoft.Win32;
+using UwpMigration.Mechanical;
 using Windows.Management.Deployment;
 using Windows.System;
 using WinAppMigration.Enforcement;
@@ -206,20 +207,18 @@ internal sealed class UwpSourceBuilder : IUwpSourceBuilder
             msbuild.FullName, project.Directory!, arguments, cancellationToken);
         if (result.ExitCode != 0 || result.InfrastructureFailure)
             throw new InvalidDataException($"Source item evaluation failed without building/restoring: {result.Error}");
-        using var json = JsonDocument.Parse(result.Output);
-        if (!json.RootElement.TryGetProperty("Items", out var groups))
-            throw new InvalidDataException("Source MSBuild omitted evaluated item groups.");
+        if (!MsBuildPropertyReader.TryParseItemFacts(result.Output, out var groups))
+            throw new InvalidDataException("Source MSBuild returned malformed evaluated item facts.");
         var items = new List<(string Kind, string Path)>();
         foreach (var kind in new[] { "Compile", "Page", "ApplicationDefinition", "ProjectReference" })
         {
-            if (!groups.TryGetProperty(kind, out var group) || group.ValueKind != JsonValueKind.Array)
+            if (!groups.TryGetValue(kind, out var group))
                 throw new InvalidDataException($"Source MSBuild omitted {kind}.");
-            foreach (var item in group.EnumerateArray())
+            foreach (var item in group)
             {
-                if (!item.TryGetProperty("FullPath", out var path) || path.ValueKind != JsonValueKind.String ||
-                    !Path.IsPathFullyQualified(path.GetString()!))
+                if (!Path.IsPathFullyQualified(item.FullPath))
                     throw new InvalidDataException($"Source {kind} item has no evaluated absolute FullPath.");
-                items.Add((kind, path.GetString()!));
+                items.Add((kind, item.FullPath));
             }
         }
         return items;

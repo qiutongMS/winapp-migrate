@@ -12,20 +12,23 @@ namespace UwpMigration.Enforcement;
 
 public sealed class FourCheckAcceptance
 {
-    public const string PlanPath = ".migration-evidence/acceptance/four-checks-plan.json";
+    public const string SurfaceMapPath = ".migration-evidence/acceptance/four-checks-surfaces.json";
     public const string InventoryPath = ".migration-evidence/acceptance/four-checks-inventory.json";
     public const string ResultPath = ".migration-evidence/acceptance/four-checks-result.json";
     private readonly FourCheckInventoryBuilder _inventoryBuilder;
+    private readonly IWindowOwnerResolver _windowOwnerResolver;
 
-    public FourCheckAcceptance(IEnforcementProcessRunner processRunner)
-        : this(new UwpSourceBuilder(processRunner).InspectItemsAsync)
+    public FourCheckAcceptance(IEnforcementProcessRunner processRunner, IWindowOwnerResolver? windowOwnerResolver = null)
+        : this(new UwpSourceBuilder(processRunner).InspectItemsAsync, windowOwnerResolver)
     {
     }
 
     internal FourCheckAcceptance(
-        Func<FileInfo, CancellationToken, Task<IReadOnlyList<(string Kind, string Path)>>> inspectItems)
+        Func<FileInfo, CancellationToken, Task<IReadOnlyList<(string Kind, string Path)>>> inspectItems,
+        IWindowOwnerResolver? windowOwnerResolver = null)
     {
         _inventoryBuilder = new(inspectItems);
+        _windowOwnerResolver = windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance;
     }
 
     public async Task<FourCheckInventory> InventoryAsync(
@@ -34,20 +37,21 @@ public sealed class FourCheckAcceptance
         await using var operationLock = await EnforcementStore.AcquireLockAsync(target, cancellationToken);
         var (report, source, project) = await LoadSourceAsync(target, cancellationToken);
         var inventory = await _inventoryBuilder.BuildAsync(project, cancellationToken);
-        if (!EnforcementStore.TryResolveContainedPath(target, PlanPath, out var planFile, out var error))
+        if (!EnforcementStore.TryResolveContainedPath(target, SurfaceMapPath, out var planFile, out var error))
             throw new InvalidDataException(error);
-        var plan = !File.Exists(planFile) ? new FourCheckPlan
+        var plan = !File.Exists(planFile) ? new FourCheckSurfaceMap
         {
             SourceInputFingerprint = inventory.SourceInputFingerprint
-        } : FourCheckJson.Read<FourCheckPlan>(target, PlanPath);
-        ValidatePlan(plan);
+        } : FourCheckJson.Read<FourCheckSurfaceMap>(target, SurfaceMapPath);
+        ValidateMap(plan);
         AddDeclaredSurfaces(plan, inventory);
-        AddRuntimeSurfaces(target, report, source, project, plan, inventory);
+        var states = await LoadStatesAsync(target, report, cancellationToken);
+        AddRuntimeSurfaces(target, report, source, project, plan, states, inventory);
         foreach (var surface in inventory.Surfaces.Where(surface => surface.Kind != "runtime-uia"))
             if (plan.Mappings.All(mapping => mapping.SurfaceId != surface.Id))
                 plan.Mappings.Add(new() { SurfaceId = surface.Id });
         await FourCheckJson.WriteAsync(target, InventoryPath, inventory, cancellationToken);
-        await FourCheckJson.WriteAsync(target, PlanPath, plan, cancellationToken);
+        await FourCheckJson.WriteAsync(target, SurfaceMapPath, plan, cancellationToken);
         return inventory;
     }
 
@@ -56,34 +60,56 @@ public sealed class FourCheckAcceptance
     {
         await using var operationLock = await EnforcementStore.AcquireLockAsync(target, cancellationToken);
         var (report, source, project) = await LoadSourceAsync(target, cancellationToken);
-        var plan = FourCheckJson.Read<FourCheckPlan>(target, PlanPath);
-        ValidatePlan(plan);
+        var plan = FourCheckJson.Read<FourCheckSurfaceMap>(target, SurfaceMapPath);
+        ValidateMap(plan);
         var inventory = await _inventoryBuilder.BuildAsync(project, cancellationToken);
         if (plan.SourceInputFingerprint != inventory.SourceInputFingerprint)
             inventory.DiscoveryIssues.Add("Source evaluated inputs changed. Review a new inventory and explicitly update the plan fingerprint.");
         AddDeclaredSurfaces(plan, inventory);
-        AddRuntimeSurfaces(target, report, source, project, plan, inventory);
+        var plannedStates = await LoadStatesAsync(target, report, cancellationToken);
+        AddRuntimeSurfaces(target, report, source, project, plan, plannedStates, inventory);
         var fingerprint = await TargetFingerprint.ComputeAsync(target, cancellationToken);
         var states = new List<FourCheckStateResult>();
         var startupIssues = new List<string>();
         ReplayAttestation? replay = null;
-        try { replay = ScopedAcceptanceEvidence.RequireStartup(target, fingerprint); }
-        catch (Exception exception) when (IsEvidenceError(exception)) { startupIssues.Add(exception.Message); }
-        foreach (var state in plan.States)
+        try
+        {
+            var build = ReadGateway<BuildAttestation>(target, EnforcementStore.BuildAttestationPath);
+            replay = ReadGateway<ReplayAttestation>(target, EnforcementStore.ReplayAttestationPath);
+            if (!build.Success || build.ExitCode != 0 || !replay.Success || replay.ExitCode != 0 ||
+                build.TargetFingerprint != fingerprint || replay.TargetFingerprint != fingerprint ||
+                !CanonicalAttestationTrust.Verify(target, build) || !CanonicalAttestationTrust.Verify(target, replay))
+                throw new InvalidDataException("Startup requires current authenticated successful build and replay evidence.");
+        }
+        catch (Exception exception) when (IsEvidenceError(exception))
+        {
+            replay = null;
+            startupIssues.Add(exception.Message);
+        }
+        foreach (var state in plannedStates)
         {
             try
             {
                 if (replay is null) throw new InvalidDataException("A fresh authenticated target replay is required.");
-                var sourceTree = ReadSourceSequence(target, report, source, project, state.SourceProbes);
-                var targetTree = ScopedAcceptanceEvidence.ReadTargetSequence(target, replay, state.TargetProbes);
-                var left = UiStructureComparison.Read(sourceTree);
-                var right = UiStructureComparison.Read(targetTree);
-                if (state.Predicates.Count == 0)
-                    throw new InvalidDataException("Reachability needs an explicit observed endpoint predicate, not only successful clicks.");
-                foreach (var predicate in state.Predicates)
-                    RequirePredicate(left, right, predicate);
+                var sourceProbes = ProbePaths(state.Source);
+                var targetProbes = ProbePaths(state.Target);
+                var left = ReadSourceSequence(target, report, source, project, sourceProbes);
+                var sourceEndpoint = ReadGateway<SourceUiProbe>(target, sourceProbes[^1]);
+                if (state.Assertions.Any(assertion => assertion.Kind != "ui-property-equals-source" ||
+                        assertion.ProbeIndex != targetProbes.Count - 1 ||
+                        StateClosureProtocol.FileHash(target, assertion.SourceEvidence) != sourceEndpoint.StandardOutputSha256))
+                    throw new InvalidDataException("Four-checks reuses nonvisual endpoint assertions in state-plan; visual or intermediate assertions require a separate scope.");
+                var proof = StateClosureProtocol.Derive(
+                    target, state, replay, targetProbes, DateTimeOffset.UtcNow, _windowOwnerResolver);
+                if (proof.VerificationLevel != StateVerificationLevel.ParityVerified)
+                    throw new InvalidDataException(string.Join(" ", proof.Issues));
+                if (targetProbes.Count(path => ReadGateway<UiDevelopmentProbe>(target, path).Command[2] == "inspect") != 1)
+                    throw new InvalidDataException("Each state needs exactly one target inspect endpoint; account intermediate observations separately.");
+                var endpoint = ReadGateway<UiDevelopmentProbe>(target, targetProbes[^1]);
+                var right = UiStructureComparison.ReadCapture(
+                    ReadGateway<JsonElement>(target, endpoint.StandardOutputPath), endpoint.Command, endpoint.WindowHandle);
                 states.Add(new(state.Id, "passed",
-                    UiStructureComparison.Compare(left, right, state.StructureExceptions), null));
+                    UiStructureComparison.Compare(left, right, plan.StructureExceptions.GetValueOrDefault(state.Id) ?? []), null));
             }
             catch (Exception exception) when (IsEvidenceError(exception))
             {
@@ -136,7 +162,7 @@ public sealed class FourCheckAcceptance
         var staleMappings = plan.Mappings.Where(mapping =>
             inventory.Surfaces.All(surface => surface.Id != mapping.SurfaceId)).ToArray();
         if (staleMappings.Length > 0) accountingIssues.Add("Plan contains stale or unknown surface mappings.");
-        if (plan.States.Count == 0 || !states.Any(state => state.Reachability == "passed"))
+        if (plannedStates.Count == 0 || !states.Any(state => state.Reachability == "passed"))
             startupIssues.Add("No successful post-launch inspect proves an observable, responsive application window.");
         if (requiredStates.Count == 0) reachabilityIssues.Add("No required application states have been accounted for.");
         var structureIssues = states.SelectMany(state =>
@@ -167,23 +193,19 @@ public sealed class FourCheckAcceptance
     private static AcceptanceCheck Check(string id, int required, int satisfied, List<string> issues) =>
         new(id, required > 0 && issues.Count == 0 ? "passed" : "unknown", required, satisfied, issues);
 
-    private static void ValidatePlan(FourCheckPlan plan)
+    private static void ValidateMap(FourCheckSurfaceMap plan)
     {
         if (plan.SchemaVersion != "1.0" || plan.Profile != "four-checks" ||
             string.IsNullOrWhiteSpace(plan.SourceInputFingerprint) ||
-            plan.Mappings is null || plan.States is null || plan.AdditionalSurfaces is null ||
+            plan.Mappings is null || plan.StructureExceptions is null || plan.AdditionalSurfaces is null ||
             plan.Mappings.Any(mapping => mapping is null || string.IsNullOrWhiteSpace(mapping.SurfaceId) || mapping.StateIds is null) ||
             plan.Mappings.Select(mapping => mapping.SurfaceId).Distinct(StringComparer.Ordinal).Count() != plan.Mappings.Count ||
-            plan.States.Any(state => state is null || string.IsNullOrWhiteSpace(state.Id) ||
-                state.SourceProbes is null || state.TargetProbes is null ||
-                state.Predicates is null || state.Predicates.Any(predicate => predicate is null) ||
-                state.StructureExceptions is null || state.StructureExceptions.Any(item => item is null)) ||
-            plan.AdditionalSurfaces.Any(surface => surface is null) ||
-            plan.States.Select(state => state.Id).Distinct(StringComparer.Ordinal).Count() != plan.States.Count)
-            throw new InvalidDataException("Malformed, duplicate or unsupported four-checks plan.");
+            plan.StructureExceptions.Any(pair => pair.Value is null || pair.Value.Any(item => item is null)) ||
+            plan.AdditionalSurfaces.Any(surface => surface is null))
+            throw new InvalidDataException("Malformed, duplicate or unsupported four-checks surface map.");
     }
 
-    private static void AddDeclaredSurfaces(FourCheckPlan plan, FourCheckInventory inventory)
+    private static void AddDeclaredSurfaces(FourCheckSurfaceMap plan, FourCheckInventory inventory)
     {
         foreach (var surface in plan.AdditionalSurfaces)
         {
@@ -199,10 +221,10 @@ public sealed class FourCheckAcceptance
 
     private static void AddRuntimeSurfaces(
         DirectoryInfo target, MigrationReport report, DirectoryInfo source, FileInfo project,
-        FourCheckPlan plan, FourCheckInventory inventory)
+        FourCheckSurfaceMap plan, IReadOnlyList<MigrationState> states, FourCheckInventory inventory)
     {
         var assigned = new HashSet<string>(
-            plan.States.SelectMany(state => state.SourceProbes), StringComparer.Ordinal);
+            states.SelectMany(state => ProbePaths(state.Source)), StringComparer.Ordinal);
         var gatewayRoot = $"{report.Validation.SourceBaseline.EvidenceRoot.TrimEnd('/')}/gateway/probes";
         if (EnforcementStore.TryResolveContainedPath(target, gatewayRoot, out var probesRoot, out _) &&
             Directory.Exists(probesRoot))
@@ -237,12 +259,11 @@ public sealed class FourCheckAcceptance
                 }
             }
         }
-        foreach (var state in plan.States)
+        foreach (var state in states)
         {
             try
             {
-                var nodes = UiStructureComparison.Read(
-                    ReadSourceSequence(target, report, source, project, state.SourceProbes));
+                var nodes = ReadSourceSequence(target, report, source, project, ProbePaths(state.Source));
                 inventory.Surfaces.AddRange(nodes.Select(node => new AcceptanceSurface(
                     $"runtime:{state.Id}:{node.Path}", "runtime-uia", state.Id,
                     $"{node.Type} {node.Name}", false)));
@@ -252,7 +273,9 @@ public sealed class FourCheckAcceptance
                 inventory.DiscoveryIssues.Add($"{state.Id}: source runtime inventory incomplete: {exception.Message}");
             }
         }
-        if (plan.States.Count == 0) inventory.DiscoveryIssues.Add("Source runtime surface inventory has not been captured.");
+        if (states.Count == 0) inventory.DiscoveryIssues.Add("Source runtime surface inventory has not been captured.");
+        if (plan.StructureExceptions.Keys.Any(id => states.All(state => state.Id != id)))
+            inventory.DiscoveryIssues.Add("Structure exceptions reference an unknown state-plan state.");
     }
 
     private static bool TryAccount(
@@ -291,26 +314,7 @@ public sealed class FourCheckAcceptance
         return true;
     }
 
-    private static void RequirePredicate(
-        IReadOnlyList<UiStructureNode> source, IReadOnlyList<UiStructureNode> target, SurfacePredicate predicate)
-    {
-        var left = source.SingleOrDefault(node => node.Path == predicate.SourceNode);
-        var right = target.SingleOrDefault(node => node.Path == predicate.TargetNode);
-        if (left is null || right is null || predicate.Expected.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-            throw new InvalidDataException("Reachability predicate requires observed source and target nodes and an expected value.");
-        string? Value(UiStructureNode node) => predicate.Property switch
-        {
-            "name" => JsonSerializer.Serialize(node.Name),
-            "type" => JsonSerializer.Serialize(node.Type),
-            "isEnabled" => node.IsEnabled is null ? null : JsonSerializer.Serialize(node.IsEnabled.Value),
-            "isOffscreen" => node.IsOffscreen is null ? null : JsonSerializer.Serialize(node.IsOffscreen.Value),
-            _ => throw new InvalidDataException("Endpoint predicates support name, type, isEnabled and isOffscreen.")
-        };
-        if (Value(left) != predicate.Expected.GetRawText() || Value(right) != predicate.Expected.GetRawText())
-            throw new InvalidDataException("A state endpoint predicate was not satisfied on both source and target.");
-    }
-
-    private static JsonElement ReadSourceSequence(
+    private static IReadOnlyList<UiStructureNode> ReadSourceSequence(
         DirectoryInfo target, MigrationReport report, DirectoryInfo source, FileInfo project,
         List<string> paths)
     {
@@ -318,7 +322,7 @@ public sealed class FourCheckAcceptance
         if (paths.Count == 0 || paths.Distinct(StringComparer.Ordinal).Count() != paths.Count)
             throw new InvalidDataException("A nonempty ordered source gateway probe sequence is required.");
         var gateway = $"{report.Validation.SourceBaseline.EvidenceRoot.TrimEnd('/')}/gateway";
-        var plan = FourCheckJson.Read<FourCheckPlan>(target, PlanPath);
+        var plan = FourCheckJson.Read<FourCheckSurfaceMap>(target, SurfaceMapPath);
         SourceUiProbe? last = null;
         SourceRunAttestation? run = null;
         var previous = DateTimeOffset.MinValue;
@@ -362,10 +366,24 @@ public sealed class FourCheckAcceptance
         }
         if (inspectCount != 1)
             throw new InvalidDataException("Each state requires exactly one source inspect endpoint; account intermediate observed states separately.");
-        var window = ScopedAcceptanceEvidence.RequireInspect(last!.Command);
-        if (window != last.WindowHandle) throw new InvalidDataException("Source inspect window does not match its receipt.");
-        return ScopedAcceptanceEvidence.RequireTreeWindow(
-            ReadGateway<JsonElement>(target, last.StandardOutputPath), window);
+        return UiStructureComparison.ReadCapture(
+            ReadGateway<JsonElement>(target, last!.StandardOutputPath), last.Command, last.WindowHandle);
+    }
+
+    private static List<string> ProbePaths(StateObservation observation) =>
+        observation.Evidence.Where(path => path.EndsWith("/probe.json", StringComparison.Ordinal)).ToList();
+
+    private static async Task<IReadOnlyList<MigrationState>> LoadStatesAsync(
+        DirectoryInfo target, MigrationReport report, CancellationToken cancellationToken)
+    {
+        var (plan, error) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(
+            target, report.Validation.StatePlan, cancellationToken);
+        if (error is not null) throw new InvalidDataException(error);
+        if (plan is null) return [];
+        if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion)
+            throw new InvalidDataException("A current state-plan is required.");
+        if (plan.States.Count > 0) RequiredStateContracts.ValidateRequirements(plan);
+        return plan.States;
     }
 
     private static T ReadGateway<T>(DirectoryInfo target, string path)

@@ -109,7 +109,19 @@ public sealed class UiStructureComparisonTests
     public void Evidence_FilteredInspectCannotClaimWholeApplicationStructure(string filter)
     {
         Assert.ThrowsExactly<InvalidDataException>(() =>
-            ScopedAcceptanceEvidence.RequireInspect(["winapp", "ui", "inspect", filter, "-w", "42", "--json"]));
+            UiStructureComparison.ReadCapture(JsonSerializer.Deserialize<JsonElement>(
+                """{"windows":[{"hwnd":42,"elements":[]}]}"""),
+                ["winapp", "ui", "inspect", filter, "-w", "42", "--json"], 42));
+    }
+
+    [TestMethod]
+    [DataRow("[]")]
+    [DataRow("""{"windows":[{"hwnd":43,"elements":[]}]}""")]
+    public void ReadCapture_MalformedOrWrongWindowOutputCannotBecomeStructureEvidence(string json)
+    {
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            UiStructureComparison.ReadCapture(JsonSerializer.Deserialize<JsonElement>(json),
+                ["winapp", "ui", "inspect", "-w", "42", "--json"], 42));
     }
 
     private static IReadOnlyList<UiStructureNode> Tree(string node) =>

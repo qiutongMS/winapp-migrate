@@ -14,7 +14,7 @@ internal sealed class UwpAcceptanceCommand : Command
         : base("acceptance", "Opt-in bounded acceptance; never changes strict closure, TODOs or migration-report validation.")
     {
         Subcommands.Add(Create("inventory",
-            "Evaluate source XAML/code/project references and observed UIA surfaces; create or extend the four-checks plan without accepting pending mappings.",
+            "Evaluate source UI surfaces and extend their accounting map; reuse existing state-plan requirements and evidence.",
             processRunner, inventory: true));
         Subcommands.Add(Create("assess",
             "Re-derive startup, surface accounting, state reachability and semantic UIA structure. Visual and internal lifecycle claims are excluded.",

@@ -249,7 +249,7 @@ public sealed class UwpSourceGateway
             cancellationToken);
         string? acceptanceInputFingerprint = null;
         if (EnforcementStore.TryResolveContainedPath(
-                workspace.Target, FourCheckAcceptance.PlanPath, out var acceptancePlanPath, out _) &&
+                workspace.Target, FourCheckAcceptance.SurfaceMapPath, out var acceptancePlanPath, out _) &&
             File.Exists(acceptancePlanPath))
         {
             var inventory = await new FourCheckInventoryBuilder(
@@ -257,7 +257,7 @@ public sealed class UwpSourceGateway
                     new FileInfo(workspace.SourceProject), cancellationToken);
             if (inventory.DiscoveryIssues.Count > 0)
                 throw new InvalidDataException("Four-check source inventory is incomplete; source capture cannot establish its input binding.");
-            var acceptancePlan = FourCheckJson.Read<FourCheckPlan>(workspace.Target, FourCheckAcceptance.PlanPath);
+            var acceptancePlan = FourCheckJson.Read<FourCheckSurfaceMap>(workspace.Target, FourCheckAcceptance.SurfaceMapPath);
             if (acceptancePlan.SourceInputFingerprint != inventory.SourceInputFingerprint)
                 throw new InvalidDataException("Four-check source inputs changed before source launch. Review the inventory first.");
             acceptanceInputFingerprint = inventory.SourceInputFingerprint;

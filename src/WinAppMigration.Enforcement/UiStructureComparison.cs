@@ -21,6 +21,31 @@ public static class UiStructureComparison
     private static readonly string[] OptionalProperties =
         ["value", "isSelected", "expandState", "toggleState"];
 
+    public static IReadOnlyList<UiStructureNode> ReadCapture(
+        JsonElement tree, IReadOnlyList<string> command, long? window)
+    {
+        if (command.Count < 3 || command[1] != "ui" || command[2] != "inspect" ||
+            !command.Contains("--json"))
+            throw new InvalidDataException("A whole-window inspect --json endpoint is required.");
+        var arguments = command.Skip(2).ToArray();
+        for (var index = 1; index < arguments.Length; index++)
+        {
+            if (WinAppUiArguments.TryOption(arguments, ref index, "-w", "--window", out _) ||
+                WinAppUiArguments.TryOption(arguments, ref index, "-d", "--depth", out _))
+                continue;
+            if (arguments[index] != "--json")
+                throw new InvalidDataException("Selected or filtered inspect cannot prove whole-window structure.");
+        }
+        if (window is not > 0 || ReplayWindowBinding.RequireWindow(arguments) != window ||
+            tree.ValueKind != JsonValueKind.Object ||
+            !tree.TryGetProperty("windows", out var windows) ||
+            windows.ValueKind != JsonValueKind.Array || windows.GetArrayLength() != 1 ||
+            !windows[0].TryGetProperty("hwnd", out var hwnd) || hwnd.ValueKind != JsonValueKind.Number ||
+            !hwnd.TryGetInt64(out var handle) || handle != window)
+            throw new InvalidDataException("Inspect output must identify the gateway-bound window.");
+        return Read(tree);
+    }
+
     public static IReadOnlyList<UiStructureNode> Read(JsonElement tree)
     {
         if (tree.ValueKind != JsonValueKind.Object ||

@@ -7,13 +7,13 @@ using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement;
 
-public sealed class FourCheckPlan
+public sealed class FourCheckSurfaceMap
 {
     public string SchemaVersion { get; set; } = "1.0";
     public string Profile { get; set; } = "four-checks";
     public string SourceInputFingerprint { get; set; } = string.Empty;
     public List<SurfaceMapping> Mappings { get; set; } = [];
-    public List<FourCheckState> States { get; set; } = [];
+    public Dictionary<string, List<UiStructureNormalization>> StructureExceptions { get; set; } = [];
     public List<DeclaredSurface> AdditionalSurfaces { get; set; } = [];
 }
 
@@ -25,23 +25,6 @@ public sealed class SurfaceMapping
     public string? TargetNode { get; set; }
     public string Reason { get; set; } = string.Empty;
     public List<string> StateIds { get; set; } = [];
-}
-
-public sealed class FourCheckState
-{
-    public string Id { get; set; } = string.Empty;
-    public List<string> SourceProbes { get; set; } = [];
-    public List<string> TargetProbes { get; set; } = [];
-    public List<SurfacePredicate> Predicates { get; set; } = [];
-    public List<UiStructureNormalization> StructureExceptions { get; set; } = [];
-}
-
-public sealed class SurfacePredicate
-{
-    public string SourceNode { get; set; } = string.Empty;
-    public string TargetNode { get; set; } = string.Empty;
-    public string Property { get; set; } = string.Empty;
-    public JsonElement Expected { get; set; }
 }
 
 public sealed record DeclaredSurface(string Id, string Kind, string Reason);

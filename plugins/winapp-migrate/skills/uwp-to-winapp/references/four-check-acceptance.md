@@ -1,164 +1,113 @@
 # Bounded four-check acceptance
 
-This is an **explicit opt-in profile**, not a weaker interpretation of strict
-closure. It has its own versioned plan, inventory and result under
-`.migration-evidence/acceptance`. Existing migration-report schema 1.7,
-state-plan 2.0, TODO states and source/closure gateway rules are unchanged.
-Neither command edits the report, TODO receipts or strict state plan.
+Explicit opt-in; existing defaults, strict closure and TODO/report verification
+are unchanged:
 
 ```powershell
 winapp-migrate uwp acceptance inventory "<target>" --profile four-checks
-winapp-migrate uwp acceptance assess "<target>" --profile four-checks
 winapp-migrate uwp acceptance assess "<target>" --profile four-checks --strict
 ```
 
-`--profile` is required. Here `--strict` only makes the assessment exit nonzero
-unless all **four checks** pass. It does not invoke strict migration closure.
-Malformed artifacts are command errors; insufficient evidence yields a
-persisted partial result with unknown checks, not a fabricated success.
+`--profile` is required. `--strict` only returns nonzero unless these four
+checks pass; it never invokes strict finalize. Missing evidence yields partial,
+structural differences fail, and malformed artifacts are command errors.
 
-## What is actually checked
+## Reuse the existing workflow
 
-| Check | Evidence and stopping condition |
-|---|---|
-| Startup | Current authenticated successful build/replay plus a successful post-launch whole-window inspect from that replay. This proves an observed responsive window, not indefinite stability or crash freedom. |
-| Surface accounting | Re-evaluate the exact report-recorded source project and referenced projects with Visual Studio MSBuild. Include linked Compile/Page/ApplicationDefinition inputs, every static XAML element, navigation/UI-call candidates, per-code-file review obligations, explicitly discovered dynamic surfaces and observed source UIA nodes. Every static/discovered entry needs an explicit target mapping or justified not-applicable disposition. Observed UIA nodes are mapped by a complete successful paired structure comparison. |
-| Reachability | Every applicable Page, Window, dialog, flyout, page-level VisualState and declared major mode needs mapped states. Every mapped state needs successful ordered source/target gateway probes and an observable endpoint predicate satisfied on both sides. Mutually exclusive VisualStates cannot reuse one state observation. |
-| Semantic structure | Compare the complete captured application trees in order: control role, semantic parentage, name, enabled/offscreen state and available value/selection/expansion/toggle properties. No screenshot is necessary. A missing required property, truncated tree, missing source observation or unproved endpoint is unknown. A conclusive structural difference fails. |
+There is **one state plan**, the report's existing schema 2.0 `state-plan`.
+Use its immutable requirements, ordered actions, nonvisual
+`ui-property-equals-source` assertions, and `source.evidence` /
+`target.evidence`. The assessor calls the existing `StateClosureProtocol.Derive`;
+it does not implement another state scheduler, assertion language or target
+receipt verifier. It never writes state observations or closure attestations.
 
-Accounting is **not** automatic proof of all application behavior. The lexical
-C# candidates deliberately over-approximate `typeof`, navigation and common
-UI-show calls; they are not a C# semantic analyzer. Review every code-file
-entry for dynamic factories, conditional compilation, custom navigation,
-runtime dialogs and major modes. Add discoveries to `additionalSurfaces`.
-Do not mark unresolved code review not-applicable merely to clear the list.
-The inventory denominator is re-derived during assessment; deleting a row or
-omitting a state from the authored plan cannot remove its static obligation.
+Establish the smallest scope-appropriate nonvisual state contracts before
+source capture, using the existing gateways. Do not remove frozen requirements
+or bypass gateway rules. A visual/intermediate assertion or an off-scope
+restoration in an existing contract is a scope conflict, not permission to
+weaken the contract or start an endless repair loop.
 
-The evaluated configuration is Debug/x64. Other configurations, dynamically
-downloaded UI, reflection-created content, UIA virtualization and surfaces
-not exercised by the recorded exploration are not automatically discovered.
-Explicitly review and account for these limits; never describe this result
-as universal feature coverage. A framework element lacking a UIA peer is
-still a static accounting obligation, not automatic not-applicable evidence.
+Record ordered canonical `.../probe.json` receipt paths in each state's
+`source.evidence` and `target.evidence`, in addition to existing evidence.
+Each sequence must end in exactly one whole-window, unfiltered `inspect --json`.
+Intermediate inspect observations need separate state comparisons. Source
+assertion files must contain the same bytes as that authenticated source
+endpoint; they cannot be independently edited baselines. Target assertions
+must observe the final endpoint. Select assertions that identify the page/mode,
+not a button common to every state. If identity cannot be observed, report
+unknown. Unassigned current source inspect observations remain inventory gaps.
 
-## Workflow
+## Additional accounting, not another state plan
 
-1. Mechanically migrate once to the explicitly selected target. Run inventory
-   **before the source baseline**. It evaluates items without a build/restore,
-   follows project references and retains linked files outside the sample
-   directory. Failed evaluation or unreadable inputs remain discovery issues.
-2. Read `four-checks-inventory.json`. In `four-checks-plan.json`, resolve each
-   mapping and review code candidates; add dynamic windows/dialogs/modes.
-   Do not copy external source inputs into the sample to hide link failures.
-3. Use the existing source/closure gateways with the smallest valid nonvisual
-   state contract. In four-check workflows the source run additionally seals
-   the evaluated source-input fingerprint; new source probes seal their raw
-   output hashes. Old unsigned source evidence is not retroactively trusted.
-4. Record finite navigation/action sequences and one final **whole-window**
-   `inspect --json` per observed state, on source and target. Use actual gateway
-   receipt paths, not copied raw trees, screenshots or authored success JSON.
-   Each sequence must be successful, ordered, from one run, and end in inspect.
-   Intermediate inspect endpoints need separate state comparisons. Unassigned
-   successful inspect observations from the current input-bound source run
-   remain inventory gaps.
-5. Add those sequences, endpoint predicates and justified structure
-   normalizations to the acceptance plan. Run inventory again to inspect the
-   runtime surface list. It adds pending static/discovered mappings without
-   accepting them or deleting existing decisions.
-6. Assess, repair only failures of the four checks, and stop at passed or an
-   explicit partial/failed handoff. The result lists all four denominators,
-   state outcomes, unknowns and differences. Do not call strict finalize to
-   try to turn this result into a different acceptance claim.
-
-Source inputs are re-evaluated and hashed on every assessment. A source change
-requires explicit inventory/plan review and a new source baseline. A target
-change invalidates old target replay evidence. An inventory refresh never
-silently updates an existing plan's source fingerprint.
-
-## Plan shape
-
-The generated plan uses schema `1.0`, profile `four-checks`. Example entries:
+Run inventory **before source launch**. It evaluates Debug/x64 source items
+without building/restoring, follows project references and retains linked
+Compile/Page/ApplicationDefinition inputs. Re-evaluation failures are gaps.
+The generated `.migration-evidence/acceptance/four-checks-surfaces.json` only holds
+the source-input fingerprint, surface mappings, discovered dynamic surfaces
+and node-local structure normalizations. State IDs refer to the existing plan:
 
 ```json
 {
   "schemaVersion": "1.0",
   "profile": "four-checks",
-  "sourceInputFingerprint": "<generated input fingerprint>",
+  "sourceInputFingerprint": "<generated>",
   "mappings": [
     {
-      "surfaceId": "<generated static surface ID>",
+      "surfaceId": "<generated>",
       "disposition": "mapped",
       "targetFile": "MainPage.xaml",
       "targetNode": "0.1",
-      "reason": "The original page declaration is retained here.",
+      "reason": "The original declaration is retained here.",
       "stateIds": ["main-page"]
     }
   ],
-  "states": [
-    {
-      "id": "main-page",
-      "sourceProbes": [".migration-evidence/source/gateway/probes/<id>/probe.json"],
-      "targetProbes": [".migration-evidence/enforcement/probes/<id>/probe.json"],
-      "predicates": [
-        {
-          "sourceNode": "0.1",
-          "targetNode": "0.2.1",
-          "property": "name",
-          "expected": "Main page"
-        }
-      ],
-      "structureExceptions": [
-        {
-          "side": "target",
-          "path": "0.2",
-          "property": "wrapper",
-          "reason": "Desktop host container; all children are still compared."
-        }
-      ]
-    }
-  ],
+  "structureExceptions": {
+    "main-page": [
+      {"side": "target", "path": "0.2", "property": "wrapper", "reason": "Desktop host; all children remain compared."}
+    ]
+  },
   "additionalSurfaces": [
     {"id": "runtime-dialog", "kind": "dialog", "reason": "Discovered in the reviewed dialog factory."}
   ]
 }
 ```
 
-XAML `targetNode` and runtime paths are zero-based element/child index paths;
-they are not AutomationIds. A mapped static XAML entry must resolve to an
-existing target XAML node. `not-applicable` requires a concrete rationale.
-Runtime entries are accounted through successful full-tree comparison, not
-handwritten `passed` fields. Missing, stale, duplicate and unknown mapping IDs
-are not silently accepted.
+Every static XAML element, lexical navigation/UI-call candidate, code-file
+review obligation and declared dynamic surface needs a target mapping or
+justified `not-applicable` disposition. Mapped XAML paths must resolve to actual
+target nodes. Paths are zero-based element/child indices, not AutomationIds.
+Deleting authored rows cannot shrink the re-derived inventory. Review each
+code file for dynamic factories, conditional UI, reflection and custom
+navigation; declare additional discoveries instead of clearing unresolved work.
 
-Endpoint predicates support `name`, `type`, `isEnabled` and `isOffscreen`.
-Choose a predicate that actually identifies the page/mode, not a button
-common to every state. If mode identity is not observable, retain unknown;
-do not infer object creation from absent UIA nodes or call `FindName` to
-passively inspect a lazy element.
+## Four checks and limits
 
-## Normalization and excluded work
+| Check | Requirement |
+|---|---|
+| Startup | Current authenticated successful build/replay and a successful post-launch state endpoint. Proves an observed responsive window, not indefinite stability. |
+| Surface accounting | All evaluated static/review/discovered entries explicitly accounted for, plus complete paired mapping of observed source UIA nodes. |
+| Reachability | Every applicable Page, Window, dialog, flyout, page-level VisualState and declared major mode mapped to successful existing state contracts. Mutually exclusive VisualStates cannot reuse one observation. Template interaction states are not automatically major modes. |
+| Semantic structure | Whole captured trees compared in order: role, semantic parentage, name, enabled/offscreen and available value/selection/expansion/toggle properties. Missing properties/truncated trees are unknown; conclusive differences fail. |
 
-Structural exceptions are local to one side and one node and require a reason:
+Reasoned normalizations are local to one side/node: `wrapper` promotes children
+of a Window/Pane/Group; `host-chrome` omits TitleBar or recognized native
+caption/input-sink containers; `name`/`value` excludes only that property.
+Application controls cannot be removed as chrome. Framework class names,
+generated selectors, AutomationIds and physical geometry are not semantic roles.
 
-- `wrapper`: promote children of a Window/Pane/Group without dropping them.
-- `host-chrome`: omit a TitleBar or the known native caption/input-sink
-  containers (`ReunionWindowingCaptionControls`, `InputNonClientPointerSource`).
-  Arbitrary application controls cannot be removed as host chrome.
-- `name` / `value`: exclude that single property, for example a launch-time
-  timestamp. Enabled/visibility state, role and hierarchy remain compared.
+Accounting is not universal behavior discovery. C# candidates are lexical,
+not a semantic analyzer; other configurations, downloaded UI, virtualization
+and unexercised behavior need review. Elements without UIA peers still require
+static accounting. Do not use FindName as a passive lazy-creation probe.
 
-Framework class names, generated selectors, physical coordinates and
-AutomationIds are not compared as semantic roles. Extra application nodes,
-missing nodes, changed semantic parentage and reordered content are not
-automatically normalized away.
+Source inputs are re-evaluated/hashed. Changes require explicit map review and
+new source captures; target changes invalidate replay. Source runs seal the
+evaluated-input fingerprint and probes seal raw output hashes. Old unsigned
+observations are not retroactively trusted. Evidence uses the existing local
+signing authority: another machine must recapture, not trust imported seals.
 
-Fonts, pixel similarity, colors, exact default geometry, internal lazy/template
-instantiation, lifecycle counters, draft persistence, performance and complete
-functional parity are **not four-check completion gates**. They may be recorded
-as separate follow-up work. Fix them here only when a concrete defect blocks
-startup, accounting, major-state reachability or observable structure.
-
-Evidence uses the existing local signing authority. Assess on the capturing
-machine; a different machine can audit the code and artifacts but must
-recapture locally rather than trust imported signatures as local evidence.
+The inventory/result are persisted separately under `acceptance`. A pass is
+not strict closure or `parityStatus: verified`. Fonts, pixels, colors, exact
+geometry, internal lazy/template lifecycle, draft persistence, performance
+and full functional parity are excluded unless they directly block one of
+the four checks. Stop at passed or an explicit partial/failed handoff.
