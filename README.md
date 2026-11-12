@@ -52,6 +52,21 @@ UI automation. WinApp CLI does not need classic UWP `.csproj` build support.
 
 ## UWP pipeline
 
+Bounded acceptance is available as an explicit opt-in, independently of strict
+behavioral closure:
+
+```powershell
+winapp-migrate uwp acceptance inventory "<target>" --profile four-checks
+winapp-migrate uwp acceptance assess "<target>" --profile four-checks --strict
+```
+
+The four checks are startup, source surface accounting, major-state
+reachability and semantic UIA structure. Their separate result never verifies
+strict TODOs or changes migration-report parity. Visual/pixel parity and
+internal lifecycle proofs are excluded. Read the
+[workflow, evidence requirements and discovery limits](plugins/winapp-migrate/skills/uwp-to-winapp/references/four-check-acceptance.md)
+before authoring the plan. Existing defaults and strict closure are unchanged.
+
 The UWP pipeline owns schema 1.7 reports, source and dependency inventory,
 activation declarations, safe filesystem handling, deterministic XAML and C#
 transforms, residual findings, target-project graph verification, MSBuild item

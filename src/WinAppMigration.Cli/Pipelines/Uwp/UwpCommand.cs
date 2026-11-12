@@ -24,5 +24,6 @@ internal sealed class UwpCommand : Command
             enforcementProcessRunner as IWindowOwnerResolver ??
             WindowsWindowOwnerResolver.Instance));
         Subcommands.Add(new UwpEnforceCommand(enforcementProcessRunner));
+        Subcommands.Add(new UwpAcceptanceCommand(enforcementProcessRunner));
     }
 }

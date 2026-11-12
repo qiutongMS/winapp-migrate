@@ -183,6 +183,48 @@ internal sealed class UwpSourceBuilder : IUwpSourceBuilder
         }
     }
 
+    internal async Task<IReadOnlyList<(string Kind, string Path)>> InspectItemsAsync(
+        FileInfo project, CancellationToken cancellationToken)
+    {
+        var msbuild = _locateVisualStudioMsBuild()
+            ?? throw new InvalidDataException("Source surface inventory requires Visual Studio MSBuild.");
+        var arguments = new List<string>
+        {
+            project.FullName, "-nologo", "-verbosity:quiet",
+            "-getItem:Compile,Page,ApplicationDefinition,ProjectReference",
+            "-property:Configuration=Debug", "-property:Platform=x64"
+        };
+        if (IsClassicUwpProject(project))
+        {
+            var properties = ReadProjectProperties(project);
+            arguments.Add($"-property:TargetPlatformVersion={SelectTargetSdk(
+                properties.GetValueOrDefault("TargetPlatformVersion"),
+                properties.GetValueOrDefault("TargetPlatformMinVersion"),
+                _locateWindowsSdkVersions())}");
+        }
+        var result = await _processRunner.RunAsync(
+            msbuild.FullName, project.Directory!, arguments, cancellationToken);
+        if (result.ExitCode != 0 || result.InfrastructureFailure)
+            throw new InvalidDataException($"Source item evaluation failed without building/restoring: {result.Error}");
+        using var json = JsonDocument.Parse(result.Output);
+        if (!json.RootElement.TryGetProperty("Items", out var groups))
+            throw new InvalidDataException("Source MSBuild omitted evaluated item groups.");
+        var items = new List<(string Kind, string Path)>();
+        foreach (var kind in new[] { "Compile", "Page", "ApplicationDefinition", "ProjectReference" })
+        {
+            if (!groups.TryGetProperty(kind, out var group) || group.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException($"Source MSBuild omitted {kind}.");
+            foreach (var item in group.EnumerateArray())
+            {
+                if (!item.TryGetProperty("FullPath", out var path) || path.ValueKind != JsonValueKind.String ||
+                    !Path.IsPathFullyQualified(path.GetString()!))
+                    throw new InvalidDataException($"Source {kind} item has no evaluated absolute FullPath.");
+                items.Add((kind, path.GetString()!));
+            }
+        }
+        return items;
+    }
+
     internal static IReadOnlyList<string> BuildMsBuildArguments(
         FileInfo sourceProject,
         string configuration,

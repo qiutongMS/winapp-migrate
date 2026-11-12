@@ -11,6 +11,34 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed class UwpSourceBuilderTests
 {
     [TestMethod]
+    public async Task InspectItems_UsesEvaluatedAbsoluteLinkedPathsWithoutBuildOrRestore()
+    {
+        using var fixture = await BuilderFixture.CreateAsync();
+        var linked = Path.GetFullPath(Path.Combine(fixture.Project.DirectoryName!, "..", "Shared.xaml"));
+        var output = JsonSerializer.Serialize(new
+        {
+            Items = new
+            {
+                Compile = Array.Empty<object>(),
+                Page = new[] { new { FullPath = linked } },
+                ApplicationDefinition = Array.Empty<object>(),
+                ProjectReference = Array.Empty<object>()
+            }
+        });
+        var process = new BuildProcessRunner(() => new EnforcementProcessResult(0, output, ""));
+        var builder = new UwpSourceBuilder(process, new FakePackageDependencyService(),
+            () => fixture.MsBuild, () => [new Version(10, 0, 22621, 0)]);
+
+        var items = await builder.InspectItemsAsync(fixture.Project, CancellationToken.None);
+
+        Assert.HasCount(1, items);
+        Assert.AreEqual(linked, items[0].Path);
+        CollectionAssert.Contains(process.Arguments, "-getItem:Compile,Page,ApplicationDefinition,ProjectReference");
+        Assert.IsFalse(process.Arguments.Any(argument =>
+            argument.Contains("restore", StringComparison.OrdinalIgnoreCase) || argument.StartsWith("-target", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public async Task Build_UsesVisualStudioMsBuildAndPreparesRestoredDependencies()
     {
         using var fixture = await BuilderFixture.CreateAsync();

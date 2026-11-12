@@ -135,6 +135,10 @@ public sealed class SourceGatewayTests
         Assert.AreEqual(run.Id, probe.SourceRunAttestationId);
         Assert.AreEqual(20, probe.WindowHandle);
         Assert.AreEqual(0, probe.ExitCode);
+        Assert.IsTrue(SourceAcceptanceSeal.Verify(run));
+        Assert.IsTrue(SourceAcceptanceSeal.Verify(probe));
+        Assert.AreEqual(StateClosureProtocol.FileHash(fixture.Target, probe.StandardOutputPath),
+            probe.StandardOutputSha256);
         Assert.IsTrue(File.Exists(fixture.Resolve(probe.ArtifactPath)));
         Assert.AreEqual(
             """{"nodes":[{"type":"Window","name":"Source"}]}""",
