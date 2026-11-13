@@ -119,14 +119,18 @@ internal static class TodoCompletionContract
     private static bool ReportFieldMatches(
         MigrationReport report,
         string target,
-        string expected) =>
-        target switch
-        {
-            "mechanicalVerification.targetProjectGraph.status" =>
-                report.MechanicalVerification.TargetProjectGraph.Status ==
-                expected,
-            _ => false
-        };
+        string expected)
+    {
+        if (target != "mechanicalVerification.targetProjectGraph.status")
+            return false;
+        var graph = report.MechanicalVerification.TargetProjectGraph;
+        return graph.Status == expected ||
+            expected == "passed" &&
+            graph.Status == "not-required" &&
+            !string.IsNullOrWhiteSpace(graph.EntryProject) &&
+            graph.NestedProjects.Count == 0 &&
+            graph.Issues.Count == 0;
+    }
 
     internal static List<MigrationTodo> TodosForState(
         MigrationReport report,

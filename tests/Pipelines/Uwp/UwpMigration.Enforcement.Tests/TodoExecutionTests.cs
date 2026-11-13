@@ -233,6 +233,79 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    [DataRow("contained", true)]
+    [DataRow("empty", true)]
+    [DataRow("nested-not-required", false)]
+    [DataRow("issue-not-required", false)]
+    [DataRow("missing-entry", false)]
+    [DataRow("failed", false)]
+    [DataRow("incomplete", false)]
+    [DataRow("not-run", false)]
+    public async Task TodoExecution_ProjectGraphCheckAcceptsOnlyAContainedOrEmptyGraph(
+        string scenario, bool expected)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = ProjectTodo();
+        todo.Guidance!.CompletionChecks = [ProjectGraphCheck()];
+        var graph = report.MechanicalVerification.TargetProjectGraph;
+        graph.Status = scenario switch
+        {
+            "contained" => "passed",
+            "failed" or "incomplete" or "not-run" => scenario,
+            _ => "not-required"
+        };
+        graph.EntryProject = scenario == "missing-entry" ? null : "Target.csproj";
+        if (scenario is "contained" or "nested-not-required")
+            graph.NestedProjects.Add("Dependency/Dependency.csproj");
+        if (scenario == "issue-not-required")
+            graph.Issues.Add(new MigrationTargetProjectGraphIssue
+            {
+                Kind = "target-external-file-items", EntryProject = "Target.csproj",
+                Reason = "The target includes a source-checkout file.",
+                RequiredResolution = "Move the file into the target."
+            });
+
+        Assert.AreEqual(expected, TodoCompletionContract.ProjectClosureChecksPass(
+            fixture.Root, todo, report, null, "fingerprint"));
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_EmptyProjectGraphDoesNotBlockStrictFinalization()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = ProjectTodo();
+        todo.Id = "UWMIG003";
+        todo.Guidance!.CompletionChecks.Add(ProjectGraphCheck());
+        todo.Guidance.CompletionChecks.Add(new MigrationCompletionCheck
+        {
+            Id = "dependency-contract-review", Summary = "Review dependency behavior separately.",
+            VerificationKind = "dependency-contract-review", Target = "dependencyAnalysis",
+            Expected = "Consumed dependency behavior is preserved."
+        });
+        report.Todos.Add(todo);
+        report.MechanicalVerification.TargetProjectGraph.Status = "not-required";
+        report.MechanicalVerification.TargetProjectGraph.EntryProject = "Target.csproj";
+        await fixture.SaveReportAsync(report);
+        var probe = await CaptureClosureProbeAsync(fixture);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        var command = new UwpEnforceCommand(new FakeProcessRunner(), TestWindowOwnerResolver.Shared);
+        var parsed = command.Parse(["finalize", fixture.Root.FullName, "--strict"]);
+        Assert.AreEqual(0, await parsed.InvokeAsync(parsed.InvocationConfiguration, CancellationToken.None));
+
+        var snapshot = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
+        Assert.AreEqual("passed", snapshot.Status);
+        Assert.AreEqual("complete", snapshot.Disposition?.Kind);
+        Assert.AreEqual("UWMIG003", snapshot.HumanValidationItems.Single().TodoId);
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("human-validation-required", assessment.VerificationStatus);
+    }
+
+    [TestMethod]
     [DataRow("missing")]
     [DataRow("stale")]
     [DataRow("modified-output")]
@@ -521,6 +594,15 @@ public sealed partial class RunnerAcceptanceTests
         }
         catch { fixture.Dispose(); throw; }
     }
+
+    private static MigrationCompletionCheck ProjectGraphCheck() => new()
+    {
+        Id = "target-project-graph-contained",
+        Summary = "The target project graph has no ownership or portability issues.",
+        VerificationKind = "report-field",
+        Target = "mechanicalVerification.targetProjectGraph.status",
+        Expected = "passed"
+    };
 
     private static MigrationTodo ProjectTodo() => new()
     {
