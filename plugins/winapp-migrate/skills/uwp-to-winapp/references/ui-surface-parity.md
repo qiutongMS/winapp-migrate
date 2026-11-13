@@ -67,6 +67,10 @@ Rebinding changes only the locator and requires new target probes for that surfa
 
 The comparator walks the entire semantic UIA tree, comparing node type, AutomationId, name/text/value, parent/child hierarchy and ordering, visibility, and stable semantic state. Coordinates, dimensions, generated selectors, runtime element IDs, and process-specific identity are ignored. Multiple app windows remain distinct semantic roots.
 
+The tool aligns supported native UWP `ApplicationFrameWindow`/`CoreWindow` hosts and WinUI desktop content bridges before comparing every application descendant and the outer window's semantic properties. Only recognized native caption/input hosts are removed; extra controls, unknown host shapes, or meaningful wrapper state prevent normalization and require a tool-support handoff. Raw captures and their hashes remain unchanged.
+
+Surface attestations, assessments, the comparison index, and the current frontier expose `comparisonDiagnostics`: the difference kind, `repairOwner`, `suggestedAction`, source/target evidence paths and raw node locations, and expected/actual values. Follow the frontier's specific repair or handoff rather than retrying unchanged attest/finalize commands. Date-like text differences suggest checking comparable input/clock conditions, but remain mismatches: they are not automatically ignored or declared dynamic. Unknown native boundaries produce `human-validation-required`, not application-repair instructions or machine success.
+
 | Evidence | Product outcome |
 |---|---|
 | No attempt, or previously recorded evidence is no longer valid | `not-run` (pending) |

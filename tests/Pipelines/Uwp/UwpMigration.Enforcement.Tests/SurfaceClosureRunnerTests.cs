@@ -179,6 +179,69 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         Assert.AreEqual(SurfaceVerificationResult.Mismatch, failed.StateVerifications.Single().Result);
         Assert.AreEqual("blocked", failed.Gates.Single(gate => gate.Id == "state-closure").Status);
+        Assert.AreEqual("application", failed.Frontier!.RepairOwner);
+        Assert.AreEqual("name", failed.Frontier.ComparisonDiagnostics!.Single().Property);
+        StringAssert.Contains(failed.Frontier.SuggestedAction!, "restore the target");
+        StringAssert.Contains(failed.Frontier.Reason, "Changed");
+        Assert.AreEqual(failed.StateVerifications.Single().ComparisonDiagnostics!.Single(),
+            failed.Frontier.ComparisonDiagnostics!.Single());
+
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var proofPath = plan.States.Single().Target.Attestation!;
+        var proof = await fixture.LoadAsync<StateClosureAttestation>(proofPath);
+        proof.ComparisonDiagnostics![0] = proof.ComparisonDiagnostics[0] with { RepairOwner = "tool" };
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, proofPath, proof);
+        var tampered = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual(SurfaceVerificationResult.Pending, tampered.StateVerifications.Single().Result);
+        Assert.IsNull(tampered.Frontier?.ComparisonDiagnostics);
+    }
+
+    [TestMethod]
+    [DataRow("temporal-text", "capture", SurfaceVerificationResult.Mismatch)]
+    [DataRow("unsupported-host", "tool", SurfaceVerificationResult.HumanValidationRequired)]
+    public async Task SurfaceClosure_RoutesInputReviewAndToolHandoffs(
+        string problem, string owner, string expectedResult)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var target = ClosureTree.Replace("Ready", "11/12/2026 4:21 PM", StringComparison.Ordinal);
+        if (problem == "temporal-text")
+        {
+            var sourcePlan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+            await File.WriteAllTextAsync(fixture.Path(sourcePlan.States.Single().Source.TreeEvidence!),
+                ClosureTree.Replace("Ready", "11/12/2026 3:54 PM", StringComparison.Ordinal));
+        }
+        else
+        {
+            target = """
+                {"windows":[{"elements":[{"type":"Window","name":"Ready","className":"WinUIDesktopWin32WindowClass","children":[
+                  {"type":"Pane","className":"Microsoft.UI.Content.DesktopChildSiteBridge","children":[
+                    {"type":"Pane","className":"InputSiteWindowClass","children":[{"type":"Text","name":"Ready"}]}]}
+                ]}]}]}
+                """;
+        }
+        var probe = await CaptureClosureProbeAsync(fixture, new EnforcementProcessResult(0, target, ""));
+
+        var snapshot = await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        Assert.AreEqual(expectedResult, snapshot.StateVerifications.Single().Result);
+        Assert.AreEqual(owner, snapshot.Frontier!.RepairOwner);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        Assert.AreEqual(plan.States.Single().Source.TreeEvidence,
+            snapshot.Frontier.ComparisonDiagnostics!.Single().SourceEvidence);
+        if (problem == "unsupported-host")
+        {
+            var handoff = snapshot.HumanValidationItems.Single(item => item.StateId == "state-1");
+            Assert.IsTrue(handoff.Actions.Any(action => action.Contains("Request support", StringComparison.Ordinal)));
+        }
+        else
+        {
+            Assert.IsFalse(snapshot.HumanValidationItems.Any(item => item.StateId == "state-1"));
+            StringAssert.Contains(snapshot.Frontier.SuggestedAction!, "No text was ignored");
+        }
+        var html = await File.ReadAllTextAsync(fixture.Path(".migration-evidence/comparison/index.html"));
+        StringAssert.Contains(html, "Comparison diagnostics");
+        StringAssert.Contains(html, snapshot.Frontier.ComparisonDiagnostics!.Single().Kind);
     }
 
     [TestMethod]

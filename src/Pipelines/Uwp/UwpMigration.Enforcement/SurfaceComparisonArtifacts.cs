@@ -111,7 +111,21 @@ internal static class SurfaceComparisonArtifacts
                 html.Append("<h2>").Append(E(state.Id)).Append("</h2><p>")
                     .Append(E(state.Disposition == "excluded" ? $"excluded: {state.ExclusionReason}" :
                         $"{result?.Result ?? "not-run"}: {result?.Reason}"))
-                    .Append("</p><table><tr><th>Before (UWP)</th><th>After (WinUI)</th></tr><tr>");
+                    .Append("</p>");
+                if (result?.ComparisonDiagnostics is { Count: > 0 } diagnostics)
+                {
+                    html.Append("<details><summary>Comparison diagnostics</summary><ul>");
+                    foreach (var diagnostic in diagnostics)
+                        html.Append("<li><strong>").Append(E(diagnostic.Kind)).Append("</strong> (")
+                            .Append(E(diagnostic.RepairOwner)).Append("): ").Append(E(diagnostic.SuggestedAction))
+                            .Append("<br>Source: <code>").Append(E(diagnostic.SourcePath))
+                            .Append("</code>; target: <code>").Append(E(diagnostic.TargetPath))
+                            .Append("</code>; property: <code>").Append(E(diagnostic.Property))
+                            .Append("</code>; expected: <code>").Append(E(diagnostic.Expected))
+                            .Append("</code>; actual: <code>").Append(E(diagnostic.Actual)).Append("</code></li>");
+                    html.Append("</ul></details>");
+                }
+                html.Append("<table><tr><th>Before (UWP)</th><th>After (WinUI)</th></tr><tr>");
                 AddSide("source", state.Source.TreeEvidence);
                 AddSide("target", state.Target.TreeEvidence);
                 html.Append("</tr></table>");

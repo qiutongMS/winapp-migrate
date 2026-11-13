@@ -41,6 +41,8 @@ public sealed class StateClosureAttestation
     public List<StateStepReceipt> VerifiedSteps { get; set; } = [];
     [JsonPropertyName("issues")]
     public List<string> Issues { get; set; } = [];
+    [JsonPropertyName("comparisonDiagnostics")]
+    public List<SurfaceComparisonDiagnostic>? ComparisonDiagnostics { get; set; }
     [JsonPropertyName("seal")]
     public string? Seal { get; set; }
     [JsonPropertyName("sealPublicKey")]
@@ -541,6 +543,7 @@ public static class StateClosureProtocol
                 .ToList(),
             VerifiedSteps = navigation,
             Issues = issues,
+            ComparisonDiagnostics = comparison.Diagnostics.Count == 0 ? null : comparison.Diagnostics,
             TargetFingerprint = replay.TargetFingerprint,
             ReplayAttestationId = replay.Id,
             RecordedAt = now,
@@ -703,7 +706,8 @@ public static class StateClosureProtocol
                 evidence.VerificationLevel,
                 string.Join(" ", evidence.Issues))
             {
-                Result = evidence.Result
+                Result = evidence.Result,
+                ComparisonDiagnostics = evidence.ComparisonDiagnostics
             }
             : new StateVerificationSummary(
                 state.Id,
@@ -789,6 +793,7 @@ public static class StateClosureProtocol
                 !attestation.VerifiedSteps.SequenceEqual(
                     derived.VerifiedSteps) ||
                 !attestation.Issues.SequenceEqual(derived.Issues) ||
+                !(attestation.ComparisonDiagnostics ?? []).SequenceEqual(derived.ComparisonDiagnostics ?? []) ||
                 attestation.RecordedAt > now ||
                 attestation.RecordedAt <
                     Read<UiDevelopmentProbe>(

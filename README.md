@@ -171,6 +171,8 @@ Report synchronization also compares every source/target surface's ID, status,
 and reason with the derived plan. Matching aggregate statuses or IDs alone
 cannot hide failed/blocked or contradictory per-state observations.
 `evidence-valid`, `surface-reachable`, and `surface-parity-verified` are distinct product-derived levels. A TODO/finding mapped only to reachability can satisfy that narrower check despite a tree mismatch; app acceptance always requires full parity for every required surface. Unattempted or invalidated evidence is `not-run`, a confirmed mismatch/unreachable result is repairable failure, and an attempted comparison without trustworthy complete trees is `human-validation-required`. See [UI Surface Parity](plugins/winapp-migrate/skills/uwp-to-winapp/references/ui-surface-parity.md).
+
+The comparator aligns supported native UWP/WinUI window hosts without flattening application controls or merging windows. Unknown host boundaries require tool support instead of speculative app changes. Authenticated `comparisonDiagnostics` identify application differences, possible input-comparability issues, and unsupported evidence, with raw source/target node locations and bounded expected/actual values. The closure frontier names the repair owner and next action, and the comparison index displays the same diagnostics. Date-like text is never silently ignored; it remains a mismatch until comparable evidence actually matches.
 The gateway resolves WinApp CLI from `--winapp`,
 `WINAPP_MIGRATE_WINAPP_PATH`, or PATH, in that order, so raw `winapp.exe` need
 not be exposed to the migration agent.

@@ -703,12 +703,23 @@ public sealed class EnforcementFrontier
     [JsonPropertyName("signature")]
     public string? Signature { get; set; }
 
+    [JsonPropertyName("repairOwner")]
+    public string? RepairOwner { get; set; }
+
+    [JsonPropertyName("suggestedAction")]
+    public string? SuggestedAction { get; set; }
+
+    [JsonPropertyName("comparisonDiagnostics")]
+    public List<SurfaceComparisonDiagnostic>? ComparisonDiagnostics { get; set; }
+
 }
 
 public sealed record PipelineValidationState(string Id, string? Status, string? Reason);
 public sealed record StateVerificationSummary(string Id, string Level, string Reason)
 {
     public string Result { get; init; } = SurfaceVerificationResult.Pending;
+    [JsonPropertyName("comparisonDiagnostics")]
+    public List<SurfaceComparisonDiagnostic>? ComparisonDiagnostics { get; init; }
 }
 
 public sealed record PipelineValidationSummary(

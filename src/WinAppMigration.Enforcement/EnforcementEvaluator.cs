@@ -128,6 +128,8 @@ public static class EnforcementEvaluator
                 input.GeneratedAt,
                 input.WindowOwnerResolver));
 
+        var stateVerifications = planValid ? input.StatePlan!.States.Select(state => StateClosureProtocol.AssessLevel(
+            input.TargetRoot, state, replayFresh ? input.Replay : null, input.GeneratedAt, input.WindowOwnerResolver)).ToList() : [];
         var slices = planValid ? AssessSlices(input, replayFresh ? input.Replay : null) : [];
         var activeSlice = SemanticSlicePlanner.Select(slices) ??
             slices.FirstOrDefault(slice => !slice.Complete);
@@ -148,6 +150,24 @@ public static class EnforcementEvaluator
             StateIds = activeSlice.States.Select(state => state.Id).ToList(),
             Reason = activeSlice.Reason
         };
+        if (stateFrontier is not null)
+        {
+            var diagnosed = stateVerifications.FirstOrDefault(state =>
+                stateFrontier.StateIds.Contains(state.Id, StringComparer.Ordinal) &&
+                state.Result is not (SurfaceVerificationResult.Verified or "excluded") &&
+                state.ComparisonDiagnostics?.Any(item => item.Kind != "platform-host-normalized") == true);
+            var diagnostic = diagnosed?.ComparisonDiagnostics?.FirstOrDefault(item =>
+                item.Kind != "platform-host-normalized");
+            if (diagnostic is not null)
+            {
+                stateFrontier.Id = diagnosed!.Id;
+                stateFrontier.Reason = $"{diagnosed.Reason} {diagnostic.SuggestedAction}";
+                stateFrontier.RepairOwner = diagnostic.RepairOwner;
+                stateFrontier.SuggestedAction = diagnostic.SuggestedAction;
+                stateFrontier.ComparisonDiagnostics = diagnosed.ComparisonDiagnostics;
+                stateReason = stateFrontier.Reason;
+            }
+        }
         AddGate(
             gates,
             "state-closure",
@@ -206,8 +226,7 @@ public static class EnforcementEvaluator
         var stage = workflow?.Progress.Stage ?? input.Progress?.Stage ?? WorkflowStage.SourceOracle;
         var snapshot = new EnforcementSnapshot
         {
-            StateVerifications = planValid ? input.StatePlan!.States.Select(state => StateClosureProtocol.AssessLevel(
-                input.TargetRoot, state, replayFresh ? input.Replay : null, input.GeneratedAt, input.WindowOwnerResolver)).ToList() : [],
+            StateVerifications = stateVerifications,
             GeneratedAt = input.GeneratedAt,
             Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(stage.ToString()),
             Stage = stage,
@@ -251,7 +270,10 @@ public static class EnforcementEvaluator
                         CheckId = $"{state.Id}-surface-comparison",
                         StateId = state.Id, Behavior = $"Compare required UI surface '{state.Id}'.",
                         AssertionIds = SurfaceCheckIds.All.ToList(),
-                        Actions = planned?.Verification?.RequiredActions.Select(action => string.Join(" ", action.Command)).ToList() ?? [],
+                        Actions = (state.ComparisonDiagnostics?.Where(item => item.Kind != "platform-host-normalized")
+                            .Select(item => item.SuggestedAction) ?? [])
+                            .Concat(planned?.Verification?.RequiredActions.Select(action => string.Join(" ", action.Command)) ?? [])
+                            .Distinct(StringComparer.Ordinal).ToList(),
                         ExpectedOutcome = "The target is reachable and its complete semantic UIA tree matches the source.",
                         Reason = state.Reason,
                         Evidence = (planned?.Source.Evidence ?? []).Concat(planned?.Target.Evidence ?? []).Distinct(StringComparer.Ordinal).ToList()
