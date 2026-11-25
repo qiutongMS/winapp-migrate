@@ -51,6 +51,13 @@ internal static class MigrationTodoValidator
             if (todo is not null && todo.Guidance?.CompletionChecks is not { Count: > 0 })
                 issues.Add(new("missing-completion-contract",
                     $"TODO '{todo.Id}' requires current structured completion checks; persisted contracts cannot be inferred."));
+            if (todo?.Guidance?.ReasonCode is "preserved-uwp-resource-contract-requires-merge" or "preserved-uwp-startup-contract-requires-port"
+                && todo.Guidance.CompletionChecks?.Any(check => check is not null
+                    && check.VerificationKind == "todo-resolution-evidence" && check.Target == todo.Id
+                    && check.Id == (todo.Guidance.ReasonCode == "preserved-uwp-resource-contract-requires-merge"
+                        ? "source-resource-contract-review" : "source-startup-contract-review")) != true)
+                issues.Add(new("missing-semantic-completion-contract",
+                    $"TODO '{todo.Id}' requires separate resource/lifecycle semantic evidence; UIA structure is not behavioral equality. Regenerate its current contract from preserved source evidence."));
         }
         ThrowIfInvalid(issues);
     }
@@ -130,6 +137,14 @@ internal static class MigrationTodoValidator
         List<ValidationIssue> issues)
     {
         var owner = todo.Id ?? $"entry {todoIndex}";
+        if (string.IsNullOrWhiteSpace(todo.Category) || string.IsNullOrWhiteSpace(todo.Summary)
+            || string.IsNullOrWhiteSpace(todo.Reason))
+            issues.Add(new("invalid-todo-description", $"TODO '{owner}' requires a non-empty category, summary and deferred reason."));
+        if (todo.Priority is not ("required" or "recommended" or "optional"))
+            issues.Add(new("invalid-todo-priority", $"TODO '{owner}' has unsupported priority '{todo.Priority}'."));
+        if (todo.Status is null || !new[] { "pending", "in-progress", "in_progress", "completed", "dismissed", "blocked",
+            "accepted", "closed", "complete", "done", "resolved", "verified" }.Contains(todo.Status, StringComparer.OrdinalIgnoreCase))
+            issues.Add(new("invalid-todo-status", $"TODO '{owner}' has unsupported status '{todo.Status}'."));
         if (!TodoOrigins.Contains(todo.Origin))
         {
             issues.Add(new(
@@ -259,6 +274,8 @@ internal static class MigrationTodoValidator
         {
             return;
         }
+        if (string.IsNullOrWhiteSpace(guidance.ReasonCode))
+            issues.Add(new("invalid-guidance-reason", $"TODO '{owner}' guidance requires a non-empty reasonCode."));
         if (guidance.Facts is null
             || guidance.CandidateStrategies is null
             || guidance.ForbiddenShortcuts is null
@@ -280,6 +297,15 @@ internal static class MigrationTodoValidator
                 $"TODO '{owner}' has a null guidance node."));
             return;
         }
+        if (guidance.Facts.Any(fact => string.IsNullOrWhiteSpace(fact.Id) || string.IsNullOrWhiteSpace(fact.Summary))
+            || guidance.Facts.Select(fact => fact.Id).Distinct(StringComparer.Ordinal).Count() != guidance.Facts.Count
+            || guidance.CandidateStrategies.Any(strategy => string.IsNullOrWhiteSpace(strategy.Id)
+                || string.IsNullOrWhiteSpace(strategy.Summary) || strategy.Actions is null
+                || strategy.Preconditions is null || strategy.Risks is null)
+            || guidance.CandidateStrategies.Select(strategy => strategy.Id).Distinct(StringComparer.Ordinal).Count() != guidance.CandidateStrategies.Count)
+            issues.Add(new("invalid-guidance-evidence", $"TODO '{owner}' requires unique, non-empty fact and strategy IDs, summaries and non-null strategy collections."));
+        foreach (var fact in guidance.Facts)
+            ValidateLocations(fact.Locations, owner, issues);
         var duplicateCheck = guidance.CompletionChecks
             .GroupBy(check => check.Id, StringComparer.Ordinal)
             .FirstOrDefault(group =>
@@ -326,6 +352,10 @@ internal static class MigrationTodoValidator
                 "invalid-classification-node",
                 $"TODO '{owner}' has a null classification candidate."));
         }
+        else if (string.IsNullOrWhiteSpace(classification.Summary)
+            || classification.Candidates.Any(candidate => string.IsNullOrWhiteSpace(candidate.Type) || string.IsNullOrWhiteSpace(candidate.Reason))
+            || classification.Candidates.Select(candidate => candidate.Type).Distinct(StringComparer.Ordinal).Count() != classification.Candidates.Count)
+            issues.Add(new("invalid-classification-description", $"TODO '{owner}' classification requires a summary and unique, non-empty candidate types and reasons."));
     }
 
     private static void ValidateGuidanceSemantics(

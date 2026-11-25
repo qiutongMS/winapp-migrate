@@ -18,7 +18,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     private async Task<DirectoryInfo> CreateUwpSourceAsync(string name)
     {
         var dir = _tempDirectory.CreateSubdirectory(name);
-        await WriteAsync(dir, $"{name}.csproj", CleanCsproj);
+        await WriteAsync(dir, $"{name}.csproj", ClassicUwpCsproj);
         await WriteAsync(dir, "Package.appxmanifest", """
             <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
                      xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10">
@@ -84,25 +84,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         string projectName = "MigratedApp",
         Action<DirectoryInfo>? customizeTemplate = null)
     {
-        FakeDotNet.RunDotnetCommandHandler = arguments =>
-        {
-            CollectionAssert.AreEqual(
-                new[] { "new", "winui" },
-                arguments.Take(2).ToArray());
-            var templateOutput = GetTemplateOutput(arguments);
-            templateOutput.Create();
-            File.WriteAllText(Path.Combine(templateOutput.FullName, $"{projectName}.csproj"), CleanCsproj);
-            File.WriteAllText(Path.Combine(templateOutput.FullName, "App.xaml"),
-                $"<Application x:Class=\"{projectName}.App\"><Application.Resources><ResourceDictionary /></Application.Resources></Application>");
-            File.WriteAllText(Path.Combine(templateOutput.FullName, "App.xaml.cs"),
-                $"namespace {projectName}; public partial class App {{ }}");
-            File.WriteAllText(Path.Combine(templateOutput.FullName, "MainWindow.xaml"),
-                $"<Window x:Class=\"{projectName}.MainWindow\"><Grid Grid.Row=\"1\" /></Window>");
-            File.WriteAllText(Path.Combine(templateOutput.FullName, "MainWindow.xaml.cs"),
-                $"namespace {projectName}; public partial class MainWindow {{ public MainWindow() {{ InitializeComponent(); }} }}");
-            customizeTemplate?.Invoke(templateOutput);
-            return (0, "Template created.", string.Empty);
-        };
+        ArrangeBasicTemplateCreation(projectName, customizeTemplate: customizeTemplate);
     }
 
     private Task<(int ExitCode, string Output)> InvokeAsync(
@@ -259,7 +241,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         Assert.IsFalse(report.RootElement
             .GetProperty("todos")
             .EnumerateArray()
-            .Any(todo => todo.GetProperty("id").GetString() == "UWMIG012"));
+            .Any(todo => todo.GetProperty("id").GetString() == "UWMIG018"));
         Assert.AreEqual(
             0,
             report.RootElement
@@ -289,9 +271,9 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         Assert.IsTrue(report.RootElement
             .GetProperty("todos")
             .EnumerateArray()
-            .Any(todo => todo.GetProperty("id").GetString() == "UWMIG012"));
+            .Any(todo => todo.GetProperty("id").GetString() == "UWMIG018"));
         Assert.AreEqual(
-            1,
+            0,
             report.RootElement
                 .GetProperty("mechanicalVerification")
                 .GetProperty("projectItems")
@@ -319,13 +301,14 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         Assert.AreEqual(0, exit, output);
         Assert.IsTrue(File.Exists(Path.Combine(target.FullName, "Properties", "AssemblyInfo.cs")));
         var project = await ReadAsync(target, "AssemblyInfoAppApp.csproj");
-        StringAssert.Contains(project, "<GenerateAssemblyInfo>false</GenerateAssemblyInfo>");
+        StringAssert.Contains(project, "<GenerateAssemblyCompanyAttribute>false</GenerateAssemblyCompanyAttribute>");
+        Assert.DoesNotContain("<GenerateAssemblyInfo>false", project);
         var nestedProject = await ReadAsync(
             target,
             "NestedLibrary",
             "NestedLibrary.csproj");
         Assert.DoesNotContain("<GenerateAssemblyInfo>", nestedProject);
-        StringAssert.Contains(output, "preserved Properties\\AssemblyInfo.cs remains authoritative");
+        StringAssert.Contains(output, "Suppressed only conflicting generated assembly attributes");
     }
 
     [TestMethod]
@@ -633,24 +616,22 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
     }
 
     [TestMethod]
-    public async Task Migrate_FailsVerificationForLegacyNamespaceInOtherText()
+    public async Task Migrate_PreservesLegacyNamespaceBusinessDataWithoutFailingCompatibility()
     {
         var source = await CreateUwpSourceAsync("ResidualApp");
         await WriteAsync(source, "Data.json", """{"type":"Windows.UI.Xaml.Controls.Button"}""");
         var (target, exit, output) = await MigrateAsync(
             source, "residual-output", "ResidualAppApp");
 
-        Assert.AreEqual(1, exit, output);
-        StringAssert.Contains(output, "MECHANICAL MIGRATION VERIFICATION FAILED");
+        Assert.AreEqual(0, exit, output);
+        Assert.AreEqual("""{"type":"Windows.UI.Xaml.Controls.Button"}""", await ReadAsync(target, "Data.json"));
         using var report = await ReadReportAsync(target);
         Assert.AreEqual(
-            "mechanical-verification-failed",
+            "mechanical-migration-complete",
             report.RootElement.GetProperty("status").GetString());
         var verification = report.RootElement.GetProperty("mechanicalVerification");
-        Assert.AreEqual("failed", verification.GetProperty("status").GetString());
-        var residual = verification.GetProperty("legacyNamespaceResiduals")[0];
-        Assert.AreEqual("Data.json", residual.GetProperty("path").GetString());
-        Assert.AreEqual(1, residual.GetProperty("line").GetInt32());
+        Assert.AreEqual("passed", verification.GetProperty("status").GetString());
+        Assert.AreEqual(0, verification.GetProperty("legacyNamespaceResiduals").GetArrayLength());
     }
 
     [TestMethod]
@@ -725,8 +706,8 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
             TestContext.CancellationToken);
         await WriteAsync(
             target,
-            "AgentChange.json",
-            """{"type":"Windows.UI.Xaml.Controls.Button"}""");
+            "AgentChange.cs",
+            "using Windows.UI.Xaml;");
 
         var (failedExit, failedOutput) = await InvokeVerifyAsync(target);
 
@@ -753,8 +734,8 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
 
         await WriteAsync(
             target,
-            "AgentChange.json",
-            """{"type":"Microsoft.UI.Xaml.Controls.Button"}""");
+            "AgentChange.cs",
+            "using Microsoft.UI.Xaml;");
         var (passedExit, passedOutput) = await InvokeVerifyAsync(target);
 
         Assert.AreEqual(0, passedExit, passedOutput);
@@ -1008,7 +989,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var (target, exit, output) = await MigrateAsync(
             source, "legacy-encoding-output", "LegacyEncodingItemsPanelApp");
 
-        Assert.AreEqual(0, exit, output);
+        Assert.AreEqual(1, exit, output);
         CollectionAssert.AreEqual(
             originalBytes,
             await File.ReadAllBytesAsync(
@@ -1053,6 +1034,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var source = await CreateUwpSourceAsync("DispatcherApp");
         await WriteAsync(source, "MainPage.xaml", "<Page x:Class=\"SDKTemplate.MainPage\" />");
         await WriteAsync(source, "MainPage.xaml.cs", """
+            using Windows.UI.Xaml.Controls;
             namespace SDKTemplate;
             public partial class MainPage : Page
             {
@@ -1430,6 +1412,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var source = await CreateUwpSourceAsync("WindowApp");
         await WriteAsync(source, "MainPage.xaml", "<Page x:Class=\"SDKTemplate.MainPage\" />");
         await WriteAsync(source, "MainPage.xaml.cs", """
+            using Windows.UI.Xaml;
             namespace SDKTemplate;
             public partial class MainPage
             {
@@ -1444,7 +1427,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var windowSizingTodo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(todo => todo.GetProperty("category").GetString() == "window-sizing");
         Assert.AreEqual("required", windowSizingTodo.GetProperty("priority").GetString());
-        Assert.AreEqual(4, windowSizingTodo.GetProperty("locations")[0].GetProperty("line").GetInt32());
+        Assert.AreEqual(5, windowSizingTodo.GetProperty("locations")[0].GetProperty("line").GetInt32());
         StringAssert.Contains(windowSizingTodo.GetProperty("reason").GetString(), "XamlRoot.Size");
         Assert.IsFalse(report.RootElement.GetProperty("todos").EnumerateArray()
             .Any(todo => todo.GetProperty("category").GetString() == "windowing"));
@@ -1456,6 +1439,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var source = await CreateUwpSourceAsync("WindowContentApp");
         await WriteAsync(source, "MainPage.xaml", "<Page x:Class=\"SDKTemplate.MainPage\" />");
         await WriteAsync(source, "MainPage.xaml.cs", """
+            using Windows.UI.Xaml;
             namespace SDKTemplate;
             public partial class MainPage
             {
@@ -1498,10 +1482,9 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         using var report = await ReadReportAsync(target);
         var todo = report.RootElement.GetProperty("todos").EnumerateArray()
             .Single(item => item.GetProperty("category").GetString() == "display-information");
-        StringAssert.Contains(todo.GetProperty("reason").GetString(), "Do not invent IDisplayInformationStaticsInterop");
-        StringAssert.Contains(todo.GetProperty("reason").GetString(), "MonitorFromWindow");
-        StringAssert.Contains(todo.GetProperty("reason").GetString(), "GetMonitorInfo");
-        StringAssert.Contains(todo.GetProperty("reason").GetString(), "EnumDisplaySettings");
+        StringAssert.Contains(todo.GetProperty("reason").GetString(), "SDK");
+        StringAssert.Contains(todo.GetProperty("reason").GetString(), "receiver's type");
+        StringAssert.Contains(todo.GetProperty("reason").GetString(), "multi-monitor");
     }
 
     [TestMethod]
@@ -1510,6 +1493,7 @@ public partial class MigrateCommandTests : MigrateCommandTestBase
         var source = await CreateUwpSourceAsync("AmbiguousDispatcherApp");
         await WriteAsync(source, "MainPage.xaml", "<Page x:Class=\"SDKTemplate.MainPage\" />");
         await WriteAsync(source, "MainPage.xaml.cs", """
+            using Windows.UI.Xaml.Controls;
             namespace SDKTemplate;
             public partial class MainPage : Page
             {

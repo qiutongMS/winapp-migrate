@@ -18,7 +18,8 @@ public sealed class MsBuildProjectItemEvaluator(
         "ApplicationDefinition",
         "PRIResource",
         "Content",
-        "None"
+        "None",
+        "ProjectReference"
     ];
 
     internal const string ProjectAssetsFileProperty = "ProjectAssetsFile";

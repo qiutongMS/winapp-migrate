@@ -128,16 +128,16 @@ public abstract class MigrateCommandTestBase : BaseCommandTests
                 CleanCsproj);
             File.WriteAllText(
                 Path.Combine(output.FullName, "App.xaml"),
-                $"<Application x:Class=\"{projectName}.App\" />");
+                $"<Application xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" x:Class=\"{projectName}.App\"><Application.Resources><ResourceDictionary /></Application.Resources></Application>");
             File.WriteAllText(
                 Path.Combine(output.FullName, "App.xaml.cs"),
-                $"namespace {projectName}; public partial class App {{ }}");
+                $"namespace {projectName}; public partial class App : global::Microsoft.UI.Xaml.Application {{ global::Microsoft.UI.Xaml.Window window; void Launch() {{ window = new MainWindow(); window.Activate(); }} }}");
             File.WriteAllText(
                 Path.Combine(output.FullName, "MainWindow.xaml"),
-                $"<Window x:Class=\"{projectName}.MainWindow\" />");
+                $"<Window xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" x:Class=\"{projectName}.MainWindow\"><Grid Grid.Row=\"1\" /></Window>");
             File.WriteAllText(
                 Path.Combine(output.FullName, "MainWindow.xaml.cs"),
-                $"namespace {projectName}; public partial class MainWindow {{ }}");
+                $"namespace {projectName}; public partial class MainWindow : global::Microsoft.UI.Xaml.Window {{ public MainWindow() {{ InitializeComponent(); }} }}");
             if (packageManifest is not null)
             {
                 File.WriteAllText(
@@ -193,6 +193,20 @@ public abstract class MigrateCommandTestBase : BaseCommandTests
             return false;
         }
     }
+
+    private protected const string ClassicUwpCsproj = """
+        <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+          <PropertyGroup>
+            <TargetPlatformIdentifier>UAP</TargetPlatformIdentifier>
+            <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
+          </PropertyGroup>
+          <ItemGroup>
+            <Compile Include="**\*.cs" />
+            <Page Include="**\*.xaml" Exclude="App.xaml" />
+            <ApplicationDefinition Include="App.xaml" />
+          </ItemGroup>
+        </Project>
+        """;
 
     private protected const string CleanCsproj = """
         <Project Sdk="Microsoft.NET.Sdk">

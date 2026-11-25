@@ -389,6 +389,12 @@ public sealed class MigrationActivationVerification
 
 public sealed class MigrationFileInventory
 {
+    [JsonPropertyName("coverageStatus")]
+    public string CoverageStatus { get; set; } = "complete";
+
+    [JsonPropertyName("uninspectedSourcePaths")]
+    public List<string> UninspectedSourcePaths { get; set; } = [];
+
     [JsonPropertyName("sourceFiles")]
     public int SourceFiles { get; set; }
 
@@ -455,6 +461,14 @@ public sealed class MigrationProjectItem
 
 public sealed class MigrationReviewRequiredProjectItem
 {
+    [JsonPropertyName("sourceDeclaration")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceDeclaration { get; set; }
+
+    [JsonPropertyName("sourceContext")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceContext { get; set; }
+
     [JsonPropertyName("id")]
     public required string Id { get; set; }
 

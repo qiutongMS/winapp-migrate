@@ -111,6 +111,12 @@ public static partial class MechanicalMigration
                     [
                         new()
                         {
+                            Id = "source-resource-contract-review",
+                            Summary = "Review resource lookup, theme and override precedence separately from visual structure.",
+                            VerificationKind = "todo-resolution-evidence", Target = "UWMIG001", Expected = "terminal-with-evidence"
+                        },
+                        new()
+                        {
                             Id = "app-resource-replay-passed",
                             Summary =
                                 "Bind the actual inventoried startup surface that exposes the required application resources.",
@@ -132,16 +138,16 @@ public static partial class MechanicalMigration
                 preservedStartup,
                 path => path.EndsWith(
                     "App.xaml.cs",
-                    StringComparison.OrdinalIgnoreCase));
+                    StringComparison.OrdinalIgnoreCase) || Path.GetFileName(path).StartsWith("MainWindow.xaml", StringComparison.OrdinalIgnoreCase));
             return new MigrationTodo
             {
                 Id = "UWMIG004",
                 Category = "startup-lifecycle",
                 Priority = "required",
                 Summary =
-                    "Port startup and activation behavior from the preserved UWP App.xaml.cs",
+                    "Port startup, activation and window content from preserved UWP startup definitions",
                 Reason =
-                    "The target-owned desktop bootstrap cannot be replaced by the UWP App class, so its launch, activation, window, and startup side effects require explicit target owners.",
+                    "The target-owned desktop bootstrap cannot be replaced by UWP startup files. Source MainWindow may be a Page rather than a desktop Window; preserve its content and callers through an explicit target-owned integration/rename, including coordinated x:Class/code-behind identity, without discarding source intent.",
                 Locations = locations,
                 AffectedFeatures = ["application-startup"],
                 TouchSet = new MigrationTodoTouchSet
@@ -237,6 +243,12 @@ public static partial class MechanicalMigration
                             Target = "UWMIG004",
                             Expected = "passed",
                             AssertionIds = ["target-reachable", "uia-structure-match"]
+                        },
+                        new()
+                        {
+                            Id = "source-startup-contract-review",
+                            Summary = "Review launch/activation payloads, ownership, ordering and side effects separately from UIA structure.",
+                            VerificationKind = "todo-resolution-evidence", Target = "UWMIG004", Expected = "terminal-with-evidence"
                         }
                     ]
                 }
@@ -284,7 +296,7 @@ public static partial class MechanicalMigration
                     [
                         new()
                         {
-                            Path = package.SourceProject,
+                            Path = SourceProjectEvidencePath(package.SourceProject),
                             Line = package.Line
                         }
                     ]
@@ -304,7 +316,7 @@ public static partial class MechanicalMigration
                     [
                         new()
                         {
-                            Path = projectReference.SourceProject,
+                            Path = SourceProjectEvidencePath(projectReference.SourceProject),
                             Line = projectReference.Line
                         }
                     ]
@@ -322,7 +334,7 @@ public static partial class MechanicalMigration
                         $"Dependency inspection issue '{issue.Kind}' affects '{issue.SourceProject}': {issue.Reason}",
                     Locations =
                     [
-                        new() { Path = issue.SourceProject }
+                        new() {                         Path = SourceProjectEvidencePath(issue.SourceProject) }
                     ]
                 });
             }
@@ -564,12 +576,13 @@ public static partial class MechanicalMigration
                         }
                     }.Concat(activationAnalysis.Contracts
                         .OrderBy(contract => contract.Id, StringComparer.Ordinal)
-                        .Select(contract => new MigrationGuidanceFact
+                        .Select((contract, index) => new MigrationGuidanceFact
                         {
-                            Id = $"activation-contract:{contract.Id}",
+                            Id = activationAnalysis.Contracts.Count(candidate => candidate.Id == contract.Id) > 1
+                                ? $"activation-contract:{contract.Id}:{index}" : $"activation-contract:{contract.Id}",
                             Summary =
                                 $"Activation contract '{contract.Id}' category '{contract.Category}' uses source schema '{contract.SourceSchema}', migration status '{contract.MigrationStatus}', target schema '{contract.TargetSchema ?? "<none>"}', and verification status '{contract.VerificationStatus}'.",
-                            Locations = [contract.SourceLocation]
+                            Locations = [new() { Path = SourceProjectEvidencePath(contract.SourceLocation.Path), Line = contract.SourceLocation.Line }]
                         }))
                         .Concat(activationAnalysis.Issues
                             .OrderBy(issue => issue.Kind, StringComparer.Ordinal)

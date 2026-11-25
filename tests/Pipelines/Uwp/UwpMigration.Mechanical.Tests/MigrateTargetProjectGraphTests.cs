@@ -96,7 +96,7 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
                     project.DirectoryName!,
                     item.FullPath),
                 item.FullPath,
-                project.FullName,
+                Path.Combine(project.DirectoryName!, "obj", "Microsoft.NET.Sdk.DefaultItems.props"),
                 new Dictionary<string, string>(
                     StringComparer.OrdinalIgnoreCase)))
             .ToList());
@@ -195,7 +195,7 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
     }
 
     [TestMethod]
-    public async Task Verify_DetectsOnlySharedEvaluatedPhysicalFiles()
+    public async Task Verify_AllowsSharedPhysicalFilesWithNonCompilationOwnership()
     {
         var (target, entryProject) =
             await CreateMigrationAsync("GraphCollision");
@@ -223,27 +223,13 @@ public class MigrateTargetProjectGraphTests : MigrateCommandTestBase
 
         var (exitCode, output) = await VerifyAsync(target);
 
-        Assert.AreEqual(1, exitCode, output);
+        Assert.AreEqual(0, exitCode, output);
         using var report = await ReadReportAsync(target);
-        var issue = report.RootElement
+        var issues = report.RootElement
             .GetProperty("mechanicalVerification")
             .GetProperty("targetProjectGraph")
-            .GetProperty("issues")[0];
-        Assert.AreEqual(
-            "nested-project-default-item-collision",
-            issue.GetProperty("kind").GetString());
-        CollectionAssert.AreEquivalent(
-            ExpectedCollisionKinds,
-            issue.GetProperty("itemKinds")
-                .EnumerateArray()
-                .Select(item => item.GetString())
-                .ToList());
-        CollectionAssert.AreEqual(
-            ExpectedCollisionPaths,
-            issue.GetProperty("samplePaths")
-                .EnumerateArray()
-                .Select(item => item.GetString())
-                .ToList());
+            .GetProperty("issues");
+        Assert.AreEqual(0, issues.GetArrayLength());
         Assert.AreEqual(
             NormalizePath(Path.GetRelativePath(
                 target.FullName,

@@ -10,13 +10,13 @@ namespace UwpMigration.Mechanical.Tests;
 public partial class MigrateCommandTests
 {
     [TestMethod]
-    [DataRow("var window = Window.Current;", "UWPC003")]
+    [DataRow("using Microsoft.UI.Xaml; var window = Window.Current;", "UWPC003")]
     [DataRow("using Window = Microsoft.UI.Xaml.Window; var window = Window.Current;", "UWPC003")]
     [DataRow("using W = Microsoft.UI.Xaml.Window; var window = W.Current;", "UWPC003")]
     [DataRow("var window = Windows.UI.Core.CoreWindow.GetForCurrentThread();", "UWPC002")]
     [DataRow("using Windows.UI.Core; CoreDispatcher dispatcher;", "UWPC002")]
     [DataRow("var view = Windows.UI.ViewManagement.ApplicationView.GetForCurrentView();", "UWPC004")]
-    [DataRow("var text = $\"Window: {Window.Current}\";", "UWPC003")]
+    [DataRow("using Microsoft.UI.Xaml; var text = $\"Window: {Window.Current}\";", "UWPC003")]
     public async Task Verify_RejectsCurrentUwpResidueRegardlessOfTodoLabel(string code, string rule)
     {
         var source = await CreateUwpSourceAsync("CompatibilityApp");
@@ -185,7 +185,10 @@ public partial class MigrateCommandTests
             todos["UWMIG004"].GetProperty("category").GetString());
         foreach (var id in new[] { "UWMIG001", "UWMIG004" })
         {
-            var check = todos[id].GetProperty("guidance").GetProperty("completionChecks").EnumerateArray().Single();
+            var checks = todos[id].GetProperty("guidance").GetProperty("completionChecks").EnumerateArray();
+            var check = checks.Single(check => check.GetProperty("verificationKind").GetString() == "surface-binding");
+            Assert.IsTrue(todos[id].GetProperty("guidance").GetProperty("completionChecks").EnumerateArray()
+                .Any(check => check.GetProperty("verificationKind").GetString() == "todo-resolution-evidence"));
             Assert.AreEqual("surface-binding", check.GetProperty("verificationKind").GetString());
             Assert.AreEqual(id, check.GetProperty("target").GetString());
             Assert.AreEqual(0, todos[id].GetProperty("affectedSurfaces").GetArrayLength());

@@ -30,7 +30,7 @@ public static partial class MechanicalMigration
         ".appx", ".msix", ".appxbundle", ".appxupload", ".nupkg", ".snupkg",
         // Private signing material — must never be copied into (and risk being committed with)
         // the migrated project.
-        ".pfx", ".snk", ".p12", ".pvk", ".cer", ".key"
+        ".pfx", ".snk", ".p12", ".pvk", ".key"
     ];
 
     private static readonly string[] ExcludeDirSegments =
@@ -145,15 +145,12 @@ public static partial class MechanicalMigration
                 return 1;
             }
 
-            var sourceFiles = CreateSourceFileInventory(sourceRoot);
+            var sourceFiles = CreateSourceFileInventory(sourceRoot, out var uninspectedSourcePaths);
 
             // Verify the advertised prerequisites before mutating any files.
-            var sourceHasProject = sourceFiles.Any(f =>
-                f.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(Path.GetFileName(f), "Package.appxmanifest", StringComparison.OrdinalIgnoreCase));
-            if (!sourceHasProject)
+            if (!TrySelectSourceProject(sourceRoot, sourceFiles, out var sourceProject, out var sourceError))
             {
-                Console.Out.WriteLine("[ERROR] Source is not a UWP project — no .csproj or Package.appxmanifest found. Nothing to migrate.");
+                Console.Out.WriteLine($"[ERROR] {sourceError}");
                 return 1;
             }
 
@@ -166,15 +163,6 @@ public static partial class MechanicalMigration
                 return 1;
             }
 
-            var sourceProject = sourceFiles.FirstOrDefault(file =>
-                string.Equals(
-                    Path.GetDirectoryName(file),
-                    sourceRoot,
-                    StringComparison.OrdinalIgnoreCase)
-                && string.Equals(
-                    Path.GetExtension(file),
-                    ".csproj",
-                    StringComparison.OrdinalIgnoreCase));
             var requestedName = request.Name;
             var projectName = string.IsNullOrWhiteSpace(requestedName)
                 ? GetProjectName(sourceRoot, sourceProject)
@@ -281,16 +269,34 @@ public static partial class MechanicalMigration
 
             var copied = new List<string>();
             var preservedStartup = new List<string>();
+            var uncertainBuildFiles = GetUncertainSourceBuildFiles(sourceRoot, sourceProject, sourceFiles, targetRoot);
+            AddAssetDependencyEvidence(sourceRoot, sourceFiles, report);
+            var preservedBuildFiles = new List<string>();
 
             // ── 1. Copy source files (everything but the project) ────────────────
             foreach (var file in sourceFiles)
             {
+                if (file.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
+                    && !file.Equals(sourceProject, StringComparison.OrdinalIgnoreCase))
+                {
+                    var referencePath = Path.GetRelativePath(sourceRoot, file);
+                    PreserveSourceFile(sourceRoot, targetRoot, referencePath);
+                    preservedBuildFiles.Add(referencePath);
+                    continue;
+                }
                 if (!ShouldCopy(file))
                 {
                     continue;
                 }
 
                 var rel = Path.GetRelativePath(sourceRoot, file);
+                if (uncertainBuildFiles.Contains(rel)
+                    && !IsScaffoldStartupFile(rel))
+                {
+                    PreserveSourceFile(sourceRoot, targetRoot, rel);
+                    preservedBuildFiles.Add(rel);
+                    continue;
+                }
 
                 // Never overwrite the WinUI scaffold's own startup files with their UWP
                 // counterparts: a UWP App.xaml.cs launches via Window.Current, so replacing
@@ -309,9 +315,8 @@ public static partial class MechanicalMigration
             {
                 Console.Out.WriteLine($"    Preserved WinUI scaffold startup file(s), did NOT copy UWP: {string.Join(", ", preservedStartup)}");
                 Console.Out.WriteLine("      Migrate app-level resources from the UWP App.xaml manually (the WinUI startup bootstrap was kept).");
-                report.Todos.Add(CreateAppResourcesTodo(
-                    preservedStartup,
-                    sourceProject is not null));
+                if (preservedStartup.Any(path => path.Equals("App.xaml", StringComparison.OrdinalIgnoreCase)))
+                    report.Todos.Add(CreateAppResourcesTodo(preservedStartup, sourceProject is not null));
                 report.Todos.Add(CreateStartupLifecycleTodo(
                     preservedStartup,
                     sourceProject is not null));
@@ -319,9 +324,32 @@ public static partial class MechanicalMigration
 
             // ── 2. Preserve UWP .csproj / .appxmanifest under .uwp-source/ ───────
             PreserveUwpReferences(sourceRoot, targetRoot, preservedStartup, report);
+            AddSourceBuildContractTodo(sourceRoot, sourceProject, preservedBuildFiles, report);
+            var rootedStartupFiles = 0;
+            foreach (var startup in new[] { "App.xaml.cs", "MainWindow.xaml.cs" })
+            {
+                var file = Path.Combine(targetRoot, startup);
+                if (File.Exists(file))
+                {
+                    var encoded = ReadTextFile(file);
+                    var rooted = CSharpPlatformIdentity.RootScaffoldPlatformReferences(encoded.Content);
+                    if (rooted != encoded.Content)
+                    {
+                        WriteTextFile(file, rooted, encoded.Encoding);
+                        rootedStartupFiles++;
+                    }
+                }
+            }
+            report.Transforms.Add(new()
+            {
+                Id = "UWMIG-SCAFFOLD-IDENTITY",
+                Summary = "Rooted platform references in target-owned App/MainWindow bootstrap to prevent source name rebinding",
+                ChangedFiles = rootedStartupFiles
+            });
             var preservedReferences = sourceFiles
                 .Where(file =>
-                    preservedStartup.Contains(
+                    preservedBuildFiles.Contains(Path.GetRelativePath(sourceRoot, file), StringComparer.OrdinalIgnoreCase)
+                    || preservedStartup.Contains(
                         Path.GetRelativePath(sourceRoot, file),
                         StringComparer.OrdinalIgnoreCase)
                     || sourceProject is not null
@@ -344,6 +372,7 @@ public static partial class MechanicalMigration
 
             // ── 2b. Patch deterministic WinUI 3 project settings ────────────────
             var projectFiles = PatchProjectSettings(targetRoot);
+            AddTargetProfileEvidence(targetRoot, targetProject, report);
             report.Transforms.Add(new MigrationTransform
             {
                 Id = "UWMIG-PROJECT",
@@ -420,6 +449,23 @@ public static partial class MechanicalMigration
                 report,
                 msBuildProjectItemEvaluator,
                 cancellationToken);
+            report.MechanicalVerification.Inventory.UninspectedSourcePaths = uninspectedSourcePaths;
+            report.MechanicalVerification.Inventory.CoverageStatus = uninspectedSourcePaths.Count == 0 ? "complete" : "partial";
+            if (uninspectedSourcePaths.Count > 0)
+                report.Todos.Add(new()
+                {
+                    Id = "UWMIG022", Category = "source-inspection-coverage", Priority = "required",
+                    Summary = "Resolve source paths not safely inspected by the mechanical inventory",
+                    Reason = "Reparse-point children are not traversed. File accounting covers inventoried eligible paths, not opaque descendants or byte/runtime equivalence; full source coverage cannot be claimed.",
+                    Locations = [new() { Path = ".uwp-source" }],
+                    Guidance = new()
+                    {
+                        ReasonCode = "source-reparse-path-not-inspected",
+                        Facts = [new() { Id = "opaque-original-source-paths", Summary = $"Original source-root paths not inspected: {string.Join(", ", uninspectedSourcePaths)}. No target file or preserved byte snapshot exists for these paths.", Authority = "provisional-detection" }],
+                        CompletionConditions = ["Review the original-source-root paths and provide ordinary contained source files for any required behavior, or an evidence-backed explicit exclusion; do not follow links implicitly."],
+                        CompletionChecks = [new() { Id = "source-inspection-scope-review", Summary = "Opaque source paths have evidence-backed coverage decisions.", VerificationKind = "todo-resolution-evidence", Target = "UWMIG022", Expected = "terminal-with-evidence" }]
+                    }
+                });
             report.Status = report.MechanicalVerification.Status == "passed"
                 ? "mechanical-migration-complete"
                 : "mechanical-verification-failed";
@@ -622,16 +668,18 @@ public static partial class MechanicalMigration
                             runtimeIdentifier.Value;
                         body = body[..runtimeIdentifier.Index] + injection + body[(runtimeIdentifier.Index + runtimeIdentifier.Length)..];
                         changed = true;
-                        Console.Out.WriteLine($"    Patched RuntimeIdentifier in {Path.GetFileName(cp)} — F5 now works on x86/x64/ARM64 hosts");
+                        Console.Out.WriteLine($"    Patched architecture-specific RuntimeIdentifier fallback in {Path.GetFileName(cp)}; build and runtime verification are still required");
                     }
                 }
 
                 var projectDirectory = Path.GetDirectoryName(cp);
-                var hasLegacyAssemblyInfo =
-                    projectDirectory is not null &&
-                    File.Exists(Path.Combine(projectDirectory, "Properties", "AssemblyInfo.cs"));
-                if (hasLegacyAssemblyInfo &&
-                    !body.Contains("<GenerateAssemblyInfo>", StringComparison.OrdinalIgnoreCase))
+                var assemblyInfo = projectDirectory is null ? null : Path.Combine(projectDirectory, "Properties", "AssemblyInfo.cs");
+                var existingAttributes = assemblyInfo is not null && File.Exists(assemblyInfo)
+                    && TryReadInspectableText(assemblyInfo, out var assemblyText)
+                    ? FindConflictingAssemblyAttributes(assemblyText)
+                    : [];
+                if (existingAttributes.Count > 0
+                    && !body.Contains("<GenerateAssemblyInfo>", StringComparison.OrdinalIgnoreCase))
                 {
                     var propertyGroup = FirstPropertyGroup().Match(body);
                     if (propertyGroup.Success)
@@ -640,10 +688,12 @@ public static partial class MechanicalMigration
                         var propertyIndent = propertyGroup.Groups["indent"].Value + "  ";
                         var injection =
                             propertyGroup.Value + newline +
-                            $"{propertyIndent}<GenerateAssemblyInfo>false</GenerateAssemblyInfo>";
+                            string.Join(newline, existingAttributes.Where(attribute =>
+                                !body.Contains($"<Generate{attribute}Attribute>", StringComparison.OrdinalIgnoreCase))
+                                .Select(attribute => $"{propertyIndent}<Generate{attribute}Attribute>false</Generate{attribute}Attribute>"));
                         body = body[..propertyGroup.Index] + injection + body[(propertyGroup.Index + propertyGroup.Length)..];
                         changed = true;
-                        Console.Out.WriteLine($"    Disabled generated assembly attributes in {Path.GetFileName(cp)} — preserved Properties\\AssemblyInfo.cs remains authoritative");
+                        Console.Out.WriteLine($"    Suppressed only conflicting generated assembly attributes in {Path.GetFileName(cp)}");
                     }
                 }
 
@@ -664,9 +714,27 @@ public static partial class MechanicalMigration
             return patched;
         }
 
-        // ───────────────────────────── 3 ───────────────────────────────────────
-        private static int RewriteNamespaces(string targetRoot)
+        private static List<string> FindConflictingAssemblyAttributes(string text)
         {
+            var root = CSharpPlatformIdentity.Parse(text);
+            return root.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.AttributeListSyntax>()
+                .Where(list => list.Target?.Identifier.ValueText == "assembly")
+                .SelectMany(list => list.Attributes)
+                .SelectMany(attribute => StandardAssemblyAttributes.Where(name =>
+                    CSharpPlatformIdentity.IsPlatformType(attribute.Name, "System.Reflection." + name + "Attribute")))
+                .Distinct(StringComparer.Ordinal).ToList();
+        }
+
+        private static readonly string[] StandardAssemblyAttributes =
+        [
+            "AssemblyTitle", "AssemblyDescription", "AssemblyCompany", "AssemblyProduct", "AssemblyCopyright",
+            "AssemblyTrademark", "AssemblyVersion", "AssemblyFileVersion", "AssemblyInformationalVersion", "AssemblyConfiguration"
+        ];
+
+        // ───────────────────────────── 3 ───────────────────────────────────────
+        internal static int RewriteNamespaces(string targetRoot)
+        {
+            var roots = ReadCSharpRoots(targetRoot).Values;
             var files = EnumerateFiles(targetRoot)
                 .Where(f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -678,12 +746,16 @@ public static partial class MechanicalMigration
                 {
                     sourceFile = ReadTextFile(f);
                 }
+
                 catch (DecoderFallbackException)
                 {
                     continue;
                 }
                 var orig = sourceFile.Content;
-                var updated = orig.Replace("Windows.UI.Xaml", "Microsoft.UI.Xaml");
+                var updated = f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
+                    ? CSharpPlatformIdentity.RewriteNamespace(orig, roots)
+                    : roots.All(root => CSharpPlatformIdentity.HasPlatformNamespace(root, "Windows.UI.Xaml"))
+                        ? RewriteXamlNamespaceDeclarations(orig) : orig;
                 if (updated != orig)
                 {
                     WriteTextFile(f, updated, sourceFile.Encoding);

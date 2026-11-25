@@ -4,6 +4,7 @@
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using UwpMigration.Contracts;
 
 namespace UwpMigration.Mechanical;
@@ -40,6 +41,7 @@ public static partial class MechanicalMigration
             var issues = new List<MigrationUwpResidual>();
             var files = EnumerateContainedVerificationFiles(
                 targetRoot, out var uninspectedPaths, skipReparsePoints: true);
+            var projectRoots = ReadCSharpRoots(targetRoot).Values.ToArray();
             if (uninspectedPaths > 0)
                 Add(".", 1, "UWPC000",
                     $"{uninspectedPaths} target path(s) could not be inspected safely.",
@@ -65,33 +67,45 @@ public static partial class MechanicalMigration
                 if (csharp)
                 {
                     var code = MaskCSharpNonCode(text);
-                    foreach (Match alias in UwpPattern(@"\busing\s+(?<alias>[A-Za-z_]\w*)\s*=\s*(?<type>(?:global::)?[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)+)\s*;").Matches(code))
-                    {
-                        var type = Regex.Replace(alias.Groups["type"].Value, @"\s+", "");
-                        if (type.StartsWith("Windows.", StringComparison.Ordinal) ||
-                            type.StartsWith("Microsoft.UI.Xaml.", StringComparison.Ordinal) ||
-                            type.StartsWith("global::Windows.", StringComparison.Ordinal) ||
-                            type.StartsWith("global::Microsoft.UI.Xaml.", StringComparison.Ordinal))
-                            code = UwpPattern($@"\b{Regex.Escape(alias.Groups["alias"].Value)}\b").Replace(code, type);
-                    }
+                    var root = CSharpPlatformIdentity.Parse(text);
                     foreach (var rule in UwpCodeRules)
                     {
                         foreach (Match match in rule.Pattern.Matches(code))
                         {
-                            if (rule.Id == "UWPC003" &&
-                                (UwpPattern(@"\b(?:class|struct|record)\s+Window\b").IsMatch(code) ||
-                                 UwpPattern(@"\busing\s+Window\s*=").IsMatch(code) &&
-                                 !UwpPattern(@"\busing\s+Window\s*=\s*(?:global::)?(?:Microsoft|Windows)\s*\.\s*UI\s*\.\s*Xaml\s*\.\s*Window\s*;").IsMatch(code)))
+                            if (rule.Id == "UWPC001" && !root.DescendantNodes().Any(node =>
+                                node.SpanStart <= match.Index && node.Span.End >= match.Index + match.Length
+                                && CSharpPlatformIdentity.IsPlatformNamespaceReference(node, "Windows.UI.Xaml", projectRoots)))
                                 continue;
-                            if (rule.Id == "UWPC002" && !match.Value.StartsWith("Windows", StringComparison.Ordinal) &&
-                                !UwpPattern(@"\busing\s+Windows\s*\.\s*UI\s*\.\s*Core\s*;").IsMatch(code))
+                            if (rule.Id is "UWPC003" or "UWPC004")
+                            {
+                                var access = root.DescendantNodes().OfType<MemberAccessExpressionSyntax>()
+                                    .FirstOrDefault(access => access.SpanStart <= match.Index
+                                        && access.Span.End >= match.Index + match.Length - (rule.Id == "UWPC004" ? 1 : 0)
+                                        && (access.Name.Identifier.ValueText is "Current" or "GetForCurrentView"));
+                                if (access is null || !KnownCurrentViewTypes.Any(type =>
+                                    CSharpPlatformIdentity.IsPlatformType(access.Expression, type, projectRoots)))
+                                    continue;
+                            }
+                            if (rule.Id == "UWPC002"
+                                && !root.DescendantNodes().Any(node => node.SpanStart <= match.Index
+                                    && node.Span.End >= match.Index + match.Length
+                                    && CoreDispatcherTypeNames.Any(type =>
+                                        CSharpPlatformIdentity.IsPlatformType(node, "Windows.UI.Core." + type, projectRoots))))
                                 continue;
                             Add(relativePath, 1 + code.AsSpan(0, match.Index).Count('\n'),
                                 rule.Id, rule.Reason, rule.Fix);
                         }
                     }
+                    foreach (var access in root.DescendantNodes().OfType<MemberAccessExpressionSyntax>()
+                        .Where(access => access.Name.Identifier.ValueText is "Current" or "GetForCurrentView"
+                            && KnownCurrentViewTypes.Any(type => CSharpPlatformIdentity.IsPlatformType(access.Expression, type, projectRoots))))
+                        Add(relativePath, 1 + text.AsSpan(0, access.SpanStart).Count('\n'),
+                            access.Name.Identifier.ValueText == "Current" ? "UWPC003" : "UWPC004",
+                            "A confirmed platform current-window/view contract remains in target C#.",
+                            "Resolve the explicit owner and the API-specific supported desktop contract without changing behavior.");
                     continue;
                 }
+
                 XDocument document;
                 try
                 {
@@ -116,6 +130,12 @@ public static partial class MechanicalMigration
                 }
                 foreach (var element in document.Descendants())
                 {
+                    if (xaml && projectRoots.All(candidate => CSharpPlatformIdentity.HasPlatformNamespace(candidate, "Windows.UI.Xaml")))
+                        foreach (var attribute in element.Attributes().Where(attribute => attribute.IsNamespaceDeclaration
+                            && (attribute.Value == "using:Windows.UI.Xaml" || attribute.Value.StartsWith("using:Windows.UI.Xaml.", StringComparison.Ordinal))))
+                            Add(relativePath, ((IXmlLineInfo)attribute).LineNumber, "UWPC001",
+                                "A XAML namespace declaration still binds the platform UWP XAML namespace.",
+                                "Resolve platform type identity and use the corresponding target XAML contract.");
                     if (xaml && (element.Name.LocalName is "MediaElement" or "CaptureElement") &&
                         (element.Name.NamespaceName.Length == 0 ||
                          element.Name.NamespaceName == PresentationXamlNamespace))
@@ -157,6 +177,17 @@ public static partial class MechanicalMigration
                 });
             }
         }
+
+        private static readonly string[] CoreDispatcherTypeNames = ["CoreWindow", "CoreDispatcher", "CoreDispatcherPriority"];
+
+        private static readonly string[] KnownCurrentViewTypes =
+        [
+            "Windows.UI.Xaml.Window", "Microsoft.UI.Xaml.Window",
+            "Windows.UI.ViewManagement.ApplicationView", "Windows.Graphics.Display.DisplayInformation",
+            "Windows.ApplicationModel.Resources.Core.ResourceContext",
+            "Windows.ApplicationModel.DataTransfer.DataTransferManager", "Windows.UI.ViewManagement.InputPane",
+            "Windows.UI.Core.SystemNavigationManager"
+        ];
 
         private static void RefreshUwpCompatibilityTodo(
             MigrationReport report, List<MigrationUwpResidual> residuals)

@@ -95,7 +95,8 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
                         "ApplicationDefinition": [],
                         "PRIResource": [],
                         "Content": [],
-                        "None": []
+                        "None": [],
+                        "ProjectReference": []
                       }
                     }
                     """,
@@ -238,7 +239,8 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
                         "ApplicationDefinition": [],
                         "PRIResource": [],
                         "Content": [],
-                        "None": []
+                        "None": [],
+                        "ProjectReference": []
                       }
                     }
                     """,
@@ -312,7 +314,8 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
                         "ApplicationDefinition": [],
                         "PRIResource": [],
                         "Content": [],
-                        "None": []
+                        "None": [],
+                        "ProjectReference": []
                       }
                     }
                     """,
@@ -389,7 +392,8 @@ public class MsBuildProjectItemEvaluatorTests : BaseCommandTests
             "ApplicationDefinition": [],
             "PRIResource": [],
             "Content": [],
-            "None": []
+            "None": [],
+            "ProjectReference": []
           }
         }
         """;

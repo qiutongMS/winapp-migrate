@@ -64,7 +64,7 @@ public static partial class MechanicalMigration
             int AcceptedDecisionItems,
             int ChangedFiles);
 
-        private static int RewriteReswNamespaces(string targetRoot)
+        internal static int RewriteReswNamespaces(string targetRoot)
         {
             var changedFiles = 0;
             var files = EnumerateFiles(targetRoot)
@@ -85,21 +85,21 @@ public static partial class MechanicalMigration
                 {
                     continue;
                 }
-
                 var changed = false;
                 foreach (var dataElement in document.Descendants().Where(element =>
                     element.Name.LocalName == "data"))
                 {
                     var name = dataElement.Attribute("name");
                     if (name is null
-                        || !name.Value.Contains("Windows.UI.Xaml", StringComparison.Ordinal))
+                        || !System.Text.RegularExpressions.Regex.IsMatch(name.Value,
+                            @"\.\[using:Windows\.UI\.Xaml(?:\.[A-Za-z_][A-Za-z0-9_]*)*\][A-Za-z_][A-Za-z0-9_.]*$"))
                     {
                         continue;
                     }
 
                     name.Value = name.Value.Replace(
-                        "Windows.UI.Xaml",
-                        "Microsoft.UI.Xaml",
+                        "[using:Windows.UI.Xaml",
+                        "[using:Microsoft.UI.Xaml",
                         StringComparison.Ordinal);
                     changed = true;
                 }
@@ -178,25 +178,6 @@ public static partial class MechanicalMigration
             var unresolved = new List<MigrationLocation>();
             var missingTargetItems = new List<MigrationLocation>();
             var decisionRequiredItems = new List<MigrationReviewRequiredProjectItem>();
-            foreach (var sourceImport in sourceDocument.Descendants().Where(element =>
-                IsProjectElement(element, "Import")
-                && !IsKnownUwpInfrastructureImport(element)))
-            {
-                unresolved.Add(ProjectItemLocation(
-                    sourceRoot,
-                    sourceProject,
-                    sourceImport));
-            }
-            foreach (var sourceProperty in sourceDocument.Descendants().Where(element =>
-                IsProjectElement(element, element.Name.LocalName)
-                && ClosureRelevantProperties.Contains(
-                    element.Name.LocalName)))
-            {
-                unresolved.Add(ProjectItemLocation(
-                    sourceRoot,
-                    sourceProject,
-                    sourceProperty));
-            }
             foreach (var sourceItemOperation in sourceDocument.Descendants().Where(element =>
                 IsProjectElement(element, element.Name.LocalName)
                 && MigratedProjectItemKinds.Contains(element.Name.LocalName)
@@ -268,6 +249,22 @@ public static partial class MechanicalMigration
                         "unmodeled-ancestor",
                         unresolved,
                         decisionRequiredItems);
+                    continue;
+                }
+                if (item.Elements().Any(metadata => metadata.Attributes().Any(attribute => !attribute.IsNamespaceDeclaration)
+                    || metadata.HasElements || metadata.Name.Namespace != item.Name.Namespace)
+                    || item.Attributes().Any(attribute => !attribute.IsNamespaceDeclaration && attribute.Name.NamespaceName.Length > 0)
+                    || ReadProjectItemMetadata(item).GroupBy(metadata => metadata.Name, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+                {
+                    AddReviewRequiredItem(sourceRoot, sourceProject, item, stableItemIds[item],
+                        itemKind, "conditional-metadata", unresolved, decisionRequiredItems);
+                    continue;
+                }
+                if (item.Attributes().Any(attribute => !attribute.IsNamespaceDeclaration
+                    && attribute.Name.LocalName is "Exclude" or "KeepDuplicates" or "KeepMetadata" or "RemoveMetadata"))
+                {
+                    AddReviewRequiredItem(sourceRoot, sourceProject, item, stableItemIds[item],
+                        itemKind, "project-item-operation", unresolved, decisionRequiredItems);
                     continue;
                 }
                 if (include.IndexOfAny(['*', '?']) >= 0)
@@ -394,7 +391,7 @@ public static partial class MechanicalMigration
                 var usesDefaultPriItem =
                     itemKind == "PRIResource"
                     && relativePath.EndsWith(".resw", StringComparison.OrdinalIgnoreCase);
-                if (usesDefaultPriItem && item.Elements().Any())
+                if (usesDefaultPriItem && ReadProjectItemMetadata(item).Count > 0)
                 {
                     AddReviewRequiredItem(
                         sourceRoot,
@@ -415,9 +412,12 @@ public static partial class MechanicalMigration
                     !usesDefaultPriItem));
             }
 
-            migratable = migratable
-                .DistinctBy(item => (item.Kind, item.RelativePath), StringTupleComparer.OrdinalIgnoreCase)
-                .ToList();
+            var duplicates = migratable.GroupBy(item => (item.Kind, item.RelativePath), StringTupleComparer.OrdinalIgnoreCase)
+                .Where(group => group.Count() > 1).SelectMany(group => group).ToList();
+            foreach (var item in duplicates)
+                AddReviewRequiredItem(sourceRoot, sourceProject, item.SourceElement, stableItemIds[item.SourceElement],
+                    item.Kind, "duplicate-source-item", unresolved, decisionRequiredItems);
+            migratable = migratable.Except(duplicates).ToList();
             var accountedItems = migratable.Select(item => new MigrationProjectItem
             {
                 Kind = item.Kind,
@@ -429,15 +429,10 @@ public static partial class MechanicalMigration
                 .ToList();
             if (!applyChanges)
             {
-                var targetEntries = targetEvaluation?.Succeeded == true
-                    ? targetEvaluation.Items
-                        .Select(item => (item.Kind, item.FullPath))
-                        .ToHashSet(StringTupleComparer.OrdinalIgnoreCase)
-                    : [];
                 var unavailableTargetEvaluation =
                     targetEvaluation?.Succeeded != true;
                 var unverifiedTargetEntries = 0;
-                foreach (var item in explicitItems)
+                foreach (var item in migratable)
                 {
                     var hasExpectedTargetPath =
                         MigrationPathResolver.TryResolveContainedRelativePath(
@@ -446,10 +441,10 @@ public static partial class MechanicalMigration
                             out var expectedTargetPath,
                             out _,
                             out _);
-                    if (hasExpectedTargetPath
-                        && targetEntries.Contains((
-                            item.Kind,
-                            expectedTargetPath)))
+                    var matches = targetEvaluation?.Items.Where(evaluated =>
+                        evaluated.Kind == item.Kind && evaluated.FullPath.Equals(expectedTargetPath, StringComparison.OrdinalIgnoreCase)).ToList() ?? [];
+                    if (hasExpectedTargetPath && !unavailableTargetEvaluation && matches.Count == 1
+                        && MetadataMatches(ReadProjectItemMetadata(item.SourceElement), matches[0].Metadata, out _))
                     {
                         continue;
                     }
@@ -464,7 +459,7 @@ public static partial class MechanicalMigration
                             ? "target-item-path-unavailable"
                             : unavailableTargetEvaluation
                             ? "target-item-evaluation-unavailable"
-                            : "missing-target-item-entry",
+                            : matches.Count == 1 ? "target-item-metadata-drift" : "missing-target-item-entry",
                         NormalizePath(item.RelativePath),
                         unresolved,
                         decisionRequiredItems);
@@ -489,6 +484,12 @@ public static partial class MechanicalMigration
 
             if (explicitItems.Count == 0)
             {
+                if (targetDocument.Root!.Elements().Where(element => element.Name.LocalName == "ItemGroup"
+                    && (string?)element.Attribute("Label") == "winapp-migrate:uwp-source-items").ToList() is { Count: > 0 } obsoleteGroups)
+                {
+                    obsoleteGroups.Remove();
+                    targetDocument.Save(targetProject);
+                }
                 return new ProjectItemMigrationResult(
                     sourceProjectItems.Count,
                     migratable.Count,
@@ -502,6 +503,9 @@ public static partial class MechanicalMigration
             }
 
             var projectNamespace = targetDocument.Root!.Name.Namespace;
+            targetDocument.Root.Elements().Where(element =>
+                element.Name.LocalName == "ItemGroup"
+                && (string?)element.Attribute("Label") == "winapp-migrate:uwp-source-items").Remove();
             var itemGroup = new XElement(
                 projectNamespace + "ItemGroup",
                 new XAttribute("Label", "winapp-migrate:uwp-source-items"));
@@ -522,12 +526,10 @@ public static partial class MechanicalMigration
                 var migrated = new XElement(
                     projectNamespace + item.Kind,
                     new XAttribute("Include", item.RelativePath));
-                foreach (var metadata in item.SourceElement.Elements())
+                foreach (var metadata in ReadProjectItemMetadata(item.SourceElement))
                 {
                     migrated.Add(new XElement(
-                        projectNamespace + metadata.Name.LocalName,
-                        metadata.Attributes().Select(attribute =>
-                            new XAttribute(attribute.Name.LocalName, attribute.Value)),
+                        projectNamespace + metadata.Name,
                         metadata.Value));
                 }
                 itemGroup.Add(migrated);
@@ -591,21 +593,26 @@ public static partial class MechanicalMigration
             XElement item)
         {
             var include = item.Attribute("Include")?.Value ?? string.Empty;
-            var link = item.Elements()
+            var link = item.Attribute("Link")?.Value ?? item.Elements()
                 .FirstOrDefault(element =>
                     element.Name.LocalName == "Link")
                 ?.Value ?? string.Empty;
             var condition = item.Attribute("Condition")?.Value;
-            var parentCondition = item.Parent?.Attribute("Condition")?.Value;
+            var parentCondition = string.Join("\u001f", item.Ancestors().Reverse().Select(ancestor =>
+                $"{CanonicalXmlName(ancestor.Name)}:{CanonicalCondition((string?)ancestor.Attribute("Condition"))}"));
+            parentCondition += string.Join("\u001e", item.Ancestors().Where(ancestor => ancestor.Name.LocalName == "Choose")
+                .Select(choose => string.Join("\u001f", choose.Elements().Where(branch => branch.Name.LocalName is "When" or "Otherwise")
+                    .Select(branch => $"{branch.Name.LocalName}:{CanonicalCondition((string?)branch.Attribute("Condition"))}"))));
             var otherAttributes = item.Attributes()
                 .Where(attribute =>
                     !attribute.IsNamespaceDeclaration
-                    && attribute.Name.LocalName is not "Include" and not "Condition")
+                    && attribute.Name.LocalName is "Update" or "Remove" or "Exclude" or "KeepDuplicates" or "KeepMetadata" or "RemoveMetadata")
                 .Select(attribute =>
                     $"{CanonicalXmlName(attribute.Name)}={CanonicalFactValue(attribute.Value)}")
                 .Order(StringComparer.Ordinal);
-            var metadata = item.Elements()
-                .Select(CanonicalProjectItemElement)
+            var metadata = ReadProjectItemMetadata(item)
+                .Select(metadata => $"{metadata.Name.ToUpperInvariant()}={CanonicalFactValue(metadata.Value)}")
+                .Concat(item.Elements().Where(element => element.HasElements || element.HasAttributes).Select(CanonicalProjectItemElement))
                 .Order(StringComparer.Ordinal);
             return string.Join(
                 "\n",
@@ -719,22 +726,14 @@ public static partial class MechanicalMigration
             var itemOperation = operationAttribute?.Name.LocalName ?? "Unknown";
             var itemSpec = operationAttribute?.Value.Trim() ?? string.Empty;
             var include = item.Attribute("Include")?.Value.Trim() ?? itemSpec;
-            var link = item.Elements()
+            var link = (item.Attribute("Link")?.Value ?? item.Elements()
                 .FirstOrDefault(element => element.Name.LocalName == "Link")
-                ?.Value
-                .Trim();
+                ?.Value)?.Trim();
             var condition = item.Attribute("Condition")?.Value;
             var parentCondition = item.Ancestors()
                 .Select(ancestor => ancestor.Attribute("Condition")?.Value)
                 .FirstOrDefault(value => value is not null);
-            var metadata = item.Elements()
-                .Where(element => element.Name.LocalName != "Link")
-                .Select(element => new MigrationProjectItemMetadata
-                {
-                    Name = element.Name.LocalName,
-                    Value = element.Value
-                })
-                .ToList();
+            var metadata = ReadProjectItemMetadata(item).Where(metadata => metadata.Name != "Link").ToList();
             var expectedTargetPath =
                 TryNormalizeDeterministicTargetPath(
                     sourceRoot,
@@ -755,6 +754,10 @@ public static partial class MechanicalMigration
                             : null;
             return new MigrationReviewRequiredProjectItem
             {
+                SourceDeclaration = item.ToString(SaveOptions.DisableFormatting),
+                SourceContext = string.Join(" > ", item.Ancestors().Reverse().Select(ancestor =>
+                    ancestor.Name.LocalName + (ancestor.Attribute("Condition") is { } condition ? $" Condition={condition.Value}" : "")
+                    + (ancestor.Name.LocalName == "Choose" ? $" branches={string.Join("; ", ancestor.Elements().Select(branch => $"{branch.Name.LocalName}:{(string?)branch.Attribute("Condition")}"))}" : ""))),
                 Id = stableId,
                 SourceProject = sourceProjectPath,
                 SourceLocation = location,
@@ -829,6 +832,13 @@ public static partial class MechanicalMigration
                 ? ["None", "Content"]
                 : ["None", "EmbeddedResource", "PRIResource"];
 
+        private static List<MigrationProjectItemMetadata> ReadProjectItemMetadata(XElement item) =>
+            item.Attributes().Where(attribute => !attribute.IsNamespaceDeclaration
+                && attribute.Name.LocalName is not ("Include" or "Update" or "Remove" or "Condition" or "Exclude" or "KeepDuplicates" or "KeepMetadata" or "RemoveMetadata"))
+                .Select(attribute => new MigrationProjectItemMetadata { Name = attribute.Name.LocalName, Value = attribute.Value })
+                .Concat(item.Elements().Select(element => new MigrationProjectItemMetadata
+                { Name = element.Name.LocalName, Value = element.Value })).ToList();
+
         private static MigrationLocation ProjectItemLocation(
             string sourceRoot,
             string sourceProject,
@@ -879,14 +889,22 @@ public static partial class MechanicalMigration
                 .Order(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(targetRoot);
             var incompatibleUwpResiduals = FindIncompatibleUwpResiduals(targetRoot);
+            var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(incompatibleUwpResiduals);
             RefreshUwpCompatibilityTodo(report, incompatibleUwpResiduals);
+            RefreshUncertainNamespaceTextTodo(targetRoot, report);
+            RefreshUnresolvedApiIdentityTodo(targetRoot, report);
+            var itemEvaluation = await EvaluateProjectItemFactsAsync(targetRoot, targetProject, evaluator, cancellationToken);
+            var entryEvaluation = itemEvaluation.RawEvaluation ?? MsBuildProjectItemEvaluation.Failure(itemEvaluation.Error ?? "Target item facts are unavailable.");
+            if (report.Source.ProjectFile is { } sourceProjectFile)
+                projectItems = MigrateSourceProjectItems(sourceRoot, Path.Combine(sourceRoot, sourceProjectFile),
+                    targetRoot, targetProject, applyChanges: false, itemEvaluation);
             var targetProjectGraph = await AnalyzeTargetProjectGraphAsync(
                 targetRoot,
                 targetProject,
                 evaluator,
-                cancellationToken);
+                cancellationToken,
+                entryEvaluation);
             RefreshMechanicalTodos(
                 targetRoot,
                 report,
@@ -897,6 +915,7 @@ public static partial class MechanicalMigration
                 report.ActivationAnalysis);
 
             var failed = residuals.Count > 0
+                || uninspectedFiles > 0
                 || unclassified.Count > 0
                 || projectItems.MissingTargetItems.Count > 0
                 || targetProjectGraph.Status is "failed" or "incomplete"
@@ -955,9 +974,11 @@ public static partial class MechanicalMigration
                 evaluator,
                 cancellationToken,
                 projectItemEvaluation);
-            var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(targetRoot);
             var incompatibleUwpResiduals = FindIncompatibleUwpResiduals(targetRoot);
+            var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(incompatibleUwpResiduals);
             RefreshUwpCompatibilityTodo(report, incompatibleUwpResiduals);
+            RefreshUncertainNamespaceTextTodo(targetRoot, report);
+            RefreshUnresolvedApiIdentityTodo(targetRoot, report);
             var targetProjectGraph = await AnalyzeTargetProjectGraphAsync(
                 targetRoot,
                 targetProject,
@@ -1008,49 +1029,10 @@ public static partial class MechanicalMigration
             };
 
         private static (List<MigrationLocation> Residuals, int UninspectedFiles)
-            FindLegacyNamespaceResiduals(string targetRoot)
+            FindLegacyNamespaceResiduals(IReadOnlyList<MigrationUwpResidual> issues)
         {
-            var residuals = new List<MigrationLocation>();
-            var files = EnumerateContainedVerificationFiles(
-                targetRoot,
-                out var uninspectedFiles);
-            foreach (var file in files)
-            {
-                var relativePath = Path.GetRelativePath(targetRoot, file);
-                if (string.Equals(
-                        Path.GetFileName(relativePath),
-                        "migration-report.json",
-                        StringComparison.OrdinalIgnoreCase)
-                    || relativePath.Split(
-                        Path.DirectorySeparatorChar,
-                        Path.AltDirectorySeparatorChar)[0]
-                        .Equals(".migration-evidence", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (!TryReadInspectableText(file, out var text))
-                {
-                    uninspectedFiles++;
-                    continue;
-                }
-
-                if (Path.GetExtension(file).Equals(".cs", StringComparison.OrdinalIgnoreCase))
-                    text = MaskCSharpNonCode(text);
-                var lines = text.Split(["\r\n", "\n"], StringSplitOptions.None);
-                for (var index = 0; index < lines.Length; index++)
-                {
-                    if (lines[index].Contains("Windows.UI.Xaml", StringComparison.Ordinal))
-                    {
-                        residuals.Add(new MigrationLocation
-                        {
-                            Path = NormalizePath(relativePath),
-                            Line = index + 1
-                        });
-                    }
-                }
-            }
-            return (residuals, uninspectedFiles);
+            return (issues.Where(issue => issue.RuleId == "UWPC001").Select(issue => issue.Location).ToList(),
+                issues.Count(issue => issue.RuleId == "UWPC000"));
         }
 
         private static List<string> EnumerateContainedVerificationFiles(

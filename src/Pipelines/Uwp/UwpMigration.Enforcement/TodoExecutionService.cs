@@ -183,7 +183,8 @@ public static class TodoExecutionService
             throw new InvalidDataException("Binding a surface obligation cannot remove its required surface checks.");
         guidance.CompletionChecks.RemoveAll(check => pending.Contains(check) && !ReferenceEquals(check, existing));
         guidance.CompletionChecks.RemoveAll(check =>
-            check.VerificationKind == "todo-resolution-evidence" && check.Target == todo.Id ||
+            check.VerificationKind == "todo-resolution-evidence" && check.Target == todo.Id
+                && check.Id == $"{todo.Id.ToLowerInvariant()}-resolution-evidence" ||
             check.VerificationKind == "surface-check" && check.Target == stateId &&
                 check.Id != checkId && check.AssertionIds.Count == 0);
         if (existing is null)

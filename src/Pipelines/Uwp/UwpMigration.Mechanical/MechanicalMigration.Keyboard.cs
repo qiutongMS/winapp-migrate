@@ -12,9 +12,9 @@ public static partial class MechanicalMigration
     public sealed partial class Engine
     {
         private const string InputKeyboardSourceGetKeyState =
-            "Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread";
+            "global::Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread";
 
-        private static int RewriteCoreWindowKeyState(string targetRoot)
+        internal static int RewriteCoreWindowKeyState(string targetRoot)
         {
             var changedFiles = 0;
             var changedCalls = 0;

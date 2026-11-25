@@ -96,6 +96,18 @@ public static partial class MechanicalMigration
                 }
 
                 foreach (var reference in document.Descendants().Where(element =>
+                    element.Name.LocalName == "Reference" && element.Attribute("Include") is not null))
+                {
+                    var hint = (string?)reference.Attribute("HintPath")
+                        ?? reference.Elements().FirstOrDefault(element => element.Name.LocalName == "HintPath")?.Value;
+                    analysis.Issues.Add(new MigrationDependencyIssue
+                    {
+                        SourceProject = relativeProject,
+                        Kind = "legacy-binary-reference",
+                        Reason = $"Binary/assembly Reference '{(string?)reference.Attribute("Include")}', HintPath '{hint ?? "(none)"}' is source evidence, not a migrated target reference. Resolve framework versus legacy binary identity, architecture, licensing, compatibility and runtime deployment; excluded DLL files are not restored automatically."
+                    });
+                }
+                foreach (var reference in document.Descendants().Where(element =>
                     element.Name.LocalName == "ProjectReference"
                     && element.Attribute("Include") is not null))
                 {

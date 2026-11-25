@@ -148,7 +148,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(
             fixture.Root, TestWindowOwnerResolver.Shared)).Status);
-        await File.WriteAllTextAsync(fixture.Path("Compatibility.cs"), "var window = Window.Current;");
+        await File.WriteAllTextAsync(fixture.Path("Compatibility.cs"), "var window = global::Microsoft.UI.Xaml.Window.Current;");
 
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var assessment = (await TodoExecutionService.AssessAsync(
@@ -582,6 +582,11 @@ public sealed partial class RunnerAcceptanceTests
         todo.Guidance!.ReasonCode = "preserved-uwp-resource-contract-requires-merge";
         todo.Guidance.CompletionChecks.Add(new MigrationCompletionCheck
         {
+            Id = "source-resource-contract-review", Summary = "Resource precedence and lookup require separate semantic evidence.",
+            VerificationKind = "todo-resolution-evidence", Target = todo.Id, Expected = "terminal-with-evidence"
+        });
+        todo.Guidance.CompletionChecks.Add(new MigrationCompletionCheck
+        {
             Id = "app-resource-replay-passed", Summary = "Bind the actual startup surface.",
             VerificationKind = legacy ? "surface-check" : "surface-binding",
             Target = legacy ? "app-launch" : todo.Id, Expected = "passed",
@@ -592,7 +597,7 @@ public sealed partial class RunnerAcceptanceTests
         var pending = (await TodoExecutionService.AssessAsync(fixture.Root, todo.Id)).Single();
         Assert.AreEqual("pending", pending.VerificationStatus);
         Assert.AreEqual("bind-surface", pending.NextOperation);
-        Assert.IsEmpty(pending.HumanValidationItems);
+        Assert.IsTrue(pending.HumanValidationItems.Any(item => item.CheckId == "source-resource-contract-review"));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             TodoExecutionService.BindStateAsync(fixture.Root, todo.Id, "state-1",
                 "app-resource-replay-passed", "Cannot weaken parity to reachability.",
@@ -602,7 +607,7 @@ public sealed partial class RunnerAcceptanceTests
             reuseId ? "app-resource-replay-passed" : "actual-startup", "The actual startup surface.",
             [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]);
 
-        Assert.HasCount(2, bound.Guidance!.CompletionChecks);
+        Assert.HasCount(3, bound.Guidance!.CompletionChecks);
         Assert.IsFalse(bound.AffectedStates.Contains("app-launch", StringComparer.Ordinal));
         var concrete = bound.Guidance.CompletionChecks.Single(check => check.VerificationKind == "surface-check");
         Assert.AreEqual("state-1", concrete.Target);
