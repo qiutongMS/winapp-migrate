@@ -19,6 +19,8 @@ internal sealed class UwpEnforceCommand : Command
         windowOwnerResolver ??= processRunner as IWindowOwnerResolver ?? WindowsWindowOwnerResolver.Instance;
         Subcommands.Add(new AssessCommand(windowOwnerResolver));
         Subcommands.Add(new SealContractCommand());
+        Subcommands.Add(new BindSourceCommand());
+        Subcommands.Add(new NavigateCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new RebindSelectorCommand());
         Subcommands.Add(new RunCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new DiagnoseCommand(processRunner, windowOwnerResolver));
@@ -27,6 +29,67 @@ internal sealed class UwpEnforceCommand : Command
         Subcommands.Add(new SynchronizeCommand(windowOwnerResolver));
         Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
         Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
+    }
+
+    private sealed class BindSourceCommand : Command
+    {
+        internal BindSourceCommand() : base("bind-source",
+            "Verify an observed source navigation trace and freeze this surface's route and source baseline without changing the inventoried obligations.")
+        {
+            var target = TargetArgument();
+            var surface = new Option<string>("--surface") { Required = true };
+            var probes = new Option<string[]>("--probe")
+            {
+                Required = true, Arity = ArgumentArity.OneOrMore, AllowMultipleArgumentsPerToken = false,
+                Description = "Ordered source probe.json receipts: initial inspect, required actions, final inspect. Repeat for each probe."
+            };
+            Arguments.Add(target);
+            Options.Add(surface);
+            Options.Add(probes);
+            SetAction((result, token) => InvokeGuardedAsync(async () =>
+            {
+                var contract = await UwpEnforcementRunner.BindSourceAsync(result.GetValue(target)!,
+                    result.GetValue(surface)!, result.GetValue(probes) ?? [], token);
+                Console.Out.WriteLine(JsonSerializer.Serialize(contract, EnforcementStore.JsonOptions));
+                return 0;
+            }));
+        }
+    }
+
+    private sealed class NavigateCommand : Command
+    {
+        internal NavigateCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
+            : base("navigate", "Inspect and verify the declared target start state, execute the source-verified route fail-fast, and record honest surface evidence.")
+        {
+            var target = TargetArgument();
+            var surface = new Option<string>("--surface") { Required = true };
+            var window = new Option<long>("--window") { Required = true };
+            var winApp = WinAppOption();
+            Arguments.Add(target);
+            Options.Add(surface);
+            Options.Add(window);
+            Options.Add(winApp);
+            SetAction((result, token) => InvokeGuardedAsync(async () =>
+            {
+                var root = result.GetValue(target)!;
+                var stateId = result.GetValue(surface)!;
+                var probes = await new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver)
+                    .NavigateAsync(root, stateId, ResolveWinAppExecutable(result.GetValue(winApp)),
+                        result.GetValue(window), token);
+                if (probes.Any(probe => probe.ExitCode != 0 || probe.InfrastructureFailure))
+                {
+                    Console.Out.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        status = "navigation-failed", surface = stateId, probes,
+                        recovery = "No later actions were executed. Inspect and recover the declared start state before retrying."
+                    }, EnforcementStore.JsonOptions));
+                    return 1;
+                }
+                var snapshot = await UwpEnforcementRunner.RecordSurfaceAsync(root,
+                    windowOwnerResolver, stateId, probes.Select(probe => probe.ArtifactPath).ToArray(), token);
+                return WriteSnapshot(snapshot, false);
+            }));
+        }
     }
 
     private sealed class RebindSelectorCommand : Command
@@ -82,7 +145,7 @@ internal sealed class UwpEnforceCommand : Command
 
     private sealed class SealContractCommand : Command
     {
-        internal SealContractCommand() : base("seal-contract", "Independently anchor schema 3.0 source surface inventory and navigation recipes before source capture or workflow start.")
+        internal SealContractCommand() : base("seal-contract", "Independently anchor the immutable surface inventory before source discovery. Bind each observed navigation route later with bind-source.")
         {
             var target = TargetArgument();
             var extend = new Option<bool>("--extend") { Description = "Append inventoried surfaces without changing/removing established surfaces, before source/workflow start only." };
@@ -613,6 +676,7 @@ internal sealed class UwpEnforceCommand : Command
                 exception is ArgumentException
                 or InvalidDataException
                 or IOException
+                or EnforcementLockTimeoutException
                 or UnauthorizedAccessException)
             {
                 Console.Out.WriteLine(JsonSerializer.Serialize(
@@ -620,6 +684,8 @@ internal sealed class UwpEnforceCommand : Command
                     {
                         schemaVersion = "1.0",
                         status = "error",
+                        errorCode = exception is EnforcementLockTimeoutException ? "enforcement-busy" : null,
+                        retryable = exception is EnforcementLockTimeoutException ? (bool?)true : null,
                         error = exception.Message
                     },
                     EnforcementStore.JsonOptions));
@@ -648,6 +714,7 @@ internal sealed class UwpEnforceCommand : Command
                 snapshot.Gates,
                 snapshot.Frontier,
                 snapshot.Disposition,
+                snapshot.Completion,
                 latest = new
                 {
                     build = snapshot.Build is null
@@ -732,6 +799,7 @@ internal sealed class UwpEnforceCommand : Command
             exception is ArgumentException
             or InvalidDataException
             or IOException
+            or EnforcementLockTimeoutException
             or UnauthorizedAccessException)
         {
             Console.Out.WriteLine(
@@ -740,6 +808,8 @@ internal sealed class UwpEnforceCommand : Command
                     {
                         schemaVersion = "1.0",
                         status = "error",
+                        errorCode = exception is EnforcementLockTimeoutException ? "enforcement-busy" : null,
+                        retryable = exception is EnforcementLockTimeoutException ? (bool?)true : null,
                         error = exception.Message
                     },
                     EnforcementStore.JsonOptions));

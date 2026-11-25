@@ -5,6 +5,7 @@ using System.CommandLine;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using UwpMigration.Contracts;
+using UwpMigration.Enforcement;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using WinAppMigration.Enforcement;
 
@@ -12,6 +13,66 @@ namespace UwpMigration.Enforcement.Tests;
 
 public sealed partial class RunnerAcceptanceTests
 {
+    [TestMethod]
+    [DataRow("historical")]
+    [DataRow("current")]
+    [DataRow("other-code")]
+    [DataRow("tampered")]
+    [DataRow("ambiguous")]
+    public async Task SurfaceComparison_PairsHistoricalImagesWithoutChangingAcceptance(string captureCase)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
+        var process = new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, ""))
+        {
+            SaveComparisonScreenshots = true
+        };
+        var probe = await new UwpEnforcementRunner(process, windowOwnerResolver: TestWindowOwnerResolver.Shared)
+            .InvokeUiAsync(fixture.Root, "winapp", ["inspect", "--json", "-w", "42"], [], "state-1");
+        var snapshot = await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var receiptPath = Path.GetDirectoryName(probe.ArtifactPath)!.Replace('\\', '/') + "/comparison-capture.json";
+        var receipt = await fixture.LoadAsync<SurfaceComparisonArtifacts.ComparisonCapture>(receiptPath);
+        var historicalRun = receipt.RunId;
+        if (captureCase == "current")
+        {
+            await new UwpEnforcementRunner(new FakeProcessRunner(ReplaySuccess()))
+                .RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
+            var currentProbe = await new UwpEnforcementRunner(
+                new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, "")) { SaveComparisonScreenshots = true },
+                windowOwnerResolver: TestWindowOwnerResolver.Shared)
+                .InvokeUiAsync(fixture.Root, "winapp", ["inspect", "--json", "-w", "42"], [], "state-1");
+            snapshot = await UwpEnforcementRunner.RecordSurfaceAsync(
+                fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [currentProbe.ArtifactPath]);
+        }
+        else snapshot.Replay!.Id += "-later";
+        if (captureCase == "other-code") receipt.Fingerprint += "-different";
+        else if (captureCase == "tampered") await File.AppendAllTextAsync(fixture.Path(receipt.ScreenshotPath!), "tampered");
+        else if (captureCase == "ambiguous")
+        {
+            await EnforcementStore.WriteAtomicAsync(fixture.Root,
+                ".migration-evidence/enforcement/another/comparison-capture.json", receipt);
+        }
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, receiptPath, receipt);
+        var before = JsonSerializer.Serialize(snapshot, EnforcementStore.JsonOptions);
+
+        await SurfaceComparisonArtifacts.WriteIndexAsync(fixture.Root, snapshot, CancellationToken.None);
+        var html = await File.ReadAllTextAsync(fixture.Path(SurfaceComparisonArtifacts.IndexPath));
+
+        Assert.AreEqual(before, JsonSerializer.Serialize(snapshot, EnforcementStore.JsonOptions));
+        if (captureCase is "historical" or "current")
+        {
+            StringAssert.Contains(html, "<img alt=\"target screenshot\"");
+            StringAssert.Contains(html, captureCase == "historical" ? historicalRun! : snapshot.Replay!.Id);
+            Assert.AreEqual(captureCase == "historical", html.Contains("not a current-replay verification", StringComparison.Ordinal));
+        }
+        else
+        {
+            Assert.IsFalse(html.Contains("<img alt=\"target screenshot\"", StringComparison.Ordinal));
+            StringAssert.Contains(html, captureCase == "tampered" ? "Screenshot unavailable or stale" : "Screenshot missing or ambiguous");
+        }
+    }
+
     [TestMethod]
     [DataRow("saved")]
     [DataRow("missing")]
@@ -153,7 +214,7 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow("target")]
     [DataRow("replay")]
     [DataRow("output")]
-    public async Task TodoExecution_CurrentEvidenceChangesInvalidateVerificationNotImplementation(string change)
+    public async Task TodoExecution_InvalidInputsReopenVerificationButSameBuildReplaysPreserveIt(string change)
     {
         using var fixture = await TodoFixtureAsync();
         await TodoExecutionService.RecordImplementationAsync(
@@ -176,7 +237,7 @@ public sealed partial class RunnerAcceptanceTests
         var assessment = (await TodoExecutionService.AssessAsync(
             fixture.Root, "UWMIG014", TestWindowOwnerResolver.Shared)).Single();
         Assert.AreEqual("implemented", assessment.ImplementationStatus);
-        Assert.AreEqual("pending", assessment.VerificationStatus);
+        Assert.AreEqual(change == "replay" ? "verified" : "pending", assessment.VerificationStatus);
         Assert.IsEmpty(assessment.HumanValidationItems);
     }
 
@@ -464,8 +525,7 @@ public sealed partial class RunnerAcceptanceTests
         }
         else
         {
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-                UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
+            await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
             var blocked = await UwpEnforcementRunner.AssessAsync(
                 fixture.Root, TestWindowOwnerResolver.Shared);
             Assert.AreNotEqual("passed", blocked.Status);
@@ -503,6 +563,81 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsNotNull(json["surfaces"]![0]!["checkIds"]);
         Assert.IsNull(json["developmentStatus"]);
         Assert.IsNull(json["readyForCanonical"]);
+    }
+
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task TodoExecution_StartupBindingResolvesActualInventoryWithoutPhantomChecks(
+        bool legacy, bool reuseId)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = ProjectTodo();
+        todo.Id = "UWMIG001";
+        todo.Origin = "mechanical";
+        todo.AffectedStates = legacy ? ["app-launch"] : [];
+        todo.Guidance!.ReasonCode = "preserved-uwp-resource-contract-requires-merge";
+        todo.Guidance.CompletionChecks.Add(new MigrationCompletionCheck
+        {
+            Id = "app-resource-replay-passed", Summary = "Bind the actual startup surface.",
+            VerificationKind = legacy ? "surface-check" : "surface-binding",
+            Target = legacy ? "app-launch" : todo.Id, Expected = "passed",
+            AssertionIds = [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]
+        });
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var pending = (await TodoExecutionService.AssessAsync(fixture.Root, todo.Id)).Single();
+        Assert.AreEqual("pending", pending.VerificationStatus);
+        Assert.AreEqual("bind-surface", pending.NextOperation);
+        Assert.IsEmpty(pending.HumanValidationItems);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            TodoExecutionService.BindStateAsync(fixture.Root, todo.Id, "state-1",
+                "app-resource-replay-passed", "Cannot weaken parity to reachability.",
+                [SurfaceCheckIds.TargetReachable]));
+
+        var bound = await TodoExecutionService.BindStateAsync(fixture.Root, todo.Id, "state-1",
+            reuseId ? "app-resource-replay-passed" : "actual-startup", "The actual startup surface.",
+            [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]);
+
+        Assert.HasCount(2, bound.Guidance!.CompletionChecks);
+        Assert.IsFalse(bound.AffectedStates.Contains("app-launch", StringComparer.Ordinal));
+        var concrete = bound.Guidance.CompletionChecks.Single(check => check.VerificationKind == "surface-check");
+        Assert.AreEqual("state-1", concrete.Target);
+        Assert.IsFalse(bound.Guidance.CompletionChecks.Any(check => check.VerificationKind == "surface-binding"));
+        var probe = await CaptureClosureProbeAsync(fixture);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var completed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("passed", completed.Status);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_BindingCannotRetargetAnAlreadyConcreteCheck()
+    {
+        using var fixture = await TodoFixtureAsync();
+        var original = await fixture.LoadReportAsync();
+        var id = original.Todos.Single().Guidance!.CompletionChecks.Single().Id;
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        plan.States.Add(new MigrationState
+        {
+            Id = "other", Kind = "page", SourceDefinitions = ["Other.xaml"],
+            Verification = new StateVerificationContract { TreeProbeIndex = 0 },
+            Source = new StateObservation { Status = "not-run" },
+            Target = new StateObservation { Status = "not-run" },
+            Comparison = new StateComparison { Status = "not-run" }
+        });
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            TodoExecutionService.BindStateAsync(fixture.Root, "UWMIG014", "other", id,
+                "Cannot silently move an existing obligation.", [SurfaceCheckIds.TargetReachable]));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            TodoExecutionService.BindStateAsync(fixture.Root, "UWMIG014", "state-1", id,
+                "Cannot silently weaken an existing obligation.", [SurfaceCheckIds.TargetReachable]));
+        var current = await fixture.LoadReportAsync();
+        Assert.AreEqual("state-1", current.Todos.Single().Guidance!.CompletionChecks.Single().Target);
     }
 
     [TestMethod]

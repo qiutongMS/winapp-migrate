@@ -13,6 +13,8 @@ public sealed record SemanticSlice(
     string Reason)
 {
     public bool Resolved { get; init; } = Complete;
+    public bool ToolBlocked { get; init; }
+    public bool InputReviewRequired { get; init; }
 }
 
 public static class SemanticSlicePlanner
@@ -108,9 +110,15 @@ public static class SemanticSlicePlanner
         foreach (var state in plan.States.Where(state => state.Disposition == "required"))
         {
             if (state.Source.Status != "captured" ||
-                !EvidenceExists(root, state.Source.Evidence, null, out _))
+                !EvidenceExists(root, state.Source.Evidence, out _))
             {
                 reason = $"Required surface {state.Id} needs captured source-oracle evidence before parity can be verified and strict closure can pass.";
+                return false;
+            }
+            try { SourceNavigationContracts.Require(root, state); }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                reason = exception.Message;
                 return false;
             }
         }
@@ -120,14 +128,16 @@ public static class SemanticSlicePlanner
 
     public static IReadOnlyList<SemanticSlice> Assess(
         DirectoryInfo root, StatePlanDocument plan, ReplayAttestation? freshReplay,
-        WorkflowProgress? progress = null, DateTimeOffset? now = null, IWindowOwnerResolver? windowOwnerResolver = null)
+        IReadOnlyList<StateVerificationSummary> stateVerifications, WorkflowProgress? progress = null)
     {
+        var assessments = stateVerifications.ToDictionary(state => state.Id, StringComparer.Ordinal);
         return plan.States.Where(state => state.Disposition == "required")
             .GroupBy(SliceId, StringComparer.Ordinal)
             .Select(group =>
             {
                 var states = group.ToArray();
-                var reasons = states.Select(state => StateReason(root, state, freshReplay, now ?? DateTimeOffset.UtcNow, windowOwnerResolver)).ToArray();
+                var verifications = states.Select(state => assessments[state.Id]).ToArray();
+                var reasons = states.Select((state, index) => StateReason(root, state, freshReplay, verifications[index])).ToArray();
                 return new SemanticSlice(
                     group.Key,
                     states[0].Criticality,
@@ -138,6 +148,10 @@ public static class SemanticSlicePlanner
                         state.Target.Status == "blocked" || state.Comparison.Status == "blocked"),
                     reasons.FirstOrDefault(reason => reason is not null) ?? $"Slice {group.Key} is verified.")
                 {
+                    ToolBlocked = verifications.Length > 0 && verifications.All(WorkflowCompletion.IsToolBlocked),
+                    InputReviewRequired = verifications.Any(WorkflowCompletion.RequiresInputReview) &&
+                        verifications.All(verification => WorkflowCompletion.RequiresInputReview(verification) ||
+                            WorkflowCompletion.IsToolBlocked(verification) || verification.Result == SurfaceVerificationResult.Verified),
                     Resolved = reasons.All(reason => reason is null) ||
                         states.All(state => StateClosureProtocol.HasHistoricalParity(root, state)) ||
                         progress?.Slices.Any(slice => slice.SliceId == group.Key && slice.Resolved) == true &&
@@ -149,16 +163,19 @@ public static class SemanticSlicePlanner
 
     public static SemanticSlice? Select(
         IReadOnlyList<SemanticSlice> slices) =>
+        slices.FirstOrDefault(slice => !slice.Resolved && !slice.ToolBlocked && !slice.InputReviewRequired &&
+            slice.Dependencies.All(dependency => slices.Any(
+                candidate => candidate.Id == dependency && candidate.Resolved))) ??
         slices.FirstOrDefault(slice => !slice.Resolved &&
             slice.Dependencies.All(dependency => slices.Any(
                 candidate => candidate.Id == dependency && candidate.Resolved)));
 
     private static string? StateReason(
-        DirectoryInfo root, MigrationState state, ReplayAttestation? replay, DateTimeOffset now, IWindowOwnerResolver? windowOwnerResolver)
+        DirectoryInfo root, MigrationState state, ReplayAttestation? replay, StateVerificationSummary verification)
     {
         if (state.Source.Status != "captured")
             return $"Surface {state.Id} source status {state.Source.Status} is not captured.";
-        if (!EvidenceExists(root, state.Source.Evidence, null, out var sourceReason))
+        if (!EvidenceExists(root, state.Source.Evidence, out var sourceReason))
             return $"Surface {state.Id} source: {sourceReason}";
         if (state.Target.Status != "passed")
             return $"Surface {state.Id} target status {state.Target.Status} is not closed.";
@@ -166,14 +183,11 @@ public static class SemanticSlicePlanner
             return $"Surface {state.Id} comparison status {state.Comparison.Status} is not closed; use verified, blocked, unverified, or failed.";
         if (replay is null)
             return $"Surface {state.Id} requires a fresh canonical replay.";
-        if (!EvidenceExists(root, state.Target.Evidence, replay.StartedAt, out var reason))
-            return $"Surface {state.Id}: {reason}";
-        return StateClosureProtocol.Verify(root, state, replay, now, out var closureReason, windowOwnerResolver)
-            ? null : closureReason;
+        return verification.Result == SurfaceVerificationResult.Verified ? null : verification.Reason;
     }
 
     private static bool EvidenceExists(
-        DirectoryInfo root, List<string> paths, DateTimeOffset? after, out string reason)
+        DirectoryInfo root, List<string> paths, out string reason)
     {
         reason = "Captured source and passed target surfaces require evidence.";
         if (paths.Count == 0) return false;
@@ -184,11 +198,6 @@ public static class SemanticSlicePlanner
             if (!File.Exists(path))
             {
                 reason = $"Evidence file does not exist: {relativePath}";
-                return false;
-            }
-            if (after is not null && File.GetLastWriteTimeUtc(path) < after.Value.UtcDateTime)
-            {
-                reason = $"Evidence predates canonical replay: {relativePath}";
                 return false;
             }
         }

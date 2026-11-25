@@ -225,6 +225,8 @@ public sealed record WorkflowProgress
     public DateTimeOffset? OperationsStartedAt { get; set; }
     [JsonRequired, JsonPropertyName("lastObservedAt")]
     public DateTimeOffset LastObservedAt { get; set; }
+    [JsonPropertyName("observedOperationCount")]
+    public int ObservedOperationCount { get; set; }
     [JsonRequired, JsonPropertyName("lastTargetFingerprint")]
     public required string LastTargetFingerprint { get; set; }
     [JsonRequired, JsonPropertyName("unresolvedRequiredStates")]
@@ -256,6 +258,12 @@ public sealed class WorkflowTelemetrySnapshot
     public double TotalElapsedMinutes { get; init; }
     [JsonPropertyName("measuredProgress")]
     public bool MeasuredProgress { get; init; }
+    [JsonPropertyName("activityObserved")]
+    public bool ActivityObserved { get; init; }
+    [JsonPropertyName("coverageProgress")]
+    public bool CoverageProgress { get; init; }
+    [JsonPropertyName("parityProgress")]
+    public bool ParityProgress { get; init; }
     [JsonPropertyName("operations")]
     public required OperationCounts Operations { get; init; }
     [JsonPropertyName("totalOperations")]

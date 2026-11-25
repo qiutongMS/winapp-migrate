@@ -15,7 +15,8 @@ public static class WorkflowController
         bool sourceReady,
         bool buildFresh,
         bool replayFresh,
-        IReadOnlyList<SemanticSlice> slices)
+        IReadOnlyList<SemanticSlice> slices,
+        IReadOnlyList<StateVerificationSummary>? verifications = null)
     {
         var progress = input.Progress is null
             ? new WorkflowProgress
@@ -28,6 +29,7 @@ public static class WorkflowController
                 CompletedSliceIds = slices.Where(slice => slice.Resolved).Select(slice => slice.Id).ToList()
             }
             : Copy(input.Progress);
+        var previousEventCount = progress.Events.Count;
         var active = SemanticSlicePlanner.Select(slices) ??
             slices.FirstOrDefault(slice => !slice.Complete);
         var previousUnit = progress.Units.FirstOrDefault(unit => unit.Epochs.Any(epoch => epoch.ExitedAt is null));
@@ -85,7 +87,24 @@ public static class WorkflowController
         var unit = CurrentUnit(progress, active?.Id);
         Activate(progress, unit, input.GeneratedAt, input.TargetFingerprint);
 
-        var telemetry = WorkflowTelemetry.Measure(progress, unit, input.GeneratedAt);
+        foreach (var (kind, states) in new[]
+        {
+            ("target-coverage-increased", verifications?.Where(state =>
+                state.Level is StateVerificationLevel.SurfaceReachable or StateVerificationLevel.SurfaceParityVerified)),
+            ("surface-parity-increased", verifications?.Where(state =>
+                state.Result == SurfaceVerificationResult.Verified))
+        })
+        {
+            foreach (var state in states ?? [])
+                AddEvent(progress, unit, kind,
+                    $"{input.TargetFingerprint}:{input.Build?.Id}:{SurfaceTreeComparison.RulesIdentity}:{state.Id}",
+                    input.GeneratedAt);
+        }
+        var newEvents = progress.Events.Skip(previousEventCount).ToArray();
+        var telemetry = WorkflowTelemetry.Measure(progress, unit, input.GeneratedAt, newEvents,
+            newEvents.Length > 0 ||
+            progress.Operations.Count > progress.ObservedOperationCount);
+        progress.ObservedOperationCount = progress.Operations.Count;
         return new WorkflowAssessment(progress, active, telemetry);
     }
 
@@ -168,12 +187,16 @@ public static class WorkflowTelemetry
 {
     public static WorkflowTelemetrySnapshot Measure(
         WorkflowProgress progress, WorkflowUnitProgress unit,
-        DateTimeOffset now)
+        DateTimeOffset now, IReadOnlyList<WorkflowProgressEvent>? newEvents = null,
+        bool activityObserved = false)
     {
         var elapsed = unit.ActiveMinutes(now);
         var total = progress.StartedAt is null ? 0 : (now - progress.StartedAt.Value).TotalMinutes;
-        var measured = progress.Events.Any(item => item.Stage == unit.Stage && item.SliceId == unit.SliceId &&
-            unit.StartedAt is not null && item.RecordedAt >= unit.StartedAt);
+        newEvents ??= [];
+        var coverage = newEvents.Any(item => item.Kind == "target-coverage-increased");
+        var parity = newEvents.Any(item => item.Kind == "surface-parity-increased");
+        var measured = coverage || parity || newEvents.Any(item =>
+            item.Kind is "source-oracle-completed" or "mechanical-stabilized" or "bootstrap-completed");
         var totals = new OperationCounts();
         foreach (var item in progress.Operations) totals.Increment(item.Kind);
         return new WorkflowTelemetrySnapshot
@@ -183,6 +206,9 @@ public static class WorkflowTelemetry
             ElapsedMinutes = Math.Max(0, elapsed),
             TotalElapsedMinutes = Math.Max(0, total),
             MeasuredProgress = measured,
+            ActivityObserved = activityObserved,
+            CoverageProgress = coverage,
+            ParityProgress = parity,
             Operations = unit.Operations with { },
             TotalOperations = totals
         };

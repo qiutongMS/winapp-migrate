@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <ProjectReference Include="..\..\..\WinAppMigration.Enforcement\WinAppMigration.Enforcement.csproj" />
     <ProjectReference Include="..\UwpMigration.Contracts\UwpMigration.Contracts.csproj" />
     <ProjectReference Include="..\UwpMigration.Mechanical\UwpMigration.Mechanical.csproj" />

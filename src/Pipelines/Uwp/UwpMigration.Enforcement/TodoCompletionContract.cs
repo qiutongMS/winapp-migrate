@@ -10,7 +10,19 @@ namespace UwpMigration.Enforcement;
 internal static class TodoCompletionContract
 {
     internal static bool IsMachineCheck(MigrationCompletionCheck check) =>
-        check.VerificationKind == "surface-check" || IsProjectCheck(check);
+        check.VerificationKind is "surface-check" or "surface-binding" || IsProjectCheck(check);
+
+    internal static IReadOnlyList<MigrationCompletionCheck> PendingBindings(
+        MigrationTodo todo, StatePlanDocument? plan) =>
+        (todo.Guidance?.CompletionChecks ?? []).Where(check =>
+            check.VerificationKind == "surface-binding" ||
+            todo.Origin == "mechanical" && check.VerificationKind == "surface-check" &&
+            check.Target == "app-launch" &&
+            plan is not null && plan.States.All(state => state.Id != "app-launch") &&
+            (todo.Id, todo.Guidance?.ReasonCode, check.Id) is
+                ("UWMIG001", "preserved-uwp-resource-contract-requires-merge", "app-resource-replay-passed") or
+                ("UWMIG004", "preserved-uwp-startup-contract-requires-port", "startup-replay-passed"))
+            .ToArray();
 
     private static bool IsProjectCheck(MigrationCompletionCheck check) =>
         check.VerificationKind is "build-attestation" or "target-uwp-compatibility" ||
@@ -54,6 +66,8 @@ internal static class TodoCompletionContract
         MigrationTodo todo,
         StatePlanDocument? plan)
     {
+        if (PendingBindings(todo, plan).Count > 0)
+            return false;
         var checks = StateChecks(todo);
         if (checks.Count == 0)
         {
@@ -83,9 +97,6 @@ internal static class TodoCompletionContract
         return checks.Count > 0 &&
             checks.All(IsProjectCheck);
     }
-
-    internal static bool HasProjectClosureChecks(MigrationTodo todo) =>
-        (todo.Guidance?.CompletionChecks ?? []).Any(IsProjectCheck);
 
     internal static bool ProjectClosureChecksPass(
         DirectoryInfo target,

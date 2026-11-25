@@ -27,16 +27,27 @@ public static class WorkflowDispositions
         if (snapshot.Disposition is { Terminal: true } ||
             snapshot.Workflow?.Disposition is { Terminal: true })
             return;
+        var invalidArtifacts = snapshot.Gates.Any(gate => gate.Id == "enforcement-artifacts" && gate.Status != "passed");
+        var completion = invalidArtifacts || snapshot.Status == "passed" ? null : WorkflowCompletion.Assess(snapshot);
         var (kind, code, terminal, retryable, finalization) = snapshot switch
         {
-            _ when snapshot.Gates.Any(gate => gate.Id == "enforcement-artifacts" && gate.Status != "passed") =>
+            _ when invalidArtifacts =>
                 ("infrastructure-failure", "invalid-enforcement-artifacts", true, true, "failed"),
             { Status: "passed" } =>
                 ("complete", "closure-passed", true, false, "complete"),
+            _ when completion?.Outcome == "tool-blocked" =>
+                ("tool-blocked", "comparison-support-required", false, false, "not-ready"),
+            _ when completion is { ActionableSurfaceIds.Count: 0, InputReviewSurfaceIds.Count: > 0 } &&
+                snapshot.Gates.All(gate => gate.Status == "passed" ||
+                    gate.Id is "state-closure" or "report-closure" or "report-sync") =>
+                ("input-review-required", "comparable-inputs-required", false, false, "not-ready"),
             _ => ("continue", "workflow-active", false, true, "not-ready")
         };
         var allowed = terminal || snapshot.Workflow is null
-            ? [] : Enum.GetValues<WorkflowOperation>().ToList();
+            ? [] : kind is "tool-blocked" or "input-review-required"
+                ? new List<WorkflowOperation>
+                    { WorkflowOperation.DiagnosticRun, WorkflowOperation.Hypothesis, WorkflowOperation.UiAction }
+                : Enum.GetValues<WorkflowOperation>().ToList();
         snapshot.Disposition = new RunDisposition
         {
             Kind = kind, ReasonCode = code, Terminal = terminal, Retryable = retryable,

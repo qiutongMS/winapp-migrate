@@ -165,10 +165,23 @@ public static class TodoExecutionService
         var guidance = todo.Guidance ??
             throw new InvalidDataException($"TODO '{todoId}' does not contain repair guidance.");
         var existing = guidance.CompletionChecks.SingleOrDefault(check => check.Id == checkId);
+        var pending = TodoCompletionContract.PendingBindings(todo, plan);
+        if (pending.Count > 1)
+        {
+            if (existing is null || !pending.Contains(existing))
+                throw new InvalidDataException("Resolve one pending surface binding at a time using its existing completion check ID.");
+            pending = [existing];
+        }
+        var replacesLegacyStartup = pending.Any(check => check.Target == "app-launch");
         if (report.Todos.SelectMany(item => item.Guidance?.CompletionChecks ?? [])
             .Any(check => check.Id == checkId &&
-                (!ReferenceEquals(check, existing) || check.VerificationKind != "surface-check" || check.Target != stateId)))
+                (!ReferenceEquals(check, existing) ||
+                 !pending.Contains(check) && (check.VerificationKind != "surface-check" || check.Target != stateId))))
             throw new InvalidDataException($"Completion check ID '{checkId}' is already used by another contract.");
+        if (pending.Append(existing).OfType<MigrationCompletionCheck>()
+            .Any(check => check.AssertionIds.Any(required => !checks.Contains(required, StringComparer.Ordinal))))
+            throw new InvalidDataException("Binding a surface obligation cannot remove its required surface checks.");
+        guidance.CompletionChecks.RemoveAll(check => pending.Contains(check) && !ReferenceEquals(check, existing));
         guidance.CompletionChecks.RemoveAll(check =>
             check.VerificationKind == "todo-resolution-evidence" && check.Target == todo.Id ||
             check.VerificationKind == "surface-check" && check.Target == stateId &&
@@ -184,8 +197,14 @@ public static class TodoExecutionService
         else
         {
             existing.Summary = summary;
+            existing.VerificationKind = "surface-check";
+            existing.Target = stateId;
+            existing.Expected = "passed";
             existing.AssertionIds = checks;
         }
+        if (replacesLegacyStartup &&
+            plan!.States.All(state => state.Id != "app-launch"))
+            todo.AffectedStates.Remove("app-launch");
         if (!todo.AffectedStates.Contains(stateId, StringComparer.Ordinal))
         {
             todo.AffectedStates.Add(stateId);
@@ -282,15 +301,18 @@ public static class TodoExecutionService
         }).ToList();
         var projectChecksPass = TodoCompletionContract.ProjectClosureChecksPass(
             target, todo, context.Report, context.Build, targetFingerprint);
+        var pendingBindings = TodoCompletionContract.PendingBindings(todo, context.Plan);
         var handoffs = BuildHumanValidationItems(todo, context.Plan, surfaces);
         var verificationStatus = surfaces.Any(surface => surface.Status == "failed")
             ? "failed"
-            : !projectChecksPass || surfaces.Any(surface => surface.Status == "pending")
+            : !projectChecksPass || pendingBindings.Count > 0 || surfaces.Any(surface => surface.Status == "pending")
                 ? "pending"
                 : handoffs.Count > 0
                     ? "human-validation-required"
                     : "verified";
-        var next = implementationStatus == "pending"
+        var next = pendingBindings.Count > 0
+            ? ("bind-surface", $"Bind completion check '{pendingBindings[0].Id}' to the actual required surface in the inventory; preserve its exact surface checks.")
+            : implementationStatus == "pending"
             ? ("record-implementation", $"Implement TODO '{todo.Id}' and record its implementation result; surface evidence does not prove business behavior.")
             : verificationStatus switch
             {

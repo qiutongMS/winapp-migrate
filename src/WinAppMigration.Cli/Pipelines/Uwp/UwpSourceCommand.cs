@@ -16,9 +16,27 @@ internal sealed class UwpSourceCommand : Command
             "source",
             "Run and inspect the exact report-recorded UWP source project through a source-oracle evidence gateway.")
     {
+        Subcommands.Add(new InventoryCommand());
         Subcommands.Add(new RunCommand(processRunner));
         Subcommands.Add(new DiagnoseCommand(processRunner));
         Subcommands.Add(new CaptureCommand(processRunner));
+    }
+
+    private sealed class InventoryCommand : Command
+    {
+        internal InventoryCommand() : base("inventory",
+            "List source surface definitions, including inherited XAML roots and inline or code-created popup surfaces, before preparing and sealing the surface plan.")
+        {
+            var target = TargetArgument();
+            Arguments.Add(target);
+            SetAction((parseResult, cancellationToken) =>
+                InvokeGuardedAsync(async () =>
+                {
+                    WriteJson(await UwpEnforcementRunner.InventorySourceAsync(
+                        parseResult.GetValue(target)!, cancellationToken));
+                    return 0;
+                }));
+        }
     }
 
     private sealed class RunCommand : Command

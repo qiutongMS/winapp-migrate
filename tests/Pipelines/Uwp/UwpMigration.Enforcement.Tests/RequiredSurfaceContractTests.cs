@@ -12,6 +12,91 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class RunnerAcceptanceTests
 {
     [TestMethod]
+    public async Task RequiredSurfaceContract_InheritedRootMustBeAccountedFor()
+    {
+        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
+        await File.WriteAllTextAsync(fixture.Path("PurchaseView.cs"), """
+            using UI = Windows.UI.Xaml.Controls;
+            namespace Demo;
+            public abstract class PurchaseBase : UI.UserControl { }
+            public abstract class AnimatedPurchaseBase : PurchaseBase { }
+            public partial class PurchaseView : AnimatedPurchaseBase { }
+            """);
+        await File.WriteAllTextAsync(fixture.Path("PurchaseView.xaml"), """
+            <local:AnimatedPurchaseBase xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:local="using:Demo" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                x:Class="Demo.PurchaseView" />
+            """);
+        var inventory = await UwpEnforcementRunner.InventorySourceAsync(fixture.Root);
+        Assert.AreEqual("user-control", inventory["PurchaseView.xaml"]);
+        var missing = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpEnforcementRunner.SealContractAsync(fixture.Root));
+        StringAssert.Contains(missing.Message, "PurchaseView.xaml");
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        plan.States.Add(new MigrationState
+        {
+            Id = "purchase", Kind = "user-control", SourceDefinitions = ["PurchaseView.xaml"],
+            Verification = new StateVerificationContract { TreeProbeIndex = 0 },
+            Source = new StateObservation { Status = "not-run" },
+            Target = new StateObservation { Status = "not-run" },
+            Comparison = new StateComparison { Status = "not-run" }
+        });
+        await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
+        Assert.HasCount(2, (await UwpEnforcementRunner.SealContractAsync(fixture.Root)).States);
+    }
+
+    [TestMethod]
+    public async Task RequiredSurfaceContract_InlineAndCodeCreatedFlyoutsMustBeAccountedFor()
+    {
+        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
+        await File.WriteAllTextAsync(fixture.Path("Menus.xaml"), """
+            <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+              <MenuFlyout x:Key="DeviceMenu" /><Flyout x:Key="ColorMenu" />
+            </ResourceDictionary>
+            """);
+        await File.WriteAllTextAsync(fixture.Path("Menus.cs"), """
+            using Popup = Windows.UI.Xaml.Controls.Flyout;
+            namespace Demo;
+            public class CustomPopup : Popup { }
+            public class Flyout { }
+            public class Menus
+            {
+                public void Open()
+                {
+                    // new Windows.UI.Xaml.Controls.MenuFlyout();
+                    var text = "new Windows.UI.Xaml.Controls.MenuFlyout()";
+                    var rename = new Popup();
+                    Popup room = new();
+                    var custom = new CustomPopup();
+                    var notAPopup = new Flyout();
+                }
+            }
+            """);
+        var inventory = await UwpEnforcementRunner.InventorySourceAsync(fixture.Root);
+        Assert.HasCount(5, inventory.Where(item => item.Value == "flyout").ToArray());
+        Assert.AreEqual(2, inventory.Keys.Count(path => path.StartsWith("Menus.xaml#", StringComparison.Ordinal)));
+        Assert.AreEqual(3, inventory.Keys.Count(path => path.StartsWith("Menus.cs#", StringComparison.Ordinal)));
+        var missing = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpEnforcementRunner.SealContractAsync(fixture.Root));
+        StringAssert.Contains(missing.Message, "Menus.cs#");
+        StringAssert.Contains(missing.Message, "Menus.xaml#");
+    }
+
+    [TestMethod]
+    public async Task RequiredSurfaceContract_UnresolvedCustomRootIsNotSilentlyOmitted()
+    {
+        using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
+        await File.WriteAllTextAsync(fixture.Path("PurchaseView.xaml"), """
+            <local:MissingPurchaseBase xmlns:local="using:Demo" />
+            """);
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            UwpEnforcementRunner.InventorySourceAsync(fixture.Root));
+        StringAssert.Contains(error.Message, "Demo.MissingPurchaseBase");
+        Assert.IsFalse(File.Exists(fixture.Path(RequiredStateContracts.Path)));
+    }
+
+    [TestMethod]
     public async Task RequiredSurfaceContract_TodoStatusBeforeSealDoesNotStartOperations()
     {
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
@@ -253,7 +338,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task SurfaceClosure_TamperedAttestationFailsBeforeCanonicalMutation()
+    public async Task SurfaceClosure_TamperedAttestationIsNotBlessedByPartialFinalization()
     {
         using var fixture =
             await RunnerFixture.CreateRequiredAsync(observeSource: true);
@@ -279,10 +364,12 @@ public sealed partial class RunnerAcceptanceTests
             state.Target.Attestation!,
             proof);
 
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.SynchronizeReportAsync(
-                fixture.Root,
-                TestWindowOwnerResolver.Shared));
+        var synchronized = await UwpEnforcementRunner.SynchronizeReportAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("blocked", synchronized.Status);
+        Assert.AreEqual("unverified", synchronized.StateVerifications.Single().Level);
+        Assert.AreEqual("unverified", (await fixture.LoadReportAsync()).Validation.ParityStatus);
+        Assert.IsFalse(File.Exists(fixture.Path(".migration-evidence/target/state-1-ui.json")));
     }
 
     [TestMethod]

@@ -30,8 +30,10 @@ public static class EnforcementEvaluator
                     input.TargetRoot, state, input.Replay, input.GeneratedAt, input.WindowOwnerResolver)).ToList() ?? [],
                 GeneratedAt = input.GeneratedAt,
                 Phase = System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(frozenStage.ToString()),
-                Stage = frozenStage, ActiveSlice = input.Progress?.ActiveSliceId,
-                Workflow = input.Progress, Disposition = terminal,
+                Stage = frozenStage,
+                ActiveSlice = input.Progress?.ActiveSliceId,
+                Workflow = input.Progress,
+                Disposition = terminal,
                 Status = terminal.Kind == "complete" ? "passed" : "blocked",
                 TargetFingerprint = input.TargetFingerprint,
                 Frontier = new EnforcementFrontier
@@ -39,7 +41,8 @@ public static class EnforcementEvaluator
                     Kind = "run-terminal",
                     Reason = $"Workflow is terminal ({terminal.Kind}/{terminal.ReasonCode}); no operations are permitted."
                 },
-                Build = input.Build, Replay = input.Replay,
+                Build = input.Build,
+                Replay = input.Replay,
                 Findings = input.FindingLedger?.Findings ?? []
             }, input);
         }
@@ -128,9 +131,10 @@ public static class EnforcementEvaluator
                 input.GeneratedAt,
                 input.WindowOwnerResolver));
 
+        var evidenceReplay = ReplayIsFresh(input, buildFresh, requireLiveProcess: false) ? input.Replay : null;
         var stateVerifications = planValid ? input.StatePlan!.States.Select(state => StateClosureProtocol.AssessLevel(
-            input.TargetRoot, state, replayFresh ? input.Replay : null, input.GeneratedAt, input.WindowOwnerResolver)).ToList() : [];
-        var slices = planValid ? AssessSlices(input, replayFresh ? input.Replay : null) : [];
+            input.TargetRoot, state, evidenceReplay, input.GeneratedAt, input.WindowOwnerResolver)).ToList() : [];
+        var slices = planValid ? AssessSlices(input, evidenceReplay, stateVerifications) : [];
         var activeSlice = SemanticSlicePlanner.Select(slices) ??
             slices.FirstOrDefault(slice => !slice.Complete);
         var sourceReason = "A valid surface plan is required for source-oracle capture.";
@@ -155,9 +159,10 @@ public static class EnforcementEvaluator
             var diagnosed = stateVerifications.FirstOrDefault(state =>
                 stateFrontier.StateIds.Contains(state.Id, StringComparer.Ordinal) &&
                 state.Result is not (SurfaceVerificationResult.Verified or "excluded") &&
-                state.ComparisonDiagnostics?.Any(item => item.Kind != "platform-host-normalized") == true);
+                state.ComparisonDiagnostics?.Any(item => !item.IsNormalization) == true);
             var diagnostic = diagnosed?.ComparisonDiagnostics?.FirstOrDefault(item =>
-                item.Kind != "platform-host-normalized");
+                !item.IsNormalization && item.RepairOwner == "application") ??
+                diagnosed?.ComparisonDiagnostics?.FirstOrDefault(item => !item.IsNormalization);
             if (diagnostic is not null)
             {
                 stateFrontier.Id = diagnosed!.Id;
@@ -180,7 +185,7 @@ public static class EnforcementEvaluator
             "Report synchronization requires a valid surface plan.";
         var reportSynchronized = planValid &&
             ValidateReportSummary(
-                input.StatePlan!,
+                ProjectStatePlan(input, stateVerifications),
                 input.ReportValidation,
                 out reportReason);
         AddGate(
@@ -213,7 +218,7 @@ public static class EnforcementEvaluator
         WorkflowAssessment? workflow = null;
         if (artifactsValid)
         {
-            workflow = WorkflowController.Observe(input, sourceReady, buildFresh, replayFresh, slices);
+            workflow = WorkflowController.Observe(input, sourceReady, buildFresh, replayFresh, slices, stateVerifications);
             activeSlice = workflow.ActiveSlice;
         }
         if (frontier is not null && activeSlice is not null)
@@ -250,27 +255,34 @@ public static class EnforcementEvaluator
     private static EnforcementSnapshot WithHandoffs(
         EnforcementSnapshot snapshot, EnforcementEvaluationInput input)
     {
+        snapshot.Completion = WorkflowCompletion.Assess(snapshot);
         var findings = snapshot.Findings.Where(finding => finding?.CompletionAssertions is { } checks &&
             (checks.Count == 0 || checks.Any(check => check is not null &&
                 !SurfaceCheckIds.All.Contains(check.AssertionId, StringComparer.Ordinal))))
             .Select(finding => new HumanValidationItem
             {
                 CheckId = $"finding-{finding.Id}-scope-review",
-                Behavior = finding.SourceInvariant, ExpectedOutcome = finding.CompletionCondition,
-                Actions = finding.NextActions ?? [], Evidence = finding.Evidence ?? [],
+                Behavior = finding.SourceInvariant,
+                ExpectedOutcome = finding.CompletionCondition,
+                Actions = finding.NextActions ?? [],
+                Evidence = finding.Evidence ?? [],
                 Reason = "This finding includes obligations outside the fixed machine-verifiable UI Surface Parity checks."
             });
         snapshot.HumanValidationItems = input.HumanValidationItems.Concat(findings).Concat(
-            snapshot.StateVerifications.Where(state => state.Result == SurfaceVerificationResult.HumanValidationRequired)
+            snapshot.StateVerifications.Where(state =>
+                state.Result == SurfaceVerificationResult.HumanValidationRequired ||
+                WorkflowCompletion.RequiresInputReview(state) ||
+                state.ComparisonDiagnostics?.Any(item => item.Kind == "platform-control-review") == true)
                 .Select(state =>
                 {
                     var planned = input.StatePlan?.States.FirstOrDefault(item => item.Id == state.Id);
                     return new HumanValidationItem
                     {
                         CheckId = $"{state.Id}-surface-comparison",
-                        StateId = state.Id, Behavior = $"Compare required UI surface '{state.Id}'.",
+                        StateId = state.Id,
+                        Behavior = $"Compare required UI surface '{state.Id}'.",
                         AssertionIds = SurfaceCheckIds.All.ToList(),
-                        Actions = (state.ComparisonDiagnostics?.Where(item => item.Kind != "platform-host-normalized")
+                        Actions = (state.ComparisonDiagnostics?.Where(item => !item.IsNormalization)
                             .Select(item => item.SuggestedAction) ?? [])
                             .Concat(planned?.Verification?.RequiredActions.Select(action => string.Join(" ", action.Command)) ?? [])
                             .Distinct(StringComparer.Ordinal).ToList(),
@@ -349,16 +361,18 @@ public static class EnforcementEvaluator
         (input.Build is null || input.Build.SchemaVersion == BuildAttestation.CurrentSchemaVersion) &&
         (input.Replay is null || input.Replay.SchemaVersion == ReplayAttestation.CurrentSchemaVersion);
 
-    internal static ReplayAttestation? FreshReplay(EnforcementEvaluationInput input) =>
-        ReplayIsFresh(input, BuildIsFresh(input, true)) ? input.Replay : null;
+    internal static ReplayAttestation? EvidenceReplay(EnforcementEvaluationInput input) =>
+        ReplayIsFresh(input, BuildIsFresh(input, true), requireLiveProcess: false) ? input.Replay : null;
 
     internal static IReadOnlyList<SemanticSlice> AssessSlices(
-        EnforcementEvaluationInput input, ReplayAttestation? freshReplay) =>
+        EnforcementEvaluationInput input, ReplayAttestation? freshReplay,
+        IReadOnlyList<StateVerificationSummary>? stateVerifications = null) =>
         SemanticSlicePlanner.Assess(input.TargetRoot, input.StatePlan!,
-            freshReplay, input.Progress, input.GeneratedAt, input.WindowOwnerResolver);
+            freshReplay, stateVerifications ?? input.StatePlan!.States.Select(state => StateClosureProtocol.AssessLevel(
+                input.TargetRoot, state, freshReplay, input.GeneratedAt, input.WindowOwnerResolver)).ToList(), input.Progress);
 
     internal static bool StateRequiresWork(EnforcementEvaluationInput input, MigrationState state) =>
-        !StateClosureProtocol.Verify(input.TargetRoot, state, FreshReplay(input),
+        !StateClosureProtocol.Verify(input.TargetRoot, state, EvidenceReplay(input),
             input.GeneratedAt, out _, input.WindowOwnerResolver);
 
     private static bool BuildIsFresh(EnforcementEvaluationInput input, bool artifactsValid) =>
@@ -371,7 +385,7 @@ public static class EnforcementEvaluator
         string.Equals(input.Build.TargetFingerprint, input.TargetFingerprint, StringComparison.Ordinal) &&
         AttestationEvidenceExists(input.TargetRoot, input.Build);
 
-    private static bool ReplayIsFresh(EnforcementEvaluationInput input, bool buildFresh) =>
+    private static bool ReplayIsFresh(EnforcementEvaluationInput input, bool buildFresh, bool requireLiveProcess = true) =>
         buildFresh &&
         input.Replay is { Success: true, ProcessId: > 0 } &&
         input.Replay.SchemaVersion == ReplayAttestation.CurrentSchemaVersion &&
@@ -382,7 +396,7 @@ public static class EnforcementEvaluator
         input.Replay.StartedAt <= input.Replay.CompletedAt && input.Replay.CompletedAt <= input.GeneratedAt &&
         input.Replay.ProcessStartedAt is { } processStart && processStart > DateTimeOffset.MinValue &&
         processStart <= input.Replay.CompletedAt &&
-        ReplayProcessIsCurrent(input.Replay, input.WindowOwnerResolver) &&
+        (!requireLiveProcess || ReplayProcessIsCurrent(input.Replay, input.WindowOwnerResolver)) &&
         AttestationEvidenceExists(input.TargetRoot, input.Replay);
 
     private static bool ReplayProcessIsCurrent(
@@ -456,6 +470,34 @@ public static class EnforcementEvaluator
             TargetObservations = plan.States.Select(state => new PipelineValidationState(
                 state.Id, state.Target.Status, state.Target.Reason)).ToArray()
         };
+    }
+
+    public static StatePlanDocument ProjectStatePlan(
+        EnforcementEvaluationInput input,
+        IReadOnlyList<StateVerificationSummary> verifications)
+    {
+        var plan = System.Text.Json.JsonSerializer.Deserialize<StatePlanDocument>(
+            System.Text.Json.JsonSerializer.Serialize(input.StatePlan, EnforcementStore.JsonOptions),
+            EnforcementStore.JsonOptions) ?? throw new InvalidDataException("A surface plan is required.");
+        foreach (var state in plan.States.Where(state => state.Disposition == "required"))
+        {
+            if (state.Source.Status == "captured" &&
+                !SemanticSlicePlanner.SourceReady(input.TargetRoot,
+                    new StatePlanDocument { States = [state] }, out var sourceReason))
+            {
+                state.Source.Status = "unverified";
+                state.Source.Reason = sourceReason;
+            }
+            var result = verifications.Single(item => item.Id == state.Id);
+            if (result.Level == "unverified" &&
+                (state.Target.Attestation is not null || state.Target.Status == "passed" ||
+                 state.Comparison.Status == "verified"))
+            {
+                state.Target = new StateObservation { Status = "unverified", Reason = result.Reason };
+                state.Comparison = new StateComparison { Status = "unverified", Reason = result.Reason };
+            }
+        }
+        return plan;
     }
 
     internal static bool ValidateStatePlan(
@@ -567,7 +609,7 @@ public static class EnforcementEvaluator
                 var state = input.StatePlan?.States?.FirstOrDefault(state => state?.Id == check.StateId);
                 if (state is null ||
                     !StateClosureProtocol.VerifyRecordedLevel(input.TargetRoot, state,
-                        FreshReplay(input), input.GeneratedAt, out var proof, out _, input.WindowOwnerResolver) ||
+                        EvidenceReplay(input), input.GeneratedAt, out var proof, out _, input.WindowOwnerResolver) ||
                     !proof.CheckIds.Contains(check.AssertionId, StringComparer.Ordinal))
                 {
                     reason = $"Finding {finding.Id} requires current surface evidence for {check.StateId}/{check.AssertionId}.";

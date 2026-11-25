@@ -48,7 +48,7 @@ internal static class SurfaceComparisonArtifacts
                 throw new IOException("The optional screenshot command did not succeed.");
             if (!resolver.TryGetOwnerIdentity(window, out var after) || owner != after)
                 throw new InvalidDataException("The capture window process changed during the screenshot.");
-            if (!File.Exists(output) || PngEvidence.Classify(output, timeout.Token) == PngInformation.Invalid)
+            if (!File.Exists(output) || !PngEvidence.IsValid(output, timeout.Token))
                 throw new InvalidDataException("The optional screenshot did not produce a valid fresh PNG.");
             receipt.ScreenshotPath = relative;
             receipt.ScreenshotSha256 = StateClosureProtocol.FileHash(target, relative);
@@ -143,15 +143,19 @@ internal static class SurfaceComparisonArtifacts
                     html.Append("<a href=\"").Append(Link(tree)).Append("\">UIA tree</a>");
                     var matches = captures.Where(capture => capture.Side == side && capture.TreeSha256 == hash &&
                         (side == "source" || capture.StateId == state.Id &&
-                         capture.Fingerprint == snapshot.TargetFingerprint && capture.RunId == snapshot.Replay?.Id)).ToArray();
+                         capture.Fingerprint == snapshot.TargetFingerprint)).ToArray();
                     var exact = matches.Where(capture => capture.TreePath == tree).ToArray();
-                    var candidates = exact.Length > 0 ? exact : matches;
+                    var current = matches.Where(capture => capture.RunId == snapshot.Replay?.Id).ToArray();
+                    var candidates = exact.Length > 0 ? exact :
+                        side == "target" && current.Length > 0 ? current : matches;
                     if (candidates.Length != 1)
                     {
                         html.Append("<p>Screenshot missing or ambiguous.</p></td>");
                         return;
                     }
                     var capture = candidates[0];
+                    if (side == "target" && capture.RunId != snapshot.Replay?.Id)
+                        html.Append("<p>Historical replay screenshot paired with this UIA evidence; not a current-replay verification.</p>");
                     if (capture.Status == "saved" && capture.ScreenshotPath is { } image &&
                         EnforcementStore.TryResolveContainedPath(target, image, out var fullImage, out _) &&
                         File.Exists(fullImage) && StateClosureProtocol.FileHash(target, image) == capture.ScreenshotSha256)

@@ -25,6 +25,8 @@ public static class SurfaceVerificationResult
 
 public sealed class StateClosureAttestation
 {
+    [JsonPropertyName("comparisonRules")]
+    public string? ComparisonRules { get; set; }
     [JsonPropertyName("requiredContractHash")]
     public string RequiredContractHash { get; set; } = string.Empty;
     [JsonPropertyName("selectorBindingHash")]
@@ -81,6 +83,10 @@ public sealed class StateClosureAttestation
 
 public static class StateClosureProtocol
 {
+    private static string ProofAnchorName(DirectoryInfo root, string stateId) =>
+        "sp-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            Path.GetFullPath(root.FullName).ToUpperInvariant() + "\n" + stateId)))[..32];
+
     public static bool HasHistoricalParity(
         DirectoryInfo root,
         MigrationState state)
@@ -162,6 +168,7 @@ public static class StateClosureProtocol
         DirectoryInfo root,
         MigrationState state)
     {
+        SourceNavigationContracts.Require(root, state);
         var contract = new MigrationState
         {
             Id = state.Id,
@@ -240,8 +247,12 @@ public static class StateClosureProtocol
         }
 
         var attestation = Derive(root, state, replay, probePaths, now, windowOwnerResolver);
+        await CanonicalAttestationTrust.ArchiveCurrentAsync(root, replay, cancellationToken);
+        attestation.SchemaVersion = "3.0";
+        attestation.ComparisonRules = SurfaceTreeComparison.RulesIdentity;
         StateClosureSeal.Sign(attestation);
         await EnforcementStore.WriteAtomicAsync(root, path, attestation, cancellationToken);
+        StateClosureSeal.WriteContractAnchor(ProofAnchorName(root, state.Id), FileHash(root, path));
         var verified = attestation.Result == SurfaceVerificationResult.Verified;
         var reachable = attestation.CheckIds.Contains(SurfaceCheckIds.TargetReachable, StringComparer.Ordinal);
         state.Target.Status = reachable ? "passed" :
@@ -263,7 +274,8 @@ public static class StateClosureProtocol
         ReplayAttestation replay,
         IReadOnlyList<string> probePaths,
         DateTimeOffset now,
-        IWindowOwnerResolver windowOwnerResolver)
+        IWindowOwnerResolver windowOwnerResolver,
+        ReplayAttestation? currentReplay = null)
     {
         if (state.Disposition != "required")
             throw new InvalidDataException(
@@ -279,7 +291,9 @@ public static class StateClosureProtocol
             throw new InvalidDataException(
                 "A successful product-generated canonical replay is required.");
         }
-        if (!CanonicalAttestationTrust.Verify(root, replay))
+        if (!(currentReplay is null
+                ? CanonicalAttestationTrust.Verify(root, replay)
+                : CanonicalAttestationTrust.VerifyRecorded(root, replay, currentReplay)))
             throw new InvalidDataException(
                 "The canonical replay is not authenticated by the local operation/attestation chain.");
         var requiredHash =
@@ -298,6 +312,12 @@ public static class StateClosureProtocol
             throw new InvalidDataException(
                 $"Surface {state.Id} requires captured source UIA tree evidence.");
         }
+        probePaths = probePaths.Select(path =>
+        {
+            if (!EnforcementStore.TryResolveContainedPath(root, path, out var fullPath, out var error))
+                throw new InvalidDataException(error);
+            return Path.GetRelativePath(root.FullName, fullPath).Replace('\\', '/');
+        }).ToArray();
         if (probePaths.Count == 0 ||
             probePaths
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -429,7 +449,8 @@ public static class StateClosureProtocol
                 probe,
                 replay,
                 windowOwnerResolver,
-                window);
+                window,
+                requireLiveWindow: currentReplay is null);
             var operations = progress.Operations
                 .Where(operation =>
                     operation.Kind == WorkflowOperation.UiAction &&
@@ -472,6 +493,9 @@ public static class StateClosureProtocol
             previous = probe.CompletedAt;
         }
 
+        SourceNavigationContracts.ValidateTargetTrace(
+            root, state, replay, probes, progress, now, windowOwnerResolver,
+            startAlreadyAuthenticated: currentReplay is not null);
         var issues = new List<string>();
         var navigation =
             RequiredActionProtocol.Derive(
@@ -510,7 +534,7 @@ public static class StateClosureProtocol
         if (reachable && !comparison.Matches)
             issues.Add(comparison.Reason);
 
-        var result = !targetTreeValid || !comparison.Comparable
+        var result = !targetTreeValid || !comparison.Comparable && !comparison.HasApplicationDifferences
             ? SurfaceVerificationResult.HumanValidationRequired
             : !reachable
                 ? SurfaceVerificationResult.Unreachable
@@ -568,7 +592,8 @@ public static class StateClosureProtocol
         UiDevelopmentProbe probe,
         ReplayAttestation replay,
         IWindowOwnerResolver windowOwnerResolver,
-        long window)
+        long window,
+        bool requireLiveWindow = true)
     {
         var replayIdentity = new ProcessIdentity(
             replay.ProcessId!.Value,
@@ -579,10 +604,10 @@ public static class StateClosureProtocol
             if (probe.WindowProcessId != replayIdentity.ProcessId ||
                 probe.WindowProcessStartedAt !=
                     replayIdentity.StartedAt ||
-                !windowOwnerResolver.TryGetOwnerIdentity(
+                requireLiveWindow && (!windowOwnerResolver.TryGetOwnerIdentity(
                     window,
                     out var owner) ||
-                owner != replayIdentity)
+                owner != replayIdentity))
             {
                 throw new InvalidDataException(
                     "Probe window/process binding does not match the canonical replay and command.");
@@ -603,7 +628,7 @@ public static class StateClosureProtocol
             throw new InvalidDataException(
                 "Delegated system-window evidence is missing a trusted PickerHost process and replay-owner binding.");
         }
-        if (probe.WindowPresentAfter == true)
+        if (requireLiveWindow && probe.WindowPresentAfter == true)
         {
             var expected = new WindowBindingEvidence(
                 WindowBindingResolver.PickerHostKind,
@@ -749,6 +774,12 @@ public static class StateClosureProtocol
                 throw new InvalidDataException(
                     $"Surface {state.Id} requires a product-generated surface closure attestation; use closure record-surface.");
             }
+            foreach (var path in state.Source.Evidence.Concat(state.Target.Evidence))
+            {
+                var fullPath = Resolve(root, path);
+                if (!File.Exists(fullPath))
+                    throw new InvalidDataException($"Evidence file does not exist: {path}");
+            }
             var attestation =
                 Read<StateClosureAttestation>(
                     root,
@@ -765,14 +796,26 @@ public static class StateClosureProtocol
             if (!StateClosureSeal.Verify(attestation))
                 throw new InvalidDataException(
                     "Surface closure attestation integrity seal is missing or invalid.");
-            var derived = Derive(
+            var recordedReplay = replay;
+            var durable = attestation.SchemaVersion == "3.0";
+            if (durable)
+            {
+                if (attestation.ComparisonRules != SurfaceTreeComparison.RulesIdentity ||
+                    StateClosureSeal.ReadContractAnchor(ProofAnchorName(root, state.Id)) !=
+                        FileHash(root, state.Target.Attestation))
+                    throw new InvalidDataException("Surface proof was not committed by record-surface, was modified, or uses a different comparison build.");
+                recordedReplay = Read<ReplayAttestation>(
+                    root, CanonicalAttestationTrust.ReplayArchivePath(attestation.ReplayAttestationId));
+            }
+            var derived = DeriveCore(
                 root,
                 state,
-                replay,
+                recordedReplay,
                 attestation.Probes,
                 now,
-                windowOwnerResolver);
-            if (attestation.SchemaVersion != "2.0" ||
+                windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
+                durable ? replay : null);
+            if (attestation.SchemaVersion is not ("2.0" or "3.0") ||
                 attestation.Producer !=
                     MigrationArtifactClass.Producer ||
                 attestation.ArtifactClass !=
@@ -782,7 +825,7 @@ public static class StateClosureProtocol
                     derived.StateContractFingerprint ||
                 attestation.TargetFingerprint !=
                     replay.TargetFingerprint ||
-                attestation.ReplayAttestationId != replay.Id ||
+                attestation.ReplayAttestationId != recordedReplay.Id ||
                 attestation.RequiredContractHash !=
                     derived.RequiredContractHash ||
                 attestation.VerificationLevel !=
@@ -949,8 +992,9 @@ public static class StateClosureProtocol
         DateTimeOffset after)
     {
         var fullPath = Resolve(root, path);
+        if (File.Exists(fullPath) && File.GetLastWriteTimeUtc(fullPath) < after.UtcDateTime)
+            throw new InvalidDataException($"Probe output predates its canonical replay: {path}.");
         if (!File.Exists(fullPath) ||
-            File.GetLastWriteTimeUtc(fullPath) < after.UtcDateTime ||
             hash is not null && hash != FileHash(root, path) ||
             hash is null &&
                 !path.EndsWith(

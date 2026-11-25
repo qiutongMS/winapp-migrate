@@ -5,6 +5,62 @@ namespace WinAppMigration.Enforcement;
 
 internal static class CanonicalAttestationTrust
 {
+    private static string BuildArchivePath(string id) =>
+        $"{EnforcementStore.EnforcementDirectory}/builds/{id}/attestation.json";
+
+    internal static string ReplayArchivePath(string id) =>
+        $"{EnforcementStore.EnforcementDirectory}/replays/{id}/attestation.json";
+
+    internal static async Task ArchiveCurrentAsync(
+        DirectoryInfo root, ReplayAttestation replay, CancellationToken cancellationToken)
+    {
+        if (!Verify(root, replay))
+            throw new InvalidDataException("Only a currently authenticated replay may enter the evidence archive.");
+        await ArchiveAsync(EnforcementStore.BuildAttestationPath, BuildArchivePath(replay.BuildAttestationId));
+        await ArchiveAsync(EnforcementStore.ReplayAttestationPath, ReplayArchivePath(replay.Id));
+
+        async Task ArchiveAsync(string currentPath, string archivePath)
+        {
+            if (!EnforcementStore.TryResolveContainedPath(root, currentPath, out var current, out var error) ||
+                !EnforcementStore.TryResolveContainedPath(root, archivePath, out var archive, out error))
+                throw new InvalidDataException(error);
+            if (File.Exists(archive))
+            {
+                if (StateClosureProtocol.FileHash(root, currentPath) != StateClosureProtocol.FileHash(root, archivePath))
+                    throw new InvalidDataException("An immutable canonical evidence archive was modified.");
+                return;
+            }
+            await EnforcementStore.WriteTextAtomicAsync(root, archivePath,
+                await File.ReadAllTextAsync(current, cancellationToken), cancellationToken);
+        }
+    }
+
+    internal static bool VerifyRecorded(
+        DirectoryInfo root, ReplayAttestation value, ReplayAttestation current)
+    {
+        var (build, error) = EnforcementStore.TryLoadAsync<BuildAttestation>(
+            root, BuildArchivePath(value.BuildAttestationId)).GetAwaiter().GetResult();
+        var (currentBuild, currentError) = EnforcementStore.TryLoadAsync<BuildAttestation>(
+            root, EnforcementStore.BuildAttestationPath).GetAwaiter().GetResult();
+        return Verify(root, current) && error is null && currentError is null &&
+            build is { Success: true } && currentBuild is not null &&
+            build.Id == value.BuildAttestationId && build.RequiredContractHash == value.RequiredContractHash &&
+            build.TargetFingerprint == value.TargetFingerprint &&
+            value.TargetFingerprint == current.TargetFingerprint &&
+            value.BuildAttestationId == current.BuildAttestationId &&
+            value.RequiredContractHash == current.RequiredContractHash &&
+            value.Command.SequenceEqual(current.Command, StringComparer.Ordinal) &&
+            build.Command.SequenceEqual(currentBuild.Command, StringComparer.Ordinal) &&
+            build.CompletedAt <= value.StartedAt && value.StartedAt <= value.CompletedAt &&
+            StateClosureSeal.Verify(build) && StateClosureSeal.Verify(value) &&
+            OutputsMatch(root, build.StandardOutputPath, build.StandardOutputSha256, build.StandardErrorPath, build.StandardErrorSha256) &&
+            OutputsMatch(root, value.StandardOutputPath, value.StandardOutputSha256, value.StandardErrorPath, value.StandardErrorSha256) &&
+            Matches(root, build.OperationId, build.Id, build.TargetFingerprint, build.RequiredContractHash,
+                build.StateId, build.SliceId, WorkflowOperation.Build, BuildArchivePath(build.Id)) &&
+            Matches(root, value.OperationId, value.Id, value.TargetFingerprint, value.RequiredContractHash,
+                value.StateId, value.SliceId, WorkflowOperation.Replay, ReplayArchivePath(value.Id));
+    }
+
     internal static bool Verify(DirectoryInfo root, BuildAttestation value) =>
         StateClosureSeal.Verify(value) &&
         OutputsMatch(root, value.StandardOutputPath, value.StandardOutputSha256, value.StandardErrorPath, value.StandardErrorSha256) &&

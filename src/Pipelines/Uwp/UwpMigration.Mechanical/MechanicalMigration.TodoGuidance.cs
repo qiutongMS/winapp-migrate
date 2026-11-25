@@ -28,7 +28,6 @@ public static partial class MechanicalMigration
                 Reason =
                     "The target-owned WinUI App.xaml cannot be overwritten by the UWP file, so source resources require an explicit merge.",
                 Locations = locations,
-                AffectedStates = ["app-launch"],
                 AffectedFeatures = ["application-resources"],
                 TouchSet = new MigrationTodoTouchSet
                 {
@@ -106,7 +105,7 @@ public static partial class MechanicalMigration
                     CompletionConditions =
                     [
                         "Every source application resource consumed by a reachable target state resolves with equivalent precedence.",
-                        "The canonical app-launch state resolves the required application resources."
+                        "The actual inventoried startup surface resolves the required application resources."
                     ],
                     CompletionChecks =
                     [
@@ -114,9 +113,9 @@ public static partial class MechanicalMigration
                         {
                             Id = "app-resource-replay-passed",
                             Summary =
-                                "The canonical application launch state verifies required resource lookup.",
-                            VerificationKind = "surface-check",
-                            Target = "app-launch",
+                                "Bind the actual inventoried startup surface that exposes the required application resources.",
+                            VerificationKind = "surface-binding",
+                            Target = "UWMIG001",
                             Expected = "passed",
                             AssertionIds = ["target-reachable", "uia-structure-match"]
                         }
@@ -144,7 +143,6 @@ public static partial class MechanicalMigration
                 Reason =
                     "The target-owned desktop bootstrap cannot be replaced by the UWP App class, so its launch, activation, window, and startup side effects require explicit target owners.",
                 Locations = locations,
-                AffectedStates = ["app-launch"],
                 AffectedFeatures = ["application-startup"],
                 TouchSet = new MigrationTodoTouchSet
                 {
@@ -226,7 +224,7 @@ public static partial class MechanicalMigration
                     CompletionConditions =
                     [
                         "Every source startup or activation side effect has an explicit target owner.",
-                        "The canonical app-launch state passes with the intended initial window, content, and startup side effects."
+                        "The actual inventoried startup surface passes with the intended initial window, content, and startup side effects."
                     ],
                     CompletionChecks =
                     [
@@ -234,9 +232,9 @@ public static partial class MechanicalMigration
                         {
                             Id = "startup-replay-passed",
                             Summary =
-                                "The canonical application launch state verifies the target startup invariant.",
-                            VerificationKind = "surface-check",
-                            Target = "app-launch",
+                                "Bind the actual inventoried startup surface that exposes the target startup invariant.",
+                            VerificationKind = "surface-binding",
+                            Target = "UWMIG004",
                             Expected = "passed",
                             AssertionIds = ["target-reachable", "uia-structure-match"]
                         }

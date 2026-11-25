@@ -44,6 +44,14 @@ public static class WorkflowOperations
             reason = $"Unsupported workflow operation: {operation}.";
             return false;
         }
+        if (snapshot.Disposition is { Kind: "tool-blocked" or "input-review-required" } disposition &&
+            !disposition.AllowedOperations.Contains(operation))
+        {
+            reason = disposition.Kind == "input-review-required"
+                ? "Remaining comparisons require input review, not another unchanged build/replay. Preserve the partial report, collect diagnostic evidence and establish comparable source/target inputs. A capture-review diagnostic is not proof of an application defect or of equivalence."
+                : "Unchanged required surfaces are blocked on comparison support. Preserve the partial report and collect diagnostics; a different target or comparison build is required before build/replay retries.";
+            return false;
+        }
         var binding = intended ?? StateAttribution.Authorize(input);
         StateAttribution.Validate(input.StatePlan, binding);
         var failureIntent = operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
@@ -93,7 +101,7 @@ public static class WorkflowOperations
         WorkflowOperationAuthentication.Seal(progress.Operations[^1],
             progress.Operations.Count > 1 ? progress.Operations[^2] : null, progress.Operations.Count);
         progress.LastObservedAt = now;
-        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, unit, now);
+        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, unit, now, activityObserved: true);
         WorkflowDispositions.Update(snapshot, now);
         return true;
     }

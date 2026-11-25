@@ -33,6 +33,7 @@
       "required": ["requiredActions", "treeProbeIndex"],
       "additionalProperties": false,
       "properties": {
+        "startSurfaceId": { "type": ["string", "null"], "minLength": 1 },
         "requiredActions": {
           "type": "array",
           "items": { "$ref": "#/$defs/navigationAction" }
@@ -130,16 +131,6 @@
               "comparison": {
                 "properties": { "status": { "const": "excluded" } }
               }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": { "disposition": { "const": "required" } }
-          },
-          "then": {
-            "properties": {
-              "navigation": { "$ref": "#/$defs/navigation" }
             }
           }
         }

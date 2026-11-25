@@ -13,7 +13,7 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow(16, true, 64)]
     [DataRow(16, false, 1)]
     [DataRow(8, true, 1)]
-    public async Task PngEncoding_LegalUnsupportedEncodingsRemainClassified(
+    public async Task PngEncoding_LegalEncodingsRemainValid(
         int depth,
         bool interlaced,
         int size)
@@ -28,9 +28,7 @@ public sealed partial class RunnerAcceptanceTests
                 bitDepth: depth,
                 interlaced: interlaced));
 
-        Assert.AreEqual(
-            PngInformation.ValidUnclassified,
-            PngEvidence.Classify(path));
+        Assert.IsTrue(PngEvidence.IsValid(path));
     }
 
     [TestMethod]
@@ -78,8 +76,26 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Path(".migration-evidence/corrupt.png");
         await File.WriteAllBytesAsync(path, invalid);
 
-        Assert.AreEqual(
-            PngInformation.Invalid,
-            PngEvidence.Classify(path));
+        Assert.IsFalse(PngEvidence.IsValid(path));
+    }
+
+    [TestMethod]
+    [DataRow(0, 1, 1, true)]
+    [DataRow(0, 2, 1, false)]
+    [DataRow(1, 1, 0, true)]
+    [DataRow(1, 2, 255, false)]
+    [DataRow(2, 0, 1, true)]
+    [DataRow(2, 1, 1, false)]
+    [DataRow(3, 1, 1, true)]
+    [DataRow(3, 2, 0, false)]
+    [DataRow(4, 0, 1, true)]
+    [DataRow(4, 1, 0, false)]
+    public async Task PngEncoding_FilteredPaletteIndicesMustRemainInRange(int filter, int first, int second, bool valid)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var path = fixture.Path(".migration-evidence/palette.png");
+        await File.WriteAllBytesAsync(path, PngTestData.Indexed(filter, [(byte)first, (byte)second]));
+
+        Assert.AreEqual(valid, PngEvidence.IsValid(path));
     }
 }

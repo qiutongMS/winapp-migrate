@@ -422,7 +422,7 @@ public sealed partial class RunnerAcceptanceTests
                 ".migration-evidence/states/state-1/category-ui.json";
             plan.States.Add(next);
             await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
-            await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+            ContractTestAuthority.Prepare(fixture.Root, plan);
             await ObserveSourceAsync(fixture, plan);
             await File.WriteAllTextAsync(
                 fixture.Path(categoryTree),

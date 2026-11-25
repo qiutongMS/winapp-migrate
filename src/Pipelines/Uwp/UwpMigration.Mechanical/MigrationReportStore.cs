@@ -209,17 +209,6 @@ internal static class MigrationReportStore
         return fullPath;
     }
 
-    internal static string GetTransactionLockPath(string reportPath)
-    {
-        var reportDirectory = Path.GetDirectoryName(
-            Path.GetFullPath(reportPath))!;
-        return Path.Combine(
-            reportDirectory,
-            ".migration-evidence",
-            ".locks",
-            $"{Path.GetFileName(reportPath)}.lock");
-    }
-
     private static bool IsLockContention(IOException exception) =>
         (exception.HResult & 0xFFFF) is 32 or 33;
 

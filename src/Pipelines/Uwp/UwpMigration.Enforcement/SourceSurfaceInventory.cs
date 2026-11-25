@@ -2,6 +2,10 @@
 // Licensed under the MIT License.
 
 using System.Xml;
+using System.Xml.Linq;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using UwpMigration.Contracts;
 using WinAppMigration.Enforcement;
 
@@ -9,6 +13,8 @@ namespace UwpMigration.Enforcement;
 
 internal static class SourceSurfaceInventory
 {
+    private const string PresentationNamespace = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+    private static readonly XNamespace XamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
     private static readonly Dictionary<string, string>
         SupportedRoots =
             new Dictionary<string, string>(
@@ -110,26 +116,33 @@ internal static class SourceSurfaceInventory
         return new DirectoryInfo(fullPath);
     }
 
-    private static Dictionary<string, string> Discover(
+    internal static Dictionary<string, string> Discover(
         DirectoryInfo sourceRoot)
     {
         var surfaces = new Dictionary<string, string>(
             StringComparer.OrdinalIgnoreCase);
-        foreach (var path in Directory.EnumerateFiles(
-                     sourceRoot.FullName,
-                     "*.xaml",
-                     SearchOption.AllDirectories))
+        var files = Directory.EnumerateFiles(sourceRoot.FullName, "*", SearchOption.AllDirectories)
+            .Where(path => !IsIgnored(Normalize(Path.GetRelativePath(sourceRoot.FullName, path))))
+            .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        var trees = files.Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .Select(path => CSharpSyntaxTree.ParseText(File.ReadAllText(path), path: path)).ToArray();
+        var compilation = CSharpCompilation.Create("SourceSurfaceInventory",
+            trees.Append(CSharpSyntaxTree.ParseText(FrameworkSurfaceTypes)),
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var xamlTypes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var path in files.Where(path => path.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase)))
         {
             var relativePath = Normalize(
                 Path.GetRelativePath(
                     sourceRoot.FullName,
                     path));
-            if (IsIgnored(relativePath))
-                continue;
-            string root;
+            XDocument document;
             try
             {
-                root = ReadRoot(path);
+                using var reader = XmlReader.Create(path,
+                    new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit });
+                document = XDocument.Load(reader, LoadOptions.SetLineInfo);
             }
             catch (XmlException exception)
             {
@@ -137,31 +150,104 @@ internal static class SourceSurfaceInventory
                     $"Source XAML cannot be inventoried: {relativePath}: {exception.Message}",
                     exception);
             }
-            if (SupportedRoots.TryGetValue(
-                    root,
-                    out var kind))
+            var root = document.Root!;
+            var className = (string?)root.Attribute(XamlNamespace + "Class");
+            if (className is not null)
+                xamlTypes.Add(className);
+            foreach (var element in root.DescendantsAndSelf())
             {
-                surfaces.Add(
-                    relativePath,
-                    kind);
+                var kind = XamlKind(element, compilation, relativePath);
+                if (kind is null || element != root && kind is not ("dialog" or "flyout" or "window"))
+                    continue;
+                var definition = element == root
+                    ? relativePath
+                    : $"{relativePath}#L{((IXmlLineInfo)element).LineNumber}C{((IXmlLineInfo)element).LinePosition}";
+                surfaces.Add(definition, kind);
+            }
+        }
+        foreach (var tree in trees)
+        {
+            var model = compilation.GetSemanticModel(tree);
+            foreach (var creation in tree.GetRoot().DescendantNodes().OfType<BaseObjectCreationExpressionSyntax>())
+            {
+                var type = model.GetTypeInfo(creation).Type as INamedTypeSymbol;
+                var kind = TypeKind(type);
+                if (kind is not ("dialog" or "flyout" or "window") ||
+                    type is not null && xamlTypes.Contains(type.ToDisplayString()))
+                    continue;
+                var line = creation.GetLocation().GetLineSpan().StartLinePosition;
+                var definition = $"{Normalize(Path.GetRelativePath(sourceRoot.FullName, tree.FilePath))}#L{line.Line + 1}C{line.Character + 1}";
+                surfaces.Add(definition, kind);
             }
         }
         return surfaces;
     }
 
-    private static string ReadRoot(string path)
+    private static string? XamlKind(XElement element, CSharpCompilation compilation, string path)
     {
-        using var reader = XmlReader.Create(
-            path,
-            new XmlReaderSettings
-            {
-                DtdProcessing = DtdProcessing.Prohibit,
-                IgnoreComments = true,
-                IgnoreProcessingInstructions = true
-            });
-        reader.MoveToContent();
-        return reader.LocalName;
+        if (element.Name.NamespaceName == PresentationNamespace)
+            return SupportedRoots.GetValueOrDefault(element.Name.LocalName);
+        var xmlNamespace = element.Name.NamespaceName;
+        var clrNamespace = xmlNamespace.StartsWith("using:", StringComparison.Ordinal)
+            ? xmlNamespace["using:".Length..]
+            : xmlNamespace.StartsWith("clr-namespace:", StringComparison.Ordinal)
+                ? xmlNamespace["clr-namespace:".Length..].Split(';')[0]
+                : null;
+        if (clrNamespace is null)
+            return null;
+        var typeName = $"{clrNamespace}.{element.Name.LocalName}";
+        var type = compilation.GetTypeByMetadataName(typeName);
+        var kind = TypeKind(type);
+        if (kind is null && element.Parent is null &&
+            (type is null || HasUnresolvedBase(type)))
+            throw new InvalidDataException($"Source XAML surface type '{typeName}' cannot be resolved from source: {path}. Supply the owning base-type source; it cannot be silently omitted.");
+        return kind;
     }
+
+    private static bool HasUnresolvedBase(INamedTypeSymbol type)
+    {
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        for (var current = type; current is not null && visited.Add(current); current = current.BaseType)
+            if (current.TypeKind == Microsoft.CodeAnalysis.TypeKind.Error)
+                return true;
+        return false;
+    }
+
+    private static string? TypeKind(INamedTypeSymbol? type)
+    {
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        for (var current = type; current is not null && visited.Add(current); current = current.BaseType)
+        {
+            var ns = current.ContainingNamespace.ToDisplayString();
+            if (ns is "Windows.UI.Xaml" or "Windows.UI.Xaml.Controls" or
+                "Microsoft.UI.Xaml" or "Microsoft.UI.Xaml.Controls" &&
+                SupportedRoots.TryGetValue(current.Name, out var kind))
+                return kind;
+        }
+        return null;
+    }
+
+    // Framework surface identities suffice for source-only inheritance analysis; a UWP build is not required.
+    private const string FrameworkSurfaceTypes = """
+        namespace Windows.UI.Xaml { public class Window { } }
+        namespace Windows.UI.Xaml.Controls
+        {
+            public class Page { }
+            public class UserControl { }
+            public class ContentDialog { }
+            public class Flyout { }
+            public class MenuFlyout { }
+        }
+        namespace Microsoft.UI.Xaml { public class Window { } }
+        namespace Microsoft.UI.Xaml.Controls
+        {
+            public class Page { }
+            public class UserControl { }
+            public class ContentDialog { }
+            public class Flyout { }
+            public class MenuFlyout { }
+        }
+        """;
 
     private static bool IsIgnored(string path) =>
         path.Split('/')

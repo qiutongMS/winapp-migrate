@@ -31,6 +31,8 @@ public interface IWindowOwnerResolver
             TryGetProcessIdentity(processId, out identity) &&
             identity.ProcessId == processId && identity.StartedAt > DateTimeOffset.MinValue;
     }
+
+    bool HasDescendantWindow(long windowHandle, ProcessIdentity process) => false;
 }
 
 public interface IWindowRelationshipResolver
@@ -119,6 +121,24 @@ public sealed partial class WindowsWindowOwnerResolver
         }
     }
 
+    public bool HasDescendantWindow(long windowHandle, ProcessIdentity process)
+    {
+        if (!TryGetOwnerIdentity(windowHandle, out _))
+            return false;
+        var found = false;
+        EnumWindowCallback callback = (child, _) =>
+        {
+            if (!TryGetOwnerIdentity(child.ToInt64(), out var owner) || owner != process)
+                return true;
+            found = true;
+            return false;
+        };
+        var handle = IntPtr.Size == 8 ? new IntPtr(windowHandle) : new IntPtr(unchecked((int)windowHandle));
+        EnumChildWindows(handle, Marshal.GetFunctionPointerForDelegate(callback), 0);
+        GC.KeepAlive(callback);
+        return found;
+    }
+
     private static string? TryGetExecutablePath(Process process)
     {
         try
@@ -139,4 +159,12 @@ public sealed partial class WindowsWindowOwnerResolver
 
     [LibraryImport("user32.dll", EntryPoint = "GetWindow")]
     private static partial nint GetWindow(nint window, uint command);
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private delegate bool EnumWindowCallback(nint window, nint parameter);
+
+    [LibraryImport("user32.dll", EntryPoint = "EnumChildWindows")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool EnumChildWindows(nint window, nint callback, nint parameter);
 }

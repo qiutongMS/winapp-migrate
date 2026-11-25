@@ -158,6 +158,10 @@ public sealed class SemanticFinding
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class StateVerificationContract
 {
+    [JsonPropertyName("startSurfaceId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? StartSurfaceId { get; set; }
+
     [JsonPropertyName("requiredActions")]
     public List<RequiredStateAction> RequiredActions { get; set; } = [];
 
@@ -612,6 +616,9 @@ public sealed class UiDevelopmentProbe
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class EnforcementSnapshot
 {
+    [JsonPropertyName("completion")]
+    public WorkflowCompletion? Completion { get; set; }
+
     [JsonPropertyName("verificationScope")]
     public string VerificationScope { get; init; } = "ui-surface-parity";
 

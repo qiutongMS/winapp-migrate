@@ -183,6 +183,13 @@ public partial class MigrateCommandTests
         Assert.AreEqual(
             "startup-lifecycle",
             todos["UWMIG004"].GetProperty("category").GetString());
+        foreach (var id in new[] { "UWMIG001", "UWMIG004" })
+        {
+            var check = todos[id].GetProperty("guidance").GetProperty("completionChecks").EnumerateArray().Single();
+            Assert.AreEqual("surface-binding", check.GetProperty("verificationKind").GetString());
+            Assert.AreEqual(id, check.GetProperty("target").GetString());
+            Assert.AreEqual(0, todos[id].GetProperty("affectedSurfaces").GetArrayLength());
+        }
         Assert.AreEqual(
             "App.xaml",
             todos["UWMIG001"].GetProperty("touchSet")

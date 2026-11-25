@@ -1000,7 +1000,7 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     [DataRow("source-tree")]
     [DataRow("target-tree")]
-    public async Task SyncReport_RejectsMissingOrInvalidCanonicalEvidence(
+    public async Task SyncReport_ReportsMissingOrInvalidEvidenceWithoutDeclaringSuccess(
         string invalidEvidence)
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -1022,12 +1022,15 @@ public sealed partial class RunnerAcceptanceTests
                 """{"success":true,"message":"The action completed."}""");
         }
 
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
+        var synchronized = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("blocked", synchronized.Status);
+        Assert.AreEqual("unverified", synchronized.StateVerifications.Single().Level);
+        Assert.AreEqual("unverified", (await fixture.LoadReportAsync()).Validation.ParityStatus);
+        Assert.IsFalse(File.Exists(fixture.Path(".migration-evidence/target/state-1-ui.json")));
     }
 
     [TestMethod]
-    public async Task SyncReport_RejectsEvidencePathOutsideTargetRoot()
+    public async Task SyncReport_ReportsOutOfRootEvidenceWithoutReadingOrBlessingIt()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(
@@ -1040,10 +1043,14 @@ public sealed partial class RunnerAcceptanceTests
         await EnforcementStore.WriteAtomicAsync(
             fixture.Root, ".migration-evidence/state-plan.json", plan);
 
-        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared));
-
-        StringAssert.Contains(exception.Message, "outside.json");
+        var synchronized = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("blocked", synchronized.Status);
+        Assert.AreEqual("unverified", synchronized.StateVerifications.Single().Level);
+        StringAssert.Contains(synchronized.StateVerifications.Single().Reason, "outside.json");
+        var report = await fixture.LoadReportAsync();
+        Assert.AreEqual("unverified", report.Validation.SourceBaseline.Status);
+        Assert.AreEqual("unverified", report.Validation.ParityStatus);
+        Assert.IsFalse(File.Exists(fixture.Path(".migration-evidence/target/state-1-ui.json")));
     }
 
     [TestMethod]
@@ -1377,8 +1384,8 @@ public sealed partial class RunnerAcceptanceTests
             try
             {
                 fixture.RequiredPlan = await NewRequiredPlanAsync(fixture);
-                fixture.RequiredContract =
-                    await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+                ContractTestAuthority.Prepare(fixture.Root, fixture.RequiredPlan);
+                fixture.RequiredContract = await fixture.LoadAsync<RequiredStateContractDocument>(RequiredStateContracts.Path);
                 if (observeSource)
                 {
                     await ObserveSourceAsync(fixture, fixture.RequiredPlan);

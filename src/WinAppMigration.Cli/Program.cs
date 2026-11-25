@@ -1,7 +1,10 @@
 using System.CommandLine;
+using WinAppMigration.Cli;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using UwpMigration.Mechanical;
 using WinAppMigration.Enforcement;
+
+StandardHandleInheritance.Disable();
 
 var processRunner = new ProcessRunner();
 var evaluator = new MsBuildProjectItemEvaluator(processRunner);

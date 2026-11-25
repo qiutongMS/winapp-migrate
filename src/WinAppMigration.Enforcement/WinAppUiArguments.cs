@@ -8,6 +8,12 @@ internal static class WinAppUiArguments
     // WinApp's UiScreenshotCommand.PublishAsync defaults to this name in the process working directory.
     internal const string DefaultScreenshotFileName = "screenshot.png";
 
+    internal static IReadOnlyList<string> WithDefaultInspectDepth(IReadOnlyList<string> arguments) =>
+        arguments.Count > 0 && arguments[0] == "inspect" && arguments.Contains("--json") &&
+        !arguments.Any(token => Matches(token, "-d") || Matches(token, "--depth"))
+            ? [.. arguments, "--depth", "30"]
+            : arguments;
+
     internal static string? SingleOption(IReadOnlyList<string> arguments, string shortAlias, string longAlias)
     {
         string? value = null;

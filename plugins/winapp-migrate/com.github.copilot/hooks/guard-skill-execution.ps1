@@ -412,18 +412,9 @@ function Resolve-ToolPaths {
     )
 
     $values = [System.Collections.Generic.List[string]]::new()
+    $patches = [System.Collections.Generic.List[string]]::new()
     if ($ToolArguments -is [string]) {
-        foreach ($match in [regex]::Matches(
-            $ToolArguments,
-            '(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$')) {
-            $value = if ($match.Groups[1].Success) {
-                $match.Groups[1].Value
-            }
-            else {
-                $match.Groups[2].Value
-            }
-            $values.Add($value.Trim())
-        }
+        $patches.Add($ToolArguments)
     }
     else {
         foreach ($propertyName in @($WriteContract.pathProperties)) {
@@ -436,18 +427,22 @@ function Resolve-ToolPaths {
         foreach ($propertyName in @($WriteContract.patchProperties)) {
             $property = $ToolArguments.PSObject.Properties[[string] $propertyName]
             if ($null -ne $property -and $property.Value -is [string]) {
-                foreach ($match in [regex]::Matches(
-                    [string] $property.Value,
-                    '(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$')) {
-                    $value = if ($match.Groups[1].Success) {
-                        $match.Groups[1].Value
-                    }
-                    else {
-                        $match.Groups[2].Value
-                    }
-                    $values.Add($value.Trim())
-                }
+                $patches.Add([string] $property.Value)
             }
+        }
+    }
+
+    foreach ($patch in $patches) {
+        foreach ($match in [regex]::Matches(
+            $patch,
+            '(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$')) {
+            $value = if ($match.Groups[1].Success) {
+                $match.Groups[1].Value
+            }
+            else {
+                $match.Groups[2].Value
+            }
+            $values.Add($value.Trim())
         }
     }
 

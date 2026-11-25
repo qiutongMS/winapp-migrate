@@ -37,7 +37,7 @@ public static class StateAttribution
                 throw new InvalidDataException($"Unknown planned surface: {requestedState}.");
             return new StateSliceBinding(state.Id, SemanticSlicePlanner.SliceId(state));
         }
-        var slices = EnforcementEvaluator.AssessSlices(input, EnforcementEvaluator.FreshReplay(input));
+        var slices = EnforcementEvaluator.AssessSlices(input, EnforcementEvaluator.EvidenceReplay(input));
         var selected = SemanticSlicePlanner.Select(slices);
         var revalidate = selected is null && slices.All(slice => slice.Resolved);
         if (revalidate)

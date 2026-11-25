@@ -90,13 +90,12 @@ public sealed class EnforcementProcessRunner : IEnforcementProcessRunner
             }
 
             await process.WaitForExitAsync(CancellationToken.None);
-            if (output is not null)
+            try
             {
-                await ObserveAsync(output);
+                await Task.WhenAll(new[] { output, error }.OfType<Task<string>>());
             }
-            if (error is not null)
+            catch (Exception)
             {
-                await ObserveAsync(error);
             }
             throw;
         }
@@ -127,17 +126,5 @@ public sealed class EnforcementProcessRunner : IEnforcementProcessRunner
             });
         }
         await task;
-    }
-
-    private static async Task ObserveAsync(Task<string> task)
-    {
-        try
-        {
-            _ = await task;
-        }
-        catch (Exception)
-        {
-            _ = task.Exception;
-        }
     }
 }

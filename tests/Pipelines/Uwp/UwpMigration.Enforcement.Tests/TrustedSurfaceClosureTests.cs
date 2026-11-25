@@ -158,8 +158,9 @@ public sealed partial class RunnerAcceptanceTests
     [DataRow("record", "absent")]
     [DataRow("record", "reused")]
     [DataRow("finalize", "other-owner")]
+    [DataRow("finalize", "absent")]
     [DataRow("assess", "unavailable")]
-    public async Task TrustedClosure_RechecksLiveWindowIdentityAfterCapture(
+    public async Task TrustedClosure_DistinguishesLiveCollectionFromCommittedEvidence(
         string phase,
         string replacement)
     {
@@ -221,10 +222,8 @@ public sealed partial class RunnerAcceptanceTests
         }
         else if (phase == "finalize")
         {
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-                UwpEnforcementRunner.SynchronizeReportAsync(
-                    fixture.Root,
-                    owner));
+            Assert.AreEqual("passed",
+                (await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, owner)).Status);
         }
         else
         {
@@ -236,6 +235,8 @@ public sealed partial class RunnerAcceptanceTests
             Assert.AreNotEqual(
                 "complete",
                 assessed.Disposition?.Kind);
+            Assert.AreEqual(SurfaceVerificationResult.Verified, assessed.StateVerifications.Single().Result);
+            Assert.AreEqual("blocked", assessed.Gates.Single(gate => gate.Id == "canonical-replay").Status);
         }
     }
 

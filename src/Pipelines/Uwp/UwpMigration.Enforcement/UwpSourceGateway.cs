@@ -119,6 +119,9 @@ public sealed class SourceRunAttestation
     [JsonPropertyName("processId")]
     public int? ProcessId { get; set; }
 
+    [JsonPropertyName("processStartedAt")]
+    public DateTimeOffset? ProcessStartedAt { get; set; }
+
     [JsonPropertyName("authorizedWindows")]
     public List<SourceWindow> AuthorizedWindows { get; set; } = [];
 
@@ -301,7 +304,12 @@ public sealed class UwpSourceGateway
             cancellationToken);
 
         var parsed = WinAppRunResultParser.Parse(result.Output);
+        ProcessIdentity? sourceProcess = parsed.ProcessId is { } sourcePid &&
+            _windowOwnerResolver.TryGetProcessIdentity(sourcePid, out var identity) &&
+            identity.ProcessId == sourcePid && identity.StartedAt > DateTimeOffset.MinValue
+                ? identity : null;
         var after = before;
+        List<SourceWindow> authorizedWindows = [];
         if (!result.InfrastructureFailure && result.ExitCode == 0)
         {
             for (var attempt = 0; attempt < options.WindowPollAttempts; attempt++)
@@ -326,7 +334,8 @@ public sealed class UwpSourceGateway
                     $"{directory}/windows-after.stderr.log",
                     inventory,
                     cancellationToken);
-                if (NewWindows(before, after).Count > 0)
+                authorizedWindows = NewSourceWindows(before, after, sourceProcess);
+                if (authorizedWindows.Count > 0)
                     break;
             }
         }
@@ -352,7 +361,8 @@ public sealed class UwpSourceGateway
             ExitCode = result.ExitCode,
             Aumid = parsed.Aumid,
             ProcessId = parsed.ProcessId,
-            AuthorizedWindows = NewWindows(before, after),
+            ProcessStartedAt = sourceProcess?.StartedAt,
+            AuthorizedWindows = authorizedWindows,
             WindowInventoryBeforePath = beforePath,
             WindowInventoryAfterPath = File.Exists(workspace.Resolve(afterPath))
                 ? afterPath
@@ -496,8 +506,18 @@ public sealed class UwpSourceGateway
                 throw new InvalidDataException(
                     "A successful current source run for the unchanged recorded source project is required.");
             }
+            if (launch.ProcessId is not { } sourcePid ||
+                launch.ProcessStartedAt is not { } sourceStartedAt ||
+                !_windowOwnerResolver.TryGetProcessIdentity(sourcePid, out var sourceProcess) ||
+                sourceProcess != new ProcessIdentity(sourcePid, sourceStartedAt))
+                throw new InvalidDataException("The recorded source process is no longer live; run the source again.");
             var authorized = launch.AuthorizedWindows.SingleOrDefault(
                 window => window.Hwnd == windowHandle.Value);
+            if (authorized is not null &&
+                authorized.BindingKind != WindowBindingResolver.PickerHostKind &&
+                !IsCurrentSourceWindow(authorized, sourceProcess))
+                throw new InvalidDataException(
+                    $"Source window {windowHandle.Value} no longer has its recorded source process or host binding.");
             if (authorized is null ||
                 authorized.BindingKind ==
                     WindowBindingResolver.PickerHostKind)
@@ -509,7 +529,8 @@ public sealed class UwpSourceGateway
                         launch.AuthorizedWindows
                             .Where(window =>
                                 window.BindingKind !=
-                                    WindowBindingResolver.PickerHostKind)
+                                    WindowBindingResolver.PickerHostKind &&
+                                IsCurrentSourceWindow(window, sourceProcess))
                             .Select(window => window.Hwnd)
                             .ToHashSet());
                 if (authorized is not null)
@@ -561,7 +582,7 @@ public sealed class UwpSourceGateway
         var stdoutPath = $"{directory}/stdout.log";
         var stderrPath = $"{directory}/stderr.log";
         var command = new List<string> { "ui" };
-        command.AddRange(arguments);
+        command.AddRange(WinAppUiArguments.WithDefaultInspectDepth(arguments));
         var startedAt = _timeProvider.GetUtcNow();
         var result = await InvokeAsync(
             workspace,
@@ -595,6 +616,10 @@ public sealed class UwpSourceGateway
             artifactPath,
             probe,
             cancellationToken);
+        SourceGatewayAuthentication.Record(workspace.Target, artifactPath, stdoutPath, stderrPath);
+        if (launch is not null)
+            await SourceGatewayAuthentication.AppendProbeAsync(workspace.Target, workspace.GatewayRoot,
+                launch.Id, artifactPath, cancellationToken);
         await EnforcementStore.WriteAtomicAsync(
             workspace.Target,
             $"{workspace.GatewayRoot}/current-probe.json",
@@ -648,11 +673,8 @@ public sealed class UwpSourceGateway
             cancellationToken: cancellationToken);
         if (snapshot.Disposition?.Terminal == true)
             throw new InvalidDataException("Source operations are not permitted after a terminal closure disposition.");
-        if (snapshot.Gates.SingleOrDefault(gate => gate.Id == "source-oracle")?.Status != "blocked")
-        {
-            throw new InvalidDataException(
-                "Source operations are permitted only while the source-oracle gate remains incomplete.");
-        }
+        if (snapshot.Gates.SingleOrDefault(gate => gate.Id == "required-contract")?.Status != "passed")
+            throw new InvalidDataException("Seal the immutable surface inventory before source discovery.");
         if (!MigrationPathResolver.TryCanonicalizeRoot(
                 requestedTarget.FullName,
                 out var targetRoot,
@@ -673,12 +695,11 @@ public sealed class UwpSourceGateway
                     cancellationToken);
             if (persistedError is not null)
                 throw new InvalidDataException(persistedError);
-            if (persisted?.Disposition?.Terminal == true ||
-                persisted?.Gates.SingleOrDefault(gate => gate.Id == "source-oracle")?.Status != "blocked")
-            {
+            if (persisted?.Disposition?.Terminal == true)
                 throw new InvalidDataException(
-                    "Source operations are permitted only while the persisted source-oracle gate remains incomplete.");
-            }
+                    "Source operations are not permitted after a terminal closure disposition.");
+            if (persisted?.Gates.SingleOrDefault(gate => gate.Id == "required-contract")?.Status != "passed")
+                throw new InvalidDataException("Seal the immutable surface inventory before source discovery.");
 
             var reportPath = Path.Combine(targetRoot, "migration-report.json");
             var report = await MigrationReportStore.LoadAsync(
@@ -848,18 +869,37 @@ public sealed class UwpSourceGateway
         }
     }
 
-    private static List<SourceWindow> NewWindows(
+    private List<SourceWindow> NewSourceWindows(
         IReadOnlyCollection<SourceWindow> before,
-        IEnumerable<SourceWindow> after)
+        IEnumerable<SourceWindow> after,
+        ProcessIdentity? sourceProcess)
     {
+        if (sourceProcess is not { } source ||
+            !_windowOwnerResolver.TryGetProcessIdentity(source.ProcessId, out var current) || current != source)
+            return [];
         var existing = before.Select(window => window.Hwnd).ToHashSet();
-        return after
+        var candidates = after
             .Where(window => window.Hwnd != 0 && !existing.Contains(window.Hwnd))
             .GroupBy(window => window.Hwnd)
             .Select(group => group.First())
-            .OrderBy(window => window.Hwnd)
-            .ToList();
+            .OrderBy(window => window.Hwnd);
+        List<SourceWindow> authorized = [];
+        foreach (var window in candidates)
+        {
+            if (!_windowOwnerResolver.TryGetOwnerIdentity(window.Hwnd, out var owner) ||
+                owner.ProcessId != window.ProcessId ||
+                owner != source && !_windowOwnerResolver.HasDescendantWindow(window.Hwnd, source))
+                continue;
+            window.ProcessStartedAt = owner.StartedAt;
+            authorized.Add(window);
+        }
+        return authorized;
     }
+
+    private bool IsCurrentSourceWindow(SourceWindow window, ProcessIdentity source) =>
+        _windowOwnerResolver.TryGetOwnerIdentity(window.Hwnd, out var owner) &&
+        owner == new ProcessIdentity(window.ProcessId, window.ProcessStartedAt ?? DateTimeOffset.MinValue) &&
+        (owner == source || _windowOwnerResolver.HasDescendantWindow(window.Hwnd, source));
 
     private static long? ParseWindowHandle(IReadOnlyList<string> arguments)
     {
@@ -946,6 +986,8 @@ public sealed class UwpSourceGateway
             $"{directory}/attestation.json",
             attestation,
             cancellationToken);
+        SourceGatewayAuthentication.Record(workspace.Target, $"{directory}/attestation.json",
+            attestation.StandardOutputPath, attestation.StandardErrorPath);
         await EnforcementStore.WriteAtomicAsync(
             workspace.Target,
             $"{workspace.GatewayRoot}/current-run.json",
@@ -970,6 +1012,17 @@ public sealed class UwpSourceGateway
         {
             throw new InvalidDataException(
                 "A valid current source run attestation is required before source UI automation.");
+        }
+        if (RequiredStateContracts.UsesSourceNavigation(workspace.Target))
+        {
+            var canonical = $"{workspace.GatewayRoot}/runs/{attestation.Id}/attestation.json";
+            SourceGatewayAuthentication.Require(workspace.Target, canonical,
+                attestation.StandardOutputPath, attestation.StandardErrorPath);
+            var (original, _) = await EnforcementStore.TryLoadAsync<SourceRunAttestation>(
+                workspace.Target, canonical, cancellationToken);
+            if (JsonSerializer.Serialize(original, EnforcementStore.JsonOptions) !=
+                JsonSerializer.Serialize(attestation, EnforcementStore.JsonOptions))
+                throw new InvalidDataException("Current source launch metadata differs from its authenticated gateway record.");
         }
         return attestation;
     }

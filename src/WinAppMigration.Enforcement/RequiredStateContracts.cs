@@ -11,7 +11,7 @@ namespace WinAppMigration.Enforcement;
 public sealed class RequiredStateContractDocument
 {
     [JsonPropertyName("schemaVersion")]
-    public string SchemaVersion { get; set; } = "2.0";
+    public string SchemaVersion { get; set; } = "3.0";
     [JsonPropertyName("seal")]
     public string? Seal { get; set; }
     [JsonPropertyName("sealPublicKey")]
@@ -84,7 +84,7 @@ public static class RequiredStateContracts
                 "The independently anchored surface contract is missing; deleting its JSON does not reset requirements.");
         }
 
-        var document = Create(plan);
+        var document = Create(plan, existing?.SchemaVersion == "2.0");
         if (existing is not null)
         {
             VerifyDocument(root, existing);
@@ -110,13 +110,14 @@ public static class RequiredStateContracts
     }
 
     internal static RequiredStateContractDocument Create(
-        StatePlanDocument plan)
+        StatePlanDocument plan, bool legacyNavigation = false)
     {
         ValidateRequirements(plan);
         var document = new RequiredStateContractDocument
         {
+            SchemaVersion = legacyNavigation ? "2.0" : "3.0",
             EstablishedAt = DateTimeOffset.UtcNow,
-            States = plan.States.Select(Project).ToList()
+            States = plan.States.Select(state => Project(state, legacyNavigation)).ToList()
         };
         document.RequiredContractHash = Hash(document.States);
         document.BaselineHash = document.RequiredContractHash;
@@ -164,10 +165,10 @@ public static class RequiredStateContracts
         var required =
             document.States.SingleOrDefault(item => item.Id == state.Id);
         if (required is null ||
-            Serialize(required) != Serialize(Project(state)))
+            Serialize(required) != Serialize(Project(state, document.SchemaVersion == "2.0")))
         {
             throw new InvalidDataException(
-                $"Surface {state.Id} changed its immutable inventory or navigation contract.");
+                $"Surface {state.Id} changed its immutable surface contract.");
         }
         return document.RequiredContractHash;
     }
@@ -188,18 +189,18 @@ public static class RequiredStateContracts
                 error ?? "No immutable surface contract has been established.");
         VerifyDocument(root, document);
         if (plan.SchemaVersion != StatePlanDocument.CurrentSchemaVersion ||
-            Hash(plan.States.Select(Project).ToList()) !=
+            Hash(plan.States.Select(state => Project(state, document.SchemaVersion == "2.0")).ToList()) !=
             document.RequiredContractHash)
         {
             throw new InvalidDataException(
-                "The surface inventory or navigation recipes changed after contract establishment.");
+                "The surface inventory changed after contract establishment.");
         }
         if (!Frozen(document))
             Anchor(root, document, frozen: true);
         return document.RequiredContractHash;
     }
 
-    internal static MigrationState Project(MigrationState state) =>
+    internal static MigrationState Project(MigrationState state, bool legacyNavigation = false) =>
         new()
         {
             Id = state.Id,
@@ -208,7 +209,10 @@ public static class RequiredStateContracts
             ExclusionReason = state.ExclusionReason,
             SourceDefinitions = [.. state.SourceDefinitions],
             Criticality = state.Criticality,
-            Verification = state.Verification is null
+            Slice = legacyNavigation ? null : state.Slice,
+            Dependencies = legacyNavigation ? [] : [.. state.Dependencies],
+            FeaturePaths = legacyNavigation ? [] : [.. state.FeaturePaths],
+            Verification = !legacyNavigation || state.Verification is null
                 ? null
                 : JsonSerializer.Deserialize<StateVerificationContract>(
                     Serialize(state.Verification),
@@ -237,7 +241,7 @@ public static class RequiredStateContracts
         DirectoryInfo root,
         RequiredStateContractDocument document)
     {
-        if (document.SchemaVersion != "2.0" ||
+        if (document.SchemaVersion is not ("2.0" or "3.0") ||
             document.Id.Length != 32 ||
             document.EstablishedAt == default ||
             document.EstablishedAt > DateTimeOffset.UtcNow ||
@@ -270,6 +274,19 @@ public static class RequiredStateContracts
         StateClosureSeal.ReadContractAnchor(
             "rc-doc-" + document.Id) ==
         document.RequiredContractHash + "|frozen";
+
+    internal static bool UsesSourceNavigation(DirectoryInfo root)
+        => Read(root).SchemaVersion == "3.0";
+
+    internal static RequiredStateContractDocument Read(DirectoryInfo root)
+    {
+        var (document, error) = EnforcementStore.TryLoadAsync<RequiredStateContractDocument>(
+            root, Path).GetAwaiter().GetResult();
+        if (document is null)
+            throw new InvalidDataException(error ?? "An immutable surface inventory is required.");
+        VerifyDocument(root, document);
+        return document;
+    }
 
     private static bool IsExtension(
         List<MigrationState> old,
@@ -339,9 +356,11 @@ public static class RequiredStateContracts
             }
 
             var navigation = surface.Verification;
-            if (surface.Criticality != StateCriticality.Required ||
-                navigation is null ||
-                navigation.TreeProbeIndex < 0 ||
+            if (surface.Criticality != StateCriticality.Required)
+                throw new InvalidDataException($"Surface {surface.Id} must remain required.");
+            if (navigation is null)
+                continue;
+            if (navigation.TreeProbeIndex < 0 ||
                 navigation.RequiredActions is null ||
                 navigation.RequiredActions.Any(action =>
                     action is null ||

@@ -41,7 +41,7 @@ Use `decide-project-item` for report-declared project-item decisions.
 
 ## 2. Inventory source UI surfaces
 
-Read [the surface plan and capture guide](references/ui-surface-parity.md). Create `<target>\.migration-evidence\state-plan.json` using its schema and example. Account for all app-owned windows, pages, dialogs, flyouts, and independently presented user controls, including startup and navigation registrations. Seal the inventory before source capture or workflow assessment:
+Read [the surface plan and capture guide](references/ui-surface-parity.md). Run `winapp-migrate uwp source inventory "<target>"` to obtain source definition keys, including inherited XAML roots and inline/code-created popups. Create `<target>\.migration-evidence\state-plan.json` using its schema and example. Account for all app-owned windows, pages, dialogs, flyouts, and independently presented user controls, including startup and navigation registrations. Seal the inventory before source capture or workflow assessment:
 
 ```powershell
 winapp-migrate uwp closure seal-contract "<target>"
@@ -55,7 +55,7 @@ winapp-migrate uwp source run "<target>"
 winapp-migrate uwp source capture "<target>" -- inspect -w <source-hwnd> --json
 ```
 
-For each required surface, navigate using `source capture`, then capture one complete semantic UIA tree. Set its plan observation's `source.status` to `captured`, include the receipt path in `source.evidence`, and set `source.treeEvidence` to that same tree path.
+For each required surface, capture its initial state, navigate using `source capture`, and finish with one complete semantic UIA tree. Navigation may remain null until observed. Declare the actual route and `startSurfaceId` in the plan, then freeze it with `closure bind-source "<target>" --surface "<surface-id>" --probe "<initial-probe.json>" --probe "<action-probe.json>" --probe "<final-probe.json>"`. The tool sets the captured source observation; do not author success flags. A zero-action startup uses one initial inspect receipt. Bind incrementally; one unsupported surface does not prevent work on the others. Once a surface is bound, proceed with implementation, build, and target checks for it without waiting for every source route.
 
 If automation cannot produce a complete tree, leave the surface unverified and report the condition. Never infer a tree from source code or substitute a screenshot.
 
@@ -71,7 +71,7 @@ winapp-migrate uwp todo record "<target>" "<todo-id>" --outcome implemented --su
 
 Implementation records and optional `todo select-approach` decisions are bookkeeping, not verification. Read `implementationStatus`, `verificationStatus`, and `verificationScope` independently.
 
-When a UI obligation lacks its proof mapping, bind the smallest existing required surface to the fixed checks that actually prove it:
+When a UI obligation lacks its proof mapping, bind the smallest existing required surface to the fixed checks that actually prove it. A `surface-binding` completion check is an unresolved obligation, not a surface ID; binding resolves it against the actual inventory without weakening its checks:
 
 ```powershell
 winapp-migrate uwp todo bind-surface "<target>" "<todo-id>" `
@@ -98,17 +98,13 @@ Repair actual failures and retry as needed. `closure diagnose`, `record-failure`
 
 ## 6. Capture and record surface checks
 
-For each required surface, execute its sealed navigation sequence and final complete-tree inspection against the current replay-owned HWND:
+For each source-bound surface, replay its verified navigation sequence against the current replay-owned HWND:
 
 ```powershell
-winapp-migrate uwp closure capture "<target>" --surface "<surface-id>" -- <navigation-command> -w <target-hwnd>
-winapp-migrate uwp closure capture "<target>" --surface "<surface-id>" -- inspect -w <target-hwnd> --json
-winapp-migrate uwp closure record-surface "<target>" --surface "<surface-id>" `
-  --probe "<navigation-probe.json>" `
-  --probe "<inspect-probe.json>"
+winapp-migrate uwp closure navigate "<target>" --surface "<surface-id>" --window <target-hwnd>
 ```
 
-Startup surfaces may use only the inspect probe at index `0`. Submit all ordered receipts for other surfaces. The tool derives reachability and tree parity and shares the current result with every exactly mapped TODO. Use the guide's result classifications and freshness rules rather than editing verdicts.
+The tool checks the declared starting state, stops at the first failed action, captures the final tree, and records the honest result. A reachable parent with a parity mismatch can still start a dependent route; it does not become verified. Manual `closure capture` and `record-surface` remain available but require the complete ordered trace, including its initial inspect. The tool derives reachability and tree parity and shares the current result with every exactly mapped TODO. Use the guide's result classifications and freshness rules rather than editing verdicts.
 
 The tool automatically attempts screenshots alongside source and surface-bound target JSON inspections. Retain `.migration-evidence/comparison/index.html` and its linked artifacts for the before/after record; missing or stale screenshots are labeled, not an extra acceptance gate or a substitute for UIA evidence.
 
@@ -119,5 +115,7 @@ After every required surface is verified:
 ```powershell
 winapp-migrate uwp closure finalize "<target>" --strict
 ```
+
+For an incomplete handoff, use `closure assess` and non-strict `closure finalize` to preserve honest current results. Report the product's `completion` checkpoint and remaining obligations; a model's final response does not mean migration completion, and `tool-blocked` does not mean parity passed.
 
 Report the `ui-surface-parity` verification scope, every human-validation item, remaining implementation obligations and findings, and excluded surfaces with their reasons. Out-of-scope obligations do not block UI acceptance or become verified when the app passes. Do not claim complete app equivalence from this bounded result.

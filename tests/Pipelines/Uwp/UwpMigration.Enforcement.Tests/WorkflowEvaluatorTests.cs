@@ -145,17 +145,58 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Telemetry_TargetChangeIsMeasuredWithoutAuthorizingAnExtension()
+    public void Telemetry_TargetChangeIsActivityNotAcceptanceProgress()
     {
         using var fixture = new EvaluatorFixture();
         var input = ExpiredInput(fixture, 16);
         var observed = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.IsTrue(observed.Telemetry!.MeasuredProgress);
+        Assert.IsFalse(observed.Telemetry!.MeasuredProgress);
+        Assert.IsTrue(observed.Telemetry.ActivityObserved);
         Assert.AreEqual("build", observed.Frontier?.Kind);
     }
 
     [TestMethod]
-    public void Telemetry_CompletedDiagnosisIsMeasuredProgress()
+    public void Telemetry_OnlyNewSurfaceEvidenceCountsAsAcceptanceProgress()
+    {
+        using var fixture = new EvaluatorFixture();
+        var input = fixture.ClosedInput();
+        var first = new StateVerificationSummary(
+            "first", StateVerificationLevel.SurfaceReachable, "Reachable; parity not established.");
+        var second = first with { Id = "second" };
+        var covered = WorkflowController.Observe(input, true, true, true, [], [first, second]);
+        Assert.IsTrue(covered.Telemetry.CoverageProgress);
+        Assert.IsFalse(covered.Telemetry.ParityProgress);
+
+        var verified = first with
+        {
+            Level = StateVerificationLevel.SurfaceParityVerified,
+            Result = SurfaceVerificationResult.Verified
+        };
+        var parity = WorkflowController.Observe(
+            input with { Progress = covered.Progress }, true, true, true, [], [verified, second]);
+        Assert.IsFalse(parity.Telemetry.CoverageProgress);
+        Assert.IsTrue(parity.Telemetry.ParityProgress);
+
+        var lost = WorkflowController.Observe(
+            input with { Progress = parity.Progress }, true, true, true, [], [verified]);
+        Assert.IsFalse(lost.Telemetry.MeasuredProgress);
+        var restored = WorkflowController.Observe(
+            input with { Progress = lost.Progress }, true, true, true, [], [verified, second]);
+        Assert.IsFalse(restored.Telemetry.MeasuredProgress);
+
+        var expanded = WorkflowController.Observe(
+            input with { Progress = restored.Progress }, true, true, true, [],
+            [verified, second, verified with { Id = "third" }]);
+        Assert.IsTrue(expanded.Telemetry.CoverageProgress);
+        Assert.IsTrue(expanded.Telemetry.ParityProgress);
+        var repeated = WorkflowController.Observe(
+            input with { Progress = expanded.Progress }, true, true, true, [],
+            [verified, second, verified with { Id = "third" }]);
+        Assert.IsFalse(repeated.Telemetry.MeasuredProgress);
+    }
+
+    [TestMethod]
+    public void Telemetry_CompletedDiagnosisIsActivityNotAcceptanceProgress()
     {
         using var fixture = new EvaluatorFixture();
         var input = ExpiredInput(fixture, 16);
@@ -170,6 +211,8 @@ public sealed partial class EnforcementEvaluatorTests
         var snapshot = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual("state", snapshot.Frontier?.Kind);
         Assert.IsTrue(snapshot.Workflow!.Events.Any(item => item.Kind == "diagnosis-completed"));
+        Assert.IsFalse(snapshot.Telemetry!.MeasuredProgress);
+        Assert.IsTrue(snapshot.Telemetry.ActivityObserved);
     }
 
     [TestMethod]
@@ -315,7 +358,8 @@ public sealed partial class EnforcementEvaluatorTests
             GeneratedAt = input.GeneratedAt.AddMinutes(16)
         });
         Assert.AreEqual(16, observedAgain.Telemetry!.ElapsedMinutes);
-        Assert.IsTrue(observedAgain.Telemetry.MeasuredProgress);
+        Assert.IsFalse(observedAgain.Telemetry.MeasuredProgress);
+        Assert.IsTrue(observedAgain.Telemetry.ActivityObserved);
         Assert.IsNull(WorkflowValidation.ProgressError(observedAgain.Workflow, input.GeneratedAt.AddMinutes(16)));
     }
 

@@ -33,8 +33,9 @@ internal static class ContractTestAuthority
         }
         var document = new RequiredStateContractDocument
         {
+            SchemaVersion = "2.0",
             EstablishedAt = TestWindowOwnerResolver.ProcessStartedAt,
-            States = plan.States.Select(RequiredStateContracts.Project).ToList()
+            States = plan.States.Select(state => RequiredStateContracts.Project(state, legacyNavigation: true)).ToList()
         };
         document.RequiredContractHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             JsonSerializer.Serialize(document.States, EnforcementStore.JsonOptions)))).ToLowerInvariant();

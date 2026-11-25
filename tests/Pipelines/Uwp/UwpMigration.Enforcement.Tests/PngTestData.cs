@@ -92,6 +92,25 @@ internal static class PngTestData
         throw new InvalidOperationException($"PNG test chunk not found: {chunk}.");
     }
 
+    internal static byte[] Indexed(int filter, byte[] secondRow)
+    {
+        using var output = new MemoryStream();
+        output.Write(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
+        var header = new byte[13];
+        BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0, 4), 2);
+        BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(4, 4), 2);
+        header[8] = 8;
+        header[9] = 3;
+        WriteChunk(output, "IHDR"u8, header);
+        WriteChunk(output, "PLTE"u8, [0, 0, 0, 255, 255, 255]);
+        using var compressed = new MemoryStream();
+        using (var encoder = new ZLibStream(compressed, CompressionLevel.SmallestSize, leaveOpen: true))
+            encoder.Write([0, 1, 0, (byte)filter, .. secondRow]);
+        WriteChunk(output, "IDAT"u8, compressed.ToArray());
+        WriteChunk(output, "IEND"u8, []);
+        return output.ToArray();
+    }
+
     private static void WriteChunk(Stream stream, ReadOnlySpan<byte> type, ReadOnlySpan<byte> bytes)
     {
         Span<byte> word = stackalloc byte[4];

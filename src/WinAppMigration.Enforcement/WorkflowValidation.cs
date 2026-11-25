@@ -20,6 +20,7 @@ public static class WorkflowValidation
             progress.Units is null || progress.Events is null || progress.Operations is null ||
             progress.CompletedSliceIds is null ||
             progress.UnresolvedRequiredStates is null || progress.Slices is null ||
+            progress.ObservedOperationCount < 0 || progress.ObservedOperationCount > progress.Operations.Count ||
             progress.LastObservedAt < progress.StartedAt || now < progress.LastObservedAt)
             return "Workflow progress has an unsupported schema or invalid fields/timestamps.";
         if (progress.Units.Any(unit => unit is null || !Enum.IsDefined(unit.Stage) ||
@@ -64,6 +65,7 @@ public static class WorkflowValidation
         if (progress.Events.Any(item => item is null || !Enum.IsDefined(item.Stage) ||
                 string.IsNullOrWhiteSpace(item.Key) || item.RecordedAt == default || item.RecordedAt > progress.LastObservedAt ||
                 item.Kind is not ("target-changed" or "required-states-reduced" or
+                    "target-coverage-increased" or "surface-parity-increased" or
                     "diagnosis-completed" or "slice-completed" or "discriminating-evidence" or
                     "source-oracle-completed" or "mechanical-stabilized" or "bootstrap-completed")) ||
             progress.Operations.Any(item => item is null || !Enum.IsDefined(item.Stage) ||
@@ -98,6 +100,8 @@ public static class WorkflowValidation
         var expected = disposition.Kind switch
         {
             "continue" => (false, true, "not-ready"),
+            "tool-blocked" => (false, false, "not-ready"),
+            "input-review-required" => (false, false, "not-ready"),
             "complete" => (true, false, "complete"),
             "infrastructure-failure" => (true, true, "failed"),
             _ => ((bool, bool, string)?)null
@@ -105,6 +109,8 @@ public static class WorkflowValidation
         var reasonValid = (disposition.Kind, disposition.ReasonCode) switch
         {
             ("continue", "workflow-active" or "closure-evidence-reopened") => true,
+            ("tool-blocked", "comparison-support-required") => true,
+            ("input-review-required", "comparable-inputs-required") => true,
             ("complete", "closure-passed") => true,
             ("infrastructure-failure", "invalid-enforcement-artifacts" or "process-invocation-failed") => true,
             _ => false
@@ -160,19 +166,6 @@ public static class WorkflowValidation
             string.IsNullOrWhiteSpace(diagnostic.StandardOutputPath) || string.IsNullOrWhiteSpace(diagnostic.StandardErrorPath) ||
             diagnostic.StartedAt == default || diagnostic.CompletedAt < diagnostic.StartedAt)
             ? "Diagnostic artifacts must be winapp-migrate development probes using schema 1.0 with valid identities, commands, paths and timestamps." : null;
-
-    public static string? UiProbeError(UiDevelopmentProbe? probe) =>
-        probe is not null && (probe.SchemaVersion != UiDevelopmentProbe.CurrentSchemaVersion ||
-            probe.ArtifactClass != MigrationArtifactClass.DevelopmentProbe ||
-            probe.Producer != MigrationArtifactClass.Producer ||
-            string.IsNullOrWhiteSpace(probe.Id) || string.IsNullOrWhiteSpace(probe.TargetFingerprint) ||
-            string.IsNullOrWhiteSpace(probe.ReplayAttestationId) ||
-            string.IsNullOrWhiteSpace(probe.CommandSignature) ||
-            probe.Command is null || probe.Command.Count == 0 ||
-            string.IsNullOrWhiteSpace(probe.ArtifactPath) ||
-            string.IsNullOrWhiteSpace(probe.StandardOutputPath) || string.IsNullOrWhiteSpace(probe.StandardErrorPath) ||
-            probe.StartedAt == default || probe.CompletedAt < probe.StartedAt)
-            ? "UI artifacts must be winapp-migrate development probes using schema 1.0 with valid identities, commands, paths and timestamps." : null;
 
     private static bool CountsValid(OperationCounts? counts, int maximum) =>
         counts is not null && Enum.GetValues<WorkflowOperation>().All(operation =>

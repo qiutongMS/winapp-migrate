@@ -24,8 +24,8 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root,
             ClosurePlan,
             plan);
-        var contract =
-            await UwpEnforcementRunner.SealContractAsync(fixture.Root);
+        ContractTestAuthority.Prepare(fixture.Root, plan);
+        var contract = await fixture.LoadAsync<RequiredStateContractDocument>(RequiredStateContracts.Path);
         await ObserveSourceAsync(fixture, plan);
         await fixture.RunTargetAsync();
         var runner = new UwpEnforcementRunner(

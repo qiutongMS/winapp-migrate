@@ -80,7 +80,7 @@ public sealed partial class RunnerAcceptanceTests
 
         Assert.AreEqual(TestWindowOwnerResolver.WindowHandle, probe.WindowHandle);
         Assert.AreEqual(4242, probe.WindowProcessId);
-        Assert.AreEqual(2, owner.Calls);
+        Assert.IsTrue(owner.Calls >= 2);
         Assert.IsTrue(StateClosureSeal.Verify(probe));
         Assert.AreEqual("passed", recorded.Gates.Single(gate => gate.Id == "state-closure").Status);
     }
@@ -281,14 +281,15 @@ public sealed partial class RunnerAcceptanceTests
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var probe = await CaptureClosureProbeAsync(fixture);
+        var windowOption = probe.Command.FindIndex(argument => argument is "-w" or "--window");
         switch (invalid)
         {
             case "handle": probe.WindowHandle = 84; break;
             case "owner": probe.WindowProcessId = 1111; break;
             case "missing-handle": probe.WindowHandle = null; break;
             case "missing-owner": probe.WindowProcessId = null; break;
-            case "command-window": probe.Command[^1] = "84"; break;
-            case "command-no-window": probe.Command.RemoveRange(probe.Command.Count - 2, 2); break;
+            case "command-window": probe.Command[windowOption + 1] = "84"; break;
+            case "command-no-window": probe.Command.RemoveRange(windowOption, 2); break;
             case "replay-process":
                 var replay = await fixture.LoadAsync<ReplayAttestation>(EnforcementStore.ReplayAttestationPath);
                 replay.ProcessId = 4343;

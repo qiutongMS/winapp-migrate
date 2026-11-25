@@ -23,6 +23,7 @@ internal static class MigrationTodoValidator
         new(
             [
                 "surface-check",
+                "surface-binding",
                 "build-attestation",
                 "target-uwp-compatibility",
                 "report-collection-status",
@@ -292,11 +293,12 @@ internal static class MigrationTodoValidator
                 string.IsNullOrWhiteSpace(check.Target) ||
                 string.IsNullOrWhiteSpace(check.Expected) ||
                 check.AssertionIds is null ||
-                check.VerificationKind == "surface-check" &&
+                check.VerificationKind is "surface-check" or "surface-binding" &&
                     (check.Expected != "passed" ||
                      check.AssertionIds.Count == 0 ||
                      check.AssertionIds.Any(id =>
                          id is not ("target-reachable" or "uia-structure-match"))) ||
+                check.VerificationKind == "surface-binding" && check.Target != owner ||
                 check.AssertionIds.Any(string.IsNullOrWhiteSpace) ||
                 check.AssertionIds.Distinct(StringComparer.Ordinal).Count() !=
                     check.AssertionIds.Count))

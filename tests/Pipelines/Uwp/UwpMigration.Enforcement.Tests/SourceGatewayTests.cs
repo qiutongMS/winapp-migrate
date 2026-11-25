@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using UwpMigration.Contracts;
 using UwpMigration.Enforcement;
 using WinAppMigration.Cli.Pipelines.Uwp;
@@ -11,10 +12,10 @@ using WinAppMigration.Enforcement;
 namespace UwpMigration.Enforcement.Tests;
 
 [TestClass]
-public sealed class SourceGatewayTests
+public sealed partial class SourceGatewayTests
 {
     [TestMethod]
-    public async Task Run_UsesRecordedProjectAndAuthorizesOnlyNewWindows()
+    public async Task Run_UsesRecordedProjectAndAuthorizesOnlyNewSourceWindows()
     {
         using var fixture = await SourceFixture.CreateAsync();
         var initial = await UwpEnforcementRunner.AssessAsync(
@@ -35,9 +36,11 @@ public sealed class SourceGatewayTests
 
         Assert.AreEqual(0, attestation.ExitCode);
         Assert.AreEqual(4242, attestation.ProcessId);
+        Assert.AreEqual(TestWindowOwnerResolver.ProcessStartedAt, attestation.ProcessStartedAt);
         Assert.AreEqual(fixture.SourceProject, attestation.SourceProject);
         Assert.HasCount(1, attestation.AuthorizedWindows);
         Assert.AreEqual(20, attestation.AuthorizedWindows[0].Hwnd);
+        Assert.AreEqual(TestWindowOwnerResolver.ProcessStartedAt, attestation.AuthorizedWindows[0].ProcessStartedAt);
         Assert.HasCount(3, process.Calls);
         CollectionAssert.AreEqual(
             new[] { "ui", "list-windows", "--json" },
@@ -66,6 +69,97 @@ public sealed class SourceGatewayTests
             fixture.Resolve(attestation.WindowInventoryAfterPath!)));
         Assert.IsTrue(File.Exists(fixture.Resolve(
             ".migration-evidence/source/gateway/current-run.json")));
+    }
+
+    [TestMethod]
+    public async Task Run_UnrelatedNewWindowsDoNotEndSourcePolling()
+    {
+        using var fixture = await SourceFixture.CreateAsync();
+        var process = new FakeProcessRunner(
+            Windows((10, 100, "Existing")),
+            new EnforcementProcessResult(0, """{"ProcessId":4242}""", ""),
+            Windows((30, 6060, "Source")),
+            Windows((30, 6060, "Source"), (20, 200, "Source"), (40, 4242, "Core")));
+        var run = await CreateGateway(process, fixture).RunAsync(fixture.Target,
+            new UwpSourceRunOptions { Architecture = "x64", WindowPollAttempts = 2, WindowPollInterval = TimeSpan.Zero });
+
+        CollectionAssert.AreEqual(new long[] { 20, 40 }, run.AuthorizedWindows.Select(window => window.Hwnd).ToArray());
+        Assert.HasCount(4, process.Calls);
+    }
+
+    [TestMethod]
+    public async Task Run_NoLiveSourceIdentityAuthorizesNoWindows()
+    {
+        using var fixture = await SourceFixture.CreateAsync();
+        var owner = new SourcePickerWindowOwnerResolver { SourceStartedAt = DateTimeOffset.MinValue };
+        var run = await CreateGateway(LaunchedProcess(), fixture, windowOwnerResolver: owner)
+            .RunAsync(fixture.Target, TestOptions());
+
+        Assert.HasCount(0, run.AuthorizedWindows);
+        Assert.IsNull(run.ProcessStartedAt);
+    }
+
+    [TestMethod]
+    public void SourceHost_NativeDescendantBindingRequiresTheLiveProcessIdentity()
+    {
+        var resolver = WindowsWindowOwnerResolver.Instance;
+        Assert.IsTrue(resolver.TryGetProcessIdentity(Environment.ProcessId, out var source));
+        var host = CreateTestWindow(0, "STATIC", "", 0, 0, 0, 1, 1, 0, 0, 0, 0);
+        Assert.AreNotEqual(nint.Zero, host);
+        try
+        {
+            Assert.IsFalse(resolver.HasDescendantWindow(host.ToInt64(), source));
+            var child = CreateTestWindow(0, "STATIC", "", 0x40000000, 0, 0, 1, 1, host, 0, 0, 0);
+            Assert.AreNotEqual(nint.Zero, child);
+            try
+            {
+                Assert.IsTrue(resolver.HasDescendantWindow(host.ToInt64(), source));
+                Assert.IsFalse(resolver.HasDescendantWindow(host.ToInt64(), source with { StartedAt = source.StartedAt.AddSeconds(1) }));
+            }
+            finally
+            {
+                DestroyTestWindow(child);
+            }
+            Assert.IsFalse(resolver.HasDescendantWindow(host.ToInt64(), source));
+        }
+        finally
+        {
+            DestroyTestWindow(host);
+        }
+    }
+
+    [DllImport("user32.dll", EntryPoint = "CreateWindowExW", CharSet = CharSet.Unicode)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern nint CreateTestWindow(uint extendedStyle, string className, string title, uint style,
+        int x, int y, int width, int height, nint parent, nint menu, nint instance, nint parameter);
+
+    [DllImport("user32.dll", EntryPoint = "DestroyWindow")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyTestWindow(nint window);
+
+    [TestMethod]
+    [DataRow("source", 20L)]
+    [DataRow("host", 20L)]
+    [DataRow("child", 20L)]
+    [DataRow("source", 84L)]
+    [DataRow("host", 84L)]
+    [DataRow("child", 84L)]
+    public async Task Capture_RejectsStaleSourceAndPickerBindings(string changed, long window)
+    {
+        using var fixture = await SourceFixture.CreateAsync();
+        var owner = new SourcePickerWindowOwnerResolver();
+        var process = LaunchedProcess();
+        var gateway = CreateGateway(process, fixture, windowOwnerResolver: owner);
+        await gateway.RunAsync(fixture.Target, TestOptions());
+        if (changed == "source") owner.SourceStartedAt = owner.SourceStartedAt.AddSeconds(1);
+        else if (changed == "host") owner.HostStartedAt = owner.HostStartedAt.AddSeconds(1);
+        else owner.HostsSource = false;
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            gateway.CaptureAsync(fixture.Target, "winapp", ["inspect", "-w", window.ToString(CultureInfo.InvariantCulture), "--json"]));
+
+        Assert.HasCount(3, process.Calls);
     }
 
     [TestMethod]
@@ -111,7 +205,9 @@ public sealed class SourceGatewayTests
     }
 
     [TestMethod]
-    public async Task Capture_PersistsProbeForAuthorizedWindow()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Capture_PersistsProbeForAuthorizedWindow(bool explicitDepth)
     {
         using var fixture = await SourceFixture.CreateAsync();
         var process = LaunchedProcess(
@@ -124,15 +220,14 @@ public sealed class SourceGatewayTests
             windowOwnerResolver: new SourcePickerWindowOwnerResolver());
         var run = await gateway.RunAsync(fixture.Target, TestOptions());
 
-        var probe = await gateway.CaptureAsync(
-            fixture.Target,
-            "winapp",
-            [
-                "inspect", "-w",
-                run.AuthorizedWindows.Single().Hwnd.ToString(
-                    CultureInfo.InvariantCulture),
-                "--json"
-            ]);
+        var arguments = new List<string>
+        {
+            "inspect", "-w",
+            run.AuthorizedWindows.Single().Hwnd.ToString(CultureInfo.InvariantCulture), "--json"
+        };
+        if (explicitDepth)
+            arguments.Add("--depth=6");
+        var probe = await gateway.CaptureAsync(fixture.Target, "winapp", arguments);
 
         Assert.AreEqual(run.Id, probe.SourceRunAttestationId);
         Assert.AreEqual(20, probe.WindowHandle);
@@ -143,8 +238,11 @@ public sealed class SourceGatewayTests
             await File.ReadAllTextAsync(
                 fixture.Resolve(probe.StandardOutputPath)));
         CollectionAssert.AreEqual(
-            new[] { "ui", "inspect", "-w", "20", "--json" },
+            explicitDepth
+                ? new[] { "ui", "inspect", "-w", "20", "--json", "--depth=6" }
+                : new[] { "ui", "inspect", "-w", "20", "--json", "--depth", "30" },
             process.Calls[3]);
+        CollectionAssert.AreEqual(new[] { "winapp" }.Concat(process.Calls[3]).ToArray(), probe.Command);
         Assert.HasCount(1, process.ScreenshotCalls);
         var image = process.ScreenshotCalls.Single()[^1];
         Assert.IsTrue(File.Exists(image));
@@ -255,21 +353,19 @@ public sealed class SourceGatewayTests
     }
 
     [TestMethod]
-    public async Task Operations_AreRejectedAfterSourceOracleCloses()
+    public async Task Operations_RemainAvailableForEvidenceCollectionAfterSourceOracleCloses()
     {
         using var fixture = await SourceFixture.CreateAsync();
         await fixture.CompleteSourceStateAsync();
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Target, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
-        var process = new FakeProcessRunner();
+        Assert.AreEqual("passed", snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        var process = LaunchedProcess();
+        var run = await CreateGateway(process, fixture).RunAsync(
+            fixture.Target, TestOptions());
 
-        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            CreateGateway(process, fixture).RunAsync(
-                fixture.Target,
-                TestOptions()));
-
-        StringAssert.Contains(exception.Message, "source-oracle");
-        Assert.HasCount(0, process.Calls);
+        Assert.AreEqual(0, run.ExitCode);
+        Assert.HasCount(3, process.Calls);
     }
 
     [TestMethod]
@@ -315,7 +411,7 @@ public sealed class SourceGatewayTests
                     "build stderr",
                     "10.0.22621.0",
                     buildExitCode == 0 ? fixture.SourceLayout : null)),
-            windowOwnerResolver: windowOwnerResolver);
+            windowOwnerResolver: windowOwnerResolver ?? new SourcePickerWindowOwnerResolver());
 
     private static FakeProcessRunner LaunchedProcess(
         params EnforcementProcessResult[] additional) =>
@@ -346,8 +442,11 @@ public sealed class SourceGatewayTests
     private sealed class SourcePickerWindowOwnerResolver
         : IWindowOwnerResolver, IWindowRelationshipResolver
     {
-        private static readonly ProcessIdentity Source =
-            new(200, TestWindowOwnerResolver.ProcessStartedAt);
+        internal DateTimeOffset SourceStartedAt { get; set; } = TestWindowOwnerResolver.ProcessStartedAt;
+        internal DateTimeOffset HostStartedAt { get; set; } = TestWindowOwnerResolver.ProcessStartedAt;
+        internal bool HostsSource { get; set; } = true;
+        private ProcessIdentity Source => new(4242, SourceStartedAt);
+        private ProcessIdentity Host => new(200, HostStartedAt);
         private static readonly ProcessIdentity Picker =
             new(
                 5050,
@@ -359,7 +458,9 @@ public sealed class SourceGatewayTests
         {
             processId = windowHandle switch
             {
-                20 => Source.ProcessId,
+                20 => Host.ProcessId,
+                30 => 6060,
+                40 => Source.ProcessId,
                 84 => Picker.ProcessId,
                 _ => 0
             };
@@ -370,11 +471,19 @@ public sealed class SourceGatewayTests
             int processId,
             out ProcessIdentity identity)
         {
-            identity = processId == Picker.ProcessId
-                ? Picker
-                : Source;
-            return processId is 200 or 5050;
+            identity = processId switch
+            {
+                4242 => Source,
+                200 => Host,
+                5050 => Picker,
+                6060 => new ProcessIdentity(6060, TestWindowOwnerResolver.ProcessStartedAt),
+                _ => default
+            };
+            return identity.ProcessId > 0;
         }
+
+        public bool HasDescendantWindow(long windowHandle, ProcessIdentity process) =>
+            windowHandle == 20 && HostsSource && process == Source;
 
         public bool TryGetWindowRelationship(
             long windowHandle,
@@ -393,7 +502,7 @@ public sealed class SourceGatewayTests
                         "MicrosoftWindows.Client.CBS_cw5n1h2txyewy",
                         "PickerHost.exe")),
                 20 => new WindowRelationship(
-                    Source,
+                    Host,
                     0,
                     "ApplicationFrameHost",
                     null),
@@ -501,7 +610,7 @@ public sealed class SourceGatewayTests
         internal string SourceProject { get; }
         internal DirectoryInfo SourceLayout { get; }
 
-        internal static async Task<SourceFixture> CreateAsync()
+        internal static async Task<SourceFixture> CreateAsync(bool sourceVerified = false, bool secondSurface = false)
         {
             var target = TestDirectories.Create("source-gateway-target");
             var source = TestDirectories.Create("source-gateway-source");
@@ -549,37 +658,48 @@ public sealed class SourceGatewayTests
                 JsonSerializer.Serialize(
                     report,
                     MigrateJsonContext.Default.MigrationReport));
+            var plan = new StatePlanDocument
+            {
+                States =
+                [
+                    new()
+                    {
+                        Id = "source-state", Kind = "window", SourceDefinitions = ["MainPage.xaml"],
+                        Verification = new StateVerificationContract { TreeProbeIndex = 0 },
+                        Source = new StateObservation { Status = "not-run" },
+                        Target = new StateObservation { Status = "not-run" },
+                        Comparison = new StateComparison { Status = "not-run" }
+                    }
+                ]
+            };
+            if (sourceVerified)
+            {
+                plan.States[0].Kind = "page";
+                plan.States[0].Verification = null;
+                await File.WriteAllTextAsync(Path.Combine(source.FullName, "MainPage.xaml"),
+                    """<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />""");
+                if (secondSurface)
+                {
+                    await File.WriteAllTextAsync(Path.Combine(source.FullName, "StorePage.xaml"),
+                        """<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />""");
+                    plan.States.Add(new MigrationState
+                    {
+                        Id = "store",
+                        SourceDefinitions = ["StorePage.xaml"],
+                        Source = new StateObservation { Status = "not-run" },
+                        Target = new StateObservation { Status = "not-run" },
+                        Comparison = new StateComparison { Status = "not-run" }
+                    });
+                }
+            }
+            else
+                ContractTestAuthority.Prepare(target, plan);
             await EnforcementStore.WriteAtomicAsync(
                 target,
                 report.Validation.StatePlan,
-                new StatePlanDocument
-                {
-                    States =
-                    [
-                        new()
-                        {
-                            Id = "source-state",
-                            Kind = "window",
-                            SourceDefinitions = ["MainPage.xaml"],
-                            Verification = new StateVerificationContract
-                            {
-                                TreeProbeIndex = 0
-                            },
-                            Source = new StateObservation
-                            {
-                                Status = "not-run"
-                            },
-                            Target = new StateObservation
-                            {
-                                Status = "not-run"
-                            },
-                            Comparison = new StateComparison
-                            {
-                                Status = "not-run"
-                            }
-                        }
-                    ]
-                });
+                plan);
+            if (sourceVerified)
+                await UwpEnforcementRunner.SealContractAsync(target);
             return new SourceFixture(
                 target,
                 source,

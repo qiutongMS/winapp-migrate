@@ -916,21 +916,7 @@ public static partial class MechanicalMigration
                 LegacyNamespaceResiduals = residuals,
                 IncompatibleUwpResiduals = incompatibleUwpResiduals,
                 UninspectedFiles = uninspectedFiles,
-                ProjectItems = new MigrationProjectItemVerification
-                {
-                    SourceItems = projectItems.SourceItems,
-                    MigratedItems = projectItems.MigratedItems,
-                    AccountedItems = projectItems.AccountedItems,
-                    UnresolvedItems = projectItems.UnresolvedItems,
-                    MissingTargetItems = projectItems.MissingTargetItems,
-                    ReviewRequiredItems = projectItems.DecisionRequiredItems,
-                    DecisionRequiredItems = projectItems.DecisionRequiredItems,
-                    VerifiedDecisionItems = projectItems.VerifiedDecisionItems,
-                    AcceptedDecisionItems = projectItems.AcceptedDecisionItems,
-                    AccountedDecisionItems =
-                        projectItems.VerifiedDecisionItems
-                        + projectItems.AcceptedDecisionItems
-                },
+                ProjectItems = CreateProjectItemVerification(projectItems),
                 TargetProjectGraph = targetProjectGraph,
                 ActivationContracts = activationContracts
             };
@@ -1000,25 +986,26 @@ public static partial class MechanicalMigration
                 LegacyNamespaceResiduals = residuals,
                 IncompatibleUwpResiduals = incompatibleUwpResiduals,
                 UninspectedFiles = uninspectedFiles,
-                ProjectItems = new MigrationProjectItemVerification
-                {
-                    SourceItems = projectItems.SourceItems,
-                    MigratedItems = projectItems.MigratedItems,
-                    AccountedItems = projectItems.AccountedItems,
-                    UnresolvedItems = projectItems.UnresolvedItems,
-                    MissingTargetItems = projectItems.MissingTargetItems,
-                    ReviewRequiredItems = projectItems.DecisionRequiredItems,
-                    DecisionRequiredItems = projectItems.DecisionRequiredItems,
-                    VerifiedDecisionItems = projectItems.VerifiedDecisionItems,
-                    AcceptedDecisionItems = projectItems.AcceptedDecisionItems,
-                    AccountedDecisionItems =
-                        projectItems.VerifiedDecisionItems
-                        + projectItems.AcceptedDecisionItems
-                },
+                ProjectItems = CreateProjectItemVerification(projectItems),
                 TargetProjectGraph = targetProjectGraph,
                 ActivationContracts = activationContracts
             };
         }
+
+        private static MigrationProjectItemVerification CreateProjectItemVerification(ProjectItemMigrationResult projectItems) =>
+            new()
+            {
+                SourceItems = projectItems.SourceItems,
+                MigratedItems = projectItems.MigratedItems,
+                AccountedItems = projectItems.AccountedItems,
+                UnresolvedItems = projectItems.UnresolvedItems,
+                MissingTargetItems = projectItems.MissingTargetItems,
+                ReviewRequiredItems = projectItems.DecisionRequiredItems,
+                DecisionRequiredItems = projectItems.DecisionRequiredItems,
+                VerifiedDecisionItems = projectItems.VerifiedDecisionItems,
+                AcceptedDecisionItems = projectItems.AcceptedDecisionItems,
+                AccountedDecisionItems = projectItems.VerifiedDecisionItems + projectItems.AcceptedDecisionItems
+            };
 
         private static (List<MigrationLocation> Residuals, int UninspectedFiles)
             FindLegacyNamespaceResiduals(string targetRoot)

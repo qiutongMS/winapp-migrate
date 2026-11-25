@@ -15,6 +15,7 @@
     <Description>Migration pipelines for moving applications to WinUI 3 and the Windows App SDK.</Description>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
 </Project>
