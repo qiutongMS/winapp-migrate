@@ -29,7 +29,9 @@ internal sealed class TodoAssessmentSession(
 
     internal TodoSurfaceAssessment AssessSurface(MigrationState state, IReadOnlyList<string> checkIds)
     {
-        if (!_surfaces.TryGetValue(state.Id, out var summary))
+        if (!_surfaces.TryGetValue(state.Id, out var summary) ||
+            state.Disposition != "excluded" &&
+            (Context.Replay is not { Success: true } || Context.Replay.TargetFingerprint != Fingerprint))
         {
             summary = state.Disposition != "excluded" &&
                 (Context.Replay is not { Success: true } || Context.Replay.TargetFingerprint != Fingerprint)
@@ -37,7 +39,7 @@ internal sealed class TodoAssessmentSession(
                     $"Surface '{state.Id}' needs current product evidence and a fresh canonical replay.")
                 : StateClosureProtocol.AssessLevel(
                     Target, state, Context.Replay, now, windowOwnerResolver);
-            _surfaces.Add(state.Id, summary);
+            _surfaces[state.Id] = summary;
         }
         return new TodoSurfaceAssessment
         {

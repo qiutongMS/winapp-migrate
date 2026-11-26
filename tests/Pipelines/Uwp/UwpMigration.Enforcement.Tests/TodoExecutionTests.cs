@@ -829,6 +829,36 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    public async Task TodoExecution_StoppedStatusRejectsChangedTargetProof()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = Uwmig014();
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var probe = await CaptureClosureProbeAsync(fixture,
+            new EnforcementProcessResult(0, ClosureTree, ""));
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        await UwpEnforcementRunner.StopAsync(fixture.Root, "external-blocker");
+        var before = await UwpEnforcementRunner.StatusAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual(1, before.Todos.Todos.Verified);
+
+        await File.WriteAllTextAsync(fixture.Path("ChangedAfterStop.cs"),
+            "internal sealed class ChangedAfterStop { }");
+        var direct = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("pending", direct.VerificationStatus);
+
+        var combined = await UwpEnforcementRunner.StatusAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreNotEqual(before.Closure.TargetFingerprint, combined.Closure.TargetFingerprint);
+        Assert.AreEqual(0, combined.Todos.Todos.Verified);
+        Assert.AreEqual(1, combined.Todos.Todos.PendingVerification);
+    }
+
+    [TestMethod]
     public async Task TodoExecution_BindingPreservesProjectChecksAndExactSurfaceScope()
     {
         using var fixture = await RunnerFixture.CreateAsync();
