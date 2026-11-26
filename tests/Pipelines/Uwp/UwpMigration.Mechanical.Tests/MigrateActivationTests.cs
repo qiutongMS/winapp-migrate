@@ -1086,7 +1086,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
     public async Task MigrateAndVerify_CsprojOnlySourceKeepsActivationUnavailable()
     {
         var source = _tempDirectory.CreateSubdirectory("CsprojOnlyActivationApp");
-        await WriteAsync(source, "CsprojOnlyActivationApp.csproj", CleanCsproj);
+        await WriteAsync(source, "CsprojOnlyActivationApp.csproj", ClassicUwpCsproj);
         var target = NewTarget("csproj-only-activation-output");
         ArrangeTemplateCreation(target, "CsprojOnlyActivationAppApp");
 
@@ -1137,7 +1137,7 @@ public sealed class MigrateActivationTests : MigrateCommandTestBase
         string manifest)
     {
         var source = _tempDirectory.CreateSubdirectory(name);
-        await WriteAsync(source, $"{name}.csproj", CleanCsproj);
+        await WriteAsync(source, $"{name}.csproj", ClassicUwpCsproj);
         await WriteAsync(source, "Package.appxmanifest", manifest);
         return source;
     }

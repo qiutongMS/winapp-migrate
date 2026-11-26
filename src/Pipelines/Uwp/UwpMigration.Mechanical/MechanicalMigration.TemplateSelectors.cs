@@ -49,7 +49,7 @@ public static partial class MechanicalMigration
                 {
                     Id = "selector-has-null-fallback",
                     Summary =
-                        $"{finding.SelectorType}.SelectTemplateCore has an explicit null or base fallback for an unhandled item.",
+                        $"{finding.SelectorType}.SelectTemplateCore has an explicit null or base-call spelling. Its base identity, return value and runtime reachability require review; a base call is not proof of null.",
                     Locations = [finding.CodeLocation]
                 });
             }
@@ -62,12 +62,13 @@ public static partial class MechanicalMigration
                 Status = string.IsNullOrWhiteSpace(previousStatus)
                     ? "pending"
                     : previousStatus,
-                Summary = "Replace the null fallback in a NavigationView item template selector",
-                Reason = "A custom DataTemplateSelector consumed by NavigationView.MenuItemTemplateSelector can return null for an unhandled item. WinUI NavigationView requires a usable template path for every consumed item.",
+                Summary = "Review a potentially reachable NavigationView selector fallback",
+                Reason = "The syntactic selector/resource association and null/base-call spelling are provisional evidence, not proof of a runtime failure. Resolve the actual DataTemplateSelector base, effective resource scope and items reaching that branch. Preserve supported native presentation and non-null custom base behavior; change a fallback only when the selected WinUI version and reachable items require it.",
                 Locations = locations,
                 Guidance = new MigrationRepairGuidance
                 {
                     ReasonCode = "navigation-view-selector-null-fallback",
+                    Classification = ProvisionalClassification("Syntax alone does not prove selector base identity, null behavior or branch reachability.", "reachable-null-fallback", "custom-base-or-unreachable-fallback"),
                     Facts = facts,
                     CandidateStrategies =
                     [
@@ -100,7 +101,7 @@ public static partial class MechanicalMigration
                             ],
                             Preconditions =
                             [
-                                "All fallback items intentionally share the same presentation."
+                                "The fallback is proven reachable and null for actual consumed items, and those items intentionally share the same presentation."
                             ],
                             Risks =
                             [
@@ -113,7 +114,7 @@ public static partial class MechanicalMigration
                         "Do not assume a generic TextBlock template preserves native NavigationView items or separators.",
                         "Do not replace the NavigationViewItem ControlTemplate to recreate selection visuals when a container ContentTemplate preserves the native item behavior.",
                         "Do not treat successful navigation as proof that selected-state visuals are correct.",
-                        "Do not return null or delegate the fallback to a base implementation that returns null."
+                        "Do not change a custom base fallback without resolving its identity, return behavior and reachable input types."
                     ],
                     CompletionConditions =
                     [

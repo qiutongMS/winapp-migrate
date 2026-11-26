@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\UwpMigration.Contracts\UwpMigration.Contracts.csproj" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
   </ItemGroup>
 
   <PropertyGroup>

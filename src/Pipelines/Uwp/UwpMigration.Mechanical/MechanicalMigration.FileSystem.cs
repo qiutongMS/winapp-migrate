@@ -268,9 +268,10 @@ public static partial class MechanicalMigration
         }
 
         // ───────────────────────── helpers ─────────────────────────────────────
-        private static List<string> CreateSourceFileInventory(string root)
+        private static List<string> CreateSourceFileInventory(string root, out List<string> uninspectedPaths)
         {
             var files = new List<string>();
+            uninspectedPaths = [];
             var pending = new Stack<DirectoryInfo>();
             pending.Push(new DirectoryInfo(root));
 
@@ -279,8 +280,11 @@ public static partial class MechanicalMigration
                 var directory = pending.Pop();
                 foreach (var entry in directory.EnumerateFileSystemInfos())
                 {
+                    if (IsExcluded(entry.FullName, root))
+                        continue;
                     if (IsReparsePoint(entry))
                     {
+                        uninspectedPaths.Add(NormalizePath(Path.GetRelativePath(root, entry.FullName)));
                         continue;
                     }
 
@@ -298,7 +302,7 @@ public static partial class MechanicalMigration
                 }
             }
 
-            return files;
+            return files.Order(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         private static IEnumerable<string> EnumerateFiles(string root)
@@ -365,7 +369,10 @@ public static partial class MechanicalMigration
         {
             var name = Path.GetFileName(rel);
             return string.Equals(name, "App.xaml", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "App.xaml.cs", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(name, "App.xaml.cs", StringComparison.OrdinalIgnoreCase)
+                || rel.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) < 0
+                    && (string.Equals(name, "MainWindow.xaml", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(name, "MainWindow.xaml.cs", StringComparison.OrdinalIgnoreCase));
         }
 
         // True when source == target, or one directory contains the other.

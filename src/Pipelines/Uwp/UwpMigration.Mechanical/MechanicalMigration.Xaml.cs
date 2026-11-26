@@ -12,6 +12,33 @@ public static partial class MechanicalMigration
 {
     public sealed partial class Engine
     {
+        private static string RewriteXamlNamespaceDeclarations(string text)
+        {
+            var changes = new List<(int Start, int Length, string Value)>();
+            foreach (var token in ScanXamlElementTokens(text))
+            {
+                var start = token.NameStart + token.QualifiedName.Length;
+                var end = FindXamlTagEnd(text, start);
+                var attributes = text[start..end];
+                foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
+                    attributes, """\bxmlns(?::[A-Za-z_][A-Za-z0-9_.-]*)?\s*=\s*(?<quote>["'])(?<value>[^"']*)\k<quote>"""))
+                {
+                    var value = match.Groups["value"];
+                    if (value.Value == "using:Windows.UI.Xaml"
+                        || value.Value.StartsWith("using:Windows.UI.Xaml.", StringComparison.Ordinal))
+                        changes.Add((start + value.Index, value.Length,
+                            value.Value.Replace("using:Windows.UI.Xaml", "using:Microsoft.UI.Xaml", StringComparison.Ordinal)));
+                }
+            }
+            var result = new StringBuilder(text);
+            foreach (var change in changes.OrderByDescending(change => change.Start))
+            {
+                result.Remove(change.Start, change.Length);
+                result.Insert(change.Start, change.Value);
+            }
+            return result.ToString();
+        }
+
         private static int RewriteVirtualizingStackPanels(string targetRoot, MigrationReport report)
         {
             var changedFiles = 0;

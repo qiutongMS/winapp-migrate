@@ -200,7 +200,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(
             fixture.Root, TestWindowOwnerResolver.Shared)).Status);
-        await File.WriteAllTextAsync(fixture.Path("Compatibility.cs"), "var window = Window.Current;");
+        await File.WriteAllTextAsync(fixture.Path("Compatibility.cs"), "var window = global::Microsoft.UI.Xaml.Window.Current;");
 
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
         var assessment = (await TodoExecutionService.AssessAsync(
@@ -618,6 +618,59 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    [DataRow("UWMIG001", "preserved-uwp-resource-contract-requires-merge", "app-resource-replay-passed")]
+    [DataRow("UWMIG004", "preserved-uwp-startup-contract-requires-port", "startup-replay-passed")]
+    public async Task TodoExecution_LegacySemanticObligationsRemainReadableAndRequireHumanValidation(
+        string todoId, string reasonCode, string checkId)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = Uwmig014();
+        todo.Id = todoId;
+        todo.Guidance!.ReasonCode = reasonCode;
+        todo.Guidance.CompletionChecks =
+        [
+            new()
+            {
+                Id = checkId, Summary = "Bind the actual startup surface.",
+                VerificationKind = "surface-binding", Target = todoId, Expected = "passed",
+                AssertionIds = [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]
+            }
+        ];
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var source = (await fixture.LoadAsync<StatePlanDocument>(ClosurePlan)).States.Single().Source;
+        var sourceBefore = JsonSerializer.Serialize(source, EnforcementStore.JsonOptions);
+        var sourceTreeHash = StateClosureProtocol.FileHash(fixture.Root, source.TreeEvidence!);
+
+        var pending = (await TodoExecutionService.AssessAsync(fixture.Root, todoId)).Single();
+        Assert.AreEqual("bind-surface", pending.NextOperation);
+        Assert.HasCount(1, pending.HumanValidationItems);
+        await TodoExecutionService.BindStateAsync(fixture.Root, todoId, "state-1", checkId,
+            "The actual startup surface.", [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]);
+        await TodoExecutionService.RecordImplementationAsync(fixture.Root, todoId, "implemented", "Ported the preserved source.");
+        var probe = await CaptureClosureProbeAsync(fixture);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todoId, TestWindowOwnerResolver.Shared)).Single();
+
+        Assert.AreEqual("implemented", assessment.ImplementationStatus);
+        Assert.AreEqual("verified", assessment.Surfaces.Single().Status);
+        Assert.AreEqual("human-validation-required", assessment.VerificationStatus);
+        Assert.AreEqual(todoId, snapshot.HumanValidationItems.Single().TodoId);
+        var current = (await fixture.LoadReportAsync()).Todos.Single();
+        Assert.AreEqual("pending", current.Status);
+        Assert.HasCount(1, current.Guidance!.CompletionChecks);
+        Assert.AreEqual("surface-check", current.Guidance.CompletionChecks.Single().VerificationKind);
+        Assert.AreEqual(sourceBefore, JsonSerializer.Serialize(
+            (await fixture.LoadAsync<StatePlanDocument>(ClosurePlan)).States.Single().Source, EnforcementStore.JsonOptions));
+        Assert.AreEqual(sourceTreeHash, StateClosureProtocol.FileHash(fixture.Root, source.TreeEvidence!));
+    }
+
+    [TestMethod]
     [DataRow(false, false)]
     [DataRow(false, true)]
     [DataRow(true, false)]
@@ -634,6 +687,11 @@ public sealed partial class RunnerAcceptanceTests
         todo.Guidance!.ReasonCode = "preserved-uwp-resource-contract-requires-merge";
         todo.Guidance.CompletionChecks.Add(new MigrationCompletionCheck
         {
+            Id = "source-resource-contract-review", Summary = "Resource precedence and lookup require separate semantic evidence.",
+            VerificationKind = "todo-resolution-evidence", Target = todo.Id, Expected = "terminal-with-evidence"
+        });
+        todo.Guidance.CompletionChecks.Add(new MigrationCompletionCheck
+        {
             Id = "app-resource-replay-passed", Summary = "Bind the actual startup surface.",
             VerificationKind = legacy ? "surface-check" : "surface-binding",
             Target = legacy ? "app-launch" : todo.Id, Expected = "passed",
@@ -644,7 +702,7 @@ public sealed partial class RunnerAcceptanceTests
         var pending = (await TodoExecutionService.AssessAsync(fixture.Root, todo.Id)).Single();
         Assert.AreEqual("pending", pending.VerificationStatus);
         Assert.AreEqual("bind-surface", pending.NextOperation);
-        Assert.IsEmpty(pending.HumanValidationItems);
+        Assert.IsTrue(pending.HumanValidationItems.Any(item => item.CheckId == "source-resource-contract-review"));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
             TodoExecutionService.BindStateAsync(fixture.Root, todo.Id, "state-1",
                 "app-resource-replay-passed", "Cannot weaken parity to reachability.",
@@ -654,7 +712,7 @@ public sealed partial class RunnerAcceptanceTests
             reuseId ? "app-resource-replay-passed" : "actual-startup", "The actual startup surface.",
             [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]);
 
-        Assert.HasCount(2, bound.Guidance!.CompletionChecks);
+        Assert.HasCount(3, bound.Guidance!.CompletionChecks);
         Assert.IsFalse(bound.AffectedStates.Contains("app-launch", StringComparer.Ordinal));
         var concrete = bound.Guidance.CompletionChecks.Single(check => check.VerificationKind == "surface-check");
         Assert.AreEqual("state-1", concrete.Target);

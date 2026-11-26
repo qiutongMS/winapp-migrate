@@ -63,6 +63,34 @@ public static partial class MechanicalMigration
                 ?? await evaluator.EvaluateAsync(
                     new FileInfo(targetProject),
                     cancellationToken);
+            var referencedProjects = new Queue<MsBuildProjectItem>(entryEvaluation.Items.Where(item => item.Kind == "ProjectReference"));
+            var discovered = nestedProjects.Select(project => project.FullProjectPath)
+                .Append(targetProject).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var referencedEvaluations = new Dictionary<string, MsBuildProjectItemEvaluation>(StringComparer.OrdinalIgnoreCase);
+            while (referencedProjects.TryDequeue(out var reference))
+            {
+                if (!MigrationPathResolver.TryResolveContainedAbsolutePath(targetRoot, reference.FullPath,
+                    out var referencedPath, out _, out _) || !File.Exists(referencedPath))
+                {
+                    analysis.Issues.Add(CreateTargetGraphIssue("target-external-file-items", "error", entryProject,
+                        null, ["ProjectReference"], [reference.Identity], [],
+                        "An evaluated ProjectReference is missing, outside the contained target graph, or not safely inspectable."));
+                    continue;
+                }
+                if (referencedPath.Equals(targetProject, StringComparison.OrdinalIgnoreCase)
+                    || referencedEvaluations.ContainsKey(referencedPath))
+                    continue;
+                if (discovered.Add(referencedPath))
+                    nestedProjects.Add(new NestedTargetProject(
+                        NormalizePath(Path.GetRelativePath(targetRoot, referencedPath)),
+                        NormalizePath(Path.GetRelativePath(targetRoot, Path.GetDirectoryName(referencedPath)!)), referencedPath));
+                var referencedEvaluation = await evaluator.EvaluateAsync(new FileInfo(referencedPath), cancellationToken);
+                referencedEvaluations[referencedPath] = referencedEvaluation;
+                foreach (var child in referencedEvaluation.Items.Where(item => item.Kind == "ProjectReference"))
+                    referencedProjects.Enqueue(child);
+            }
+            // Directory discovery remains an accidental-SDK-glob check, not a substitute for references.
+            analysis.NestedProjects = nestedProjects.Select(project => project.ProjectPath).ToList();
             var entryError = string.Empty;
             if (!entryEvaluation.Succeeded
                 || !TryCollectContainedOwnership(
@@ -103,7 +131,8 @@ public static partial class MechanicalMigration
             foreach (var nestedProject in nestedProjects)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var nestedEvaluation = await evaluator.EvaluateAsync(
+                var nestedEvaluation = referencedEvaluations.TryGetValue(nestedProject.FullProjectPath, out var evaluated)
+                    ? evaluated : await evaluator.EvaluateAsync(
                     new FileInfo(nestedProject.FullProjectPath),
                     cancellationToken);
                 var nestedError = string.Empty;
@@ -138,6 +167,12 @@ public static partial class MechanicalMigration
                         nestedOwnership.Keys,
                         StringComparer.OrdinalIgnoreCase)
                     .Where(File.Exists)
+                    .Where(path => IsGeneratedTargetPath(NormalizePath(Path.GetRelativePath(targetRoot, path)))
+                        || nestedOwnership[path].Any(kind => kind is "Compile" or "Page" or "ApplicationDefinition")
+                            && entryEvaluation.Items.Any(item => item.FullPath.Equals(path, StringComparison.OrdinalIgnoreCase)
+                            && item.Kind is "Compile" or "Page" or "ApplicationDefinition"
+                            && IsDefaultTargetCompileDefinition(item)
+                            && path.StartsWith(Path.GetDirectoryName(nestedProject.FullProjectPath)! + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
                     .Order(StringComparer.OrdinalIgnoreCase)
                     .ToList();
                 if (collisionPaths.Count == 0)
@@ -197,6 +232,8 @@ public static partial class MechanicalMigration
             error = string.Empty;
             foreach (var item in items)
             {
+                if (item.Kind == "ProjectReference")
+                    continue;
                 if (string.IsNullOrWhiteSpace(item.Kind)
                     || string.IsNullOrWhiteSpace(item.Identity)
                     || !Path.IsPathFullyQualified(item.FullPath)
@@ -334,6 +371,16 @@ public static partial class MechanicalMigration
             });
         }
 
+        private static bool IsDefaultTargetCompileDefinition(MsBuildProjectItem item)
+        {
+            if (item.Metadata.TryGetValue("Link", out var link) && !string.IsNullOrWhiteSpace(link))
+                return false;
+            var file = Path.GetFileName(item.DefiningProjectFullPath);
+            return file.StartsWith("Microsoft.NET.Sdk.DefaultItems.", StringComparison.OrdinalIgnoreCase)
+                || file.StartsWith("Microsoft.WinUI.DefaultItems.", StringComparison.OrdinalIgnoreCase)
+                || item.Kind is "Page" or "ApplicationDefinition" && file.Equals("Microsoft.WinUI.props", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool IsGeneratedTargetPath(string path) =>
             path.Split('/')
                 .Any(segment =>
@@ -371,7 +418,7 @@ public static partial class MechanicalMigration
                 string kind,
                 string severity,
                 string entryProject,
-                NestedTargetProject nestedProject,
+                NestedTargetProject? nestedProject,
                 List<string> itemKinds,
                 List<string> samplePaths,
                 List<string> generatedPaths,
@@ -381,14 +428,14 @@ public static partial class MechanicalMigration
                 Kind = kind,
                 Severity = severity,
                 EntryProject = entryProject,
-                NestedProject = nestedProject.ProjectPath,
-                NestedDirectory = nestedProject.DirectoryPath,
+                NestedProject = nestedProject?.ProjectPath,
+                NestedDirectory = nestedProject?.DirectoryPath,
                 ItemKinds = itemKinds,
                 SamplePaths = samplePaths,
                 GeneratedPaths = generatedPaths,
                 Reason = reason,
                 RequiredResolution =
-                    "Move the nested project outside the entry project's default-item root, or change the evaluated entry project items so each contained file has one project owner."
+                    "Resolve contained project references and prevent accidental entry SDK compile/XAML ownership of nested project files. Intentional linked source or non-compilation sharing is allowed."
             };
 
         private static void AddIncompleteTargetGraphIssues(

@@ -17,6 +17,7 @@ public static partial class MechanicalMigration
             {
                 "UseWinUI",
                 "EnableDefaultItems",
+                "EnableDefaultCompileItems",
                 "DisableDefaultItemsInProjectFolder",
                 "EnableDefaultPRIResourceItems",
                 "EnableDefaultPriItems",
