@@ -19,6 +19,6 @@ Do not implement speculative delivery paths. When both typed and command-line de
 
 ## Hand off activation validation
 
-Keep the activation kind, payload, expected destination, repeat-activation behavior, and error cases with the linked TODO. Payload delivery and instance routing require human or specialized validation through the registered Windows entry point, not just a direct router call. Normal launch, manifest verification, and UI Surface Parity do not establish that result.
+Keep the activation kind, payload, expected destination, repeat-activation behavior, and error cases with the linked TODO. Payload delivery and instance routing require human or specialized validation through the registered Windows entry point, not just a direct router call. Normal launch, manifest verification, and UI Surface Reachability do not establish that result.
 
-An activation declaration marked `review-required` remains a concrete implementation and validation obligation, not a requirement to clear a review counter before UI Surface Parity can pass. Do not mark the source analysis verified merely to remove the handoff. Bind any actual destination surface to its declared surface ID; an activation category is not itself a UI surface.
+An activation declaration marked `review-required` remains a concrete implementation and validation obligation, not a requirement to clear a review counter before UI Surface Reachability can pass. Do not mark the source analysis verified merely to remove the handoff. Bind any actual destination surface to its declared surface ID; an activation category is not itself a UI surface.

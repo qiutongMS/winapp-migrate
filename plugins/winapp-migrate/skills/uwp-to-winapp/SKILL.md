@@ -9,7 +9,7 @@ Preserve the application; do not redesign it. Keep every page, control, resource
 
 Use `winapp-migrate uwp` for conversion, TODOs, source execution, and target closure. Do not invoke raw `winapp run`, `winapp build`, or `winapp ui`. The tool owns report facts, evidence validation, and verdicts; the agent owns source understanding, target implementation, and navigation recipes. Keep app-specific adapters in the migrated solution, not in the migration tools.
 
-Machine acceptance is **UI Surface Parity**: necessary mechanical checks, an analyzer-enabled build, canonical launch, complete required/excluded source inventory, target reachability, and complete semantic UIA tree parity for every required surface. Behavioral, pixel, lifecycle, restoration, timing, pointer-input, accessibility-quality, and business-logic equivalence remain separate validation obligations, not permission to omit implementation.
+Machine acceptance is **UI Surface Reachability**: current mechanical/analyzer build and stable canonical launch, complete required/excluded source inventory and mapping, and authenticated target reachability for every required surface. UIA tree comparison is optional diagnostic evidence, not a hard gate: semantically equivalent UWP and WinUI interfaces need not expose matching provider trees. Behavioral, pixel, lifecycle, restoration, timing, pointer-input, accessibility-quality, and business-logic equivalence remain separate validation obligations, not permission to omit implementation.
 
 Use `winapp-migrate --version` and the relevant command's `--help` to inspect the installed CLI. Let the tool validate artifact versions and report missing prerequisites; do not hand-edit mechanically owned report fields or derived evidence.
 
@@ -48,16 +48,16 @@ winapp-migrate uwp closure seal-contract "<target>"
 winapp-migrate uwp closure assess "<target>"
 ```
 
-## 3. Capture source surface trees
+## 3. Optionally capture source surface diagnostics
 
 ```powershell
 winapp-migrate uwp source run "<target>"
 winapp-migrate uwp source capture "<target>" -- inspect -w <source-hwnd> --json
 ```
 
-For each required surface, capture its initial state, navigate using `source capture`, and finish with one complete semantic UIA tree. Navigation may remain null until observed. Declare the actual route and `startSurfaceId` in the plan, then freeze it with `closure bind-source "<target>" --surface "<surface-id>" --probe "<initial-probe.json>" --probe "<action-probe.json>" --probe "<final-probe.json>"`. The tool sets the captured source observation; do not author success flags. A zero-action startup uses one initial inspect receipt. Bind incrementally; one unsupported surface does not prevent work on the others. Once a surface is bound, proceed with implementation, build, and target checks for it without waiting for every source route.
+Skip this step when source automation is unavailable or comparison is not useful; it is not a target-capture prerequisite. For a diagnostic baseline, capture the initial state, navigate using `source capture`, and finish with a complete semantic UIA tree. Declare the actual route and `startSurfaceId`, then optionally freeze that observed route with `closure bind-source "<target>" --surface "<surface-id>" --probe "<initial-probe.json>" --probe "<action-probe.json>" --probe "<final-probe.json>"`. The tool sets the captured source observation; do not author success flags. A zero-action startup uses one inspect receipt. A bound baseline remains immutable.
 
-If automation cannot produce a complete tree, leave the surface unverified and report the condition. Never infer a tree from source code or substitute a screenshot.
+If automation cannot produce a complete source tree, leave its comparison unverified and report the limitation; continue with authentic target navigation. Never infer a tree from source code or substitute a screenshot.
 
 ## 4. Implement migration TODOs
 
@@ -69,20 +69,19 @@ winapp-migrate uwp todo assess "<target>" "<todo-id>"
 winapp-migrate uwp todo record "<target>" "<todo-id>" --outcome implemented --summary "<change>" --evidence "<path>"
 ```
 
-Implementation and failure records are bookkeeping, not verification. Read `implementationStatus`, `verificationStatus`, and `verificationScope` independently. Follow each surface's `comparisonDiagnostics`: tool or capture faults require collecting trustworthy comparable evidence, not speculative application edits.
+Implementation and failure records are bookkeeping, not verification. Read `implementationStatus`, `verificationStatus`, and `verificationScope` independently. Preserve `comparisonDiagnostics` for review; neither mismatch nor incomplete comparison alone calls for application repairs, extra builds, or repeated captures. Repair independently established source-preservation defects through the existing TODO.
 
-When a UI obligation lacks its proof mapping, bind the smallest existing required surface to the fixed checks that actually prove it. A `surface-binding` completion check is an unresolved obligation, not a surface ID; binding resolves it against the actual inventory without weakening its checks:
+When a UI reachability obligation lacks its proof mapping, bind the smallest existing required surface to the target check that actually proves it. A `surface-binding` completion check is an unresolved obligation, not a surface ID:
 
 ```powershell
 winapp-migrate uwp todo bind-surface "<target>" "<todo-id>" `
   --surface "<surface-id>" `
   --check "target-reachable" `
-  --check "uia-structure-match" `
   --check-id "<stable-check-id>" `
   --summary "<why-this-surface-proves-the-TODO>"
 ```
 
-Project-only checks need no surface binding. Business behavior outside UI Surface Parity needs explicit human validation, not an invented homepage binding. Build and launch failures remain project-level work unless evidence proves an omitted app-owned migration obligation; use `todo discover` for that obligation, not for each diagnostic. Missing app-owned implementation is unfinished work, not an external blocker.
+Project-only checks need no surface binding. Existing `uia-structure-match` assertions retain their honest diagnostic result and human handoff, but do not block machine closure. Business behavior outside UI Surface Reachability needs explicit human validation, not an invented homepage binding. Build and launch failures remain project-level work unless evidence proves an omitted app-owned migration obligation; use `todo discover` for that obligation, not for each diagnostic. Missing app-owned implementation is unfinished work, not an external blocker.
 
 If delegating, partition work by disjoint touch/conflict sets, give overlapping work one owner, and integrate changes before the common build and replay.
 
@@ -98,26 +97,26 @@ Repair actual failures and retry as needed. Use `closure diagnose` for raw diagn
 
 ## 6. Capture and record surface checks
 
-For each source-bound surface, replay its verified navigation sequence against the current replay-owned HWND:
+For each required surface, declare its actual navigation recipe from source understanding and execute it against the current replay-owned HWND. Source tree binding is optional:
 
 ```powershell
 winapp-migrate uwp closure navigate "<target>" --surface "<surface-id>" --window <target-hwnd>
 ```
 
-The tool checks the declared starting state, stops at the first failed action, captures the final tree, and records the honest result. A reachable parent with a parity mismatch can still start a dependent route; it does not become verified. Manual `closure capture` and `record-surface` remain available but require the complete ordered trace, including its initial inspect. The tool derives reachability and tree parity and shares the current result with every exactly mapped TODO. Use the guide's result classifications and freshness rules rather than editing verdicts.
+The tool checks the declared starting state, stops at the first failed action, captures the final observation, and records the honest result. A currently reachable parent can start a dependent route without source capture or parity success. Manual `closure capture` and `record-surface` require the complete ordered trace, including its initial inspect. Reachability needs genuine successful navigation, supported target observations, current ownership, and authenticated receipts; a partial target observation never proves full tree parity. The tool derives the two outcomes separately and shares the current facts with exactly mapped TODOs.
 
 The tool automatically attempts screenshots alongside source and surface-bound target JSON inspections. Retain `.migration-evidence/comparison/index.html` and its linked artifacts for the before/after record; missing or stale screenshots are labeled, not an extra acceptance gate or a substitute for UIA evidence.
 
 ## 7. Finalize
 
-After every required surface is verified:
+After every required target is authentically reachable and the project/inventory gates pass, finalize without iterating to make UIA trees match:
 
 ```powershell
 winapp-migrate uwp closure finalize "<target>" --strict
 ```
 
-For an incomplete handoff, use `closure assess` and non-strict `closure finalize` to preserve honest current results. Report the product's `completion` checkpoint and remaining obligations; a model's final response does not mean migration completion, and `tool-blocked` does not mean parity passed.
+For an incomplete machine handoff, use `closure assess` and non-strict `closure finalize` to preserve honest current results. Report the product's `completion` checkpoint and remaining obligations; a model's final response does not mean migration completion. UIA mismatch, absent source capture, or incomparable trees alone do not make machine acceptance incomplete.
 
 When the host decides to end iteration, record its budget, no-progress, or external-blocker decision with `closure stop --reason <reason>`. The stopped result remains incomplete, retains outstanding gates, and returns nonzero; the tool does not choose the host's limits or treat stopping as success.
 
-Report the `ui-surface-parity` verification scope, every human-validation item, remaining implementation obligations and findings, and excluded surfaces with their reasons. Out-of-scope obligations do not block UI acceptance or become verified when the app passes. Do not claim complete app equivalence from this bounded result.
+Report the `ui-surface-reachability` verification scope, honest UIA diagnostic results, every human-validation item, remaining implementation obligations and findings, and excluded surfaces with their reasons. Out-of-scope obligations do not block machine acceptance or become verified when it passes. Do not claim complete app equivalence from this bounded result.

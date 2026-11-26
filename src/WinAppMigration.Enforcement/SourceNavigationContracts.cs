@@ -82,8 +82,13 @@ public static class SourceNavigationContracts
         var (document, error) = EnforcementStore.TryLoadAsync<SourceNavigationContract>(
             root, ContractPath(state.Id)).GetAwaiter().GetResult();
         if (document is null)
-            throw new InvalidDataException(error ??
-                $"Surface {state.Id} needs source-verified navigation; run closure bind-source before target capture.");
+        {
+            if (error is not null || StateClosureSeal.ReadContractAnchor(AnchorName(root, state.Id)) is not null)
+                throw new InvalidDataException(error ??
+                    "The anchored source-navigation contract is missing; deleting it does not reset navigation.");
+            ValidateNavigation(state, requireSource: false);
+            return null;
+        }
         ValidateNavigation(state);
         var seal = document.Seal;
         var key = document.SealPublicKey;
@@ -111,10 +116,10 @@ public static class SourceNavigationContracts
         return document;
     }
 
-    internal static void ValidateNavigation(MigrationState state)
+    internal static void ValidateNavigation(MigrationState state, bool requireSource = true)
     {
         var navigation = state.Verification ??
-            throw new InvalidDataException($"Surface {state.Id} has no source-verified navigation recipe.");
+            throw new InvalidDataException($"Surface {state.Id} has no declared navigation recipe.");
         var count = navigation.RequiredActions.Count;
         var firstAction = count == 0 ? 0 : 1;
         if (navigation.StartSurfaceId == state.Id ||
@@ -123,9 +128,9 @@ public static class SourceNavigationContracts
             !navigation.RequiredActions.Select(action => action.ProbeIndex)
                 .SequenceEqual(Enumerable.Range(firstAction, count)))
             throw new InvalidDataException(
-                "Source-verified navigation requires an initial inspect, contiguous actions at indices 1..N, and a final inspect at N+1; a zero-action surface uses inspect at index 0.");
-        if (state.Source.Status != "captured" || state.Source.TreeEvidence is null ||
-            !state.Source.Evidence.Contains(state.Source.TreeEvidence, StringComparer.Ordinal))
+                "Navigation requires an initial inspect, contiguous actions at indices 1..N, and a final inspect at N+1; a zero-action surface uses inspect at index 0.");
+        if (requireSource && (state.Source.Status != "captured" || state.Source.TreeEvidence is null ||
+            !state.Source.Evidence.Contains(state.Source.TreeEvidence, StringComparer.Ordinal)))
             throw new InvalidDataException($"Surface {state.Id} needs its captured source tree.");
     }
 
@@ -137,11 +142,12 @@ public static class SourceNavigationContracts
         UiDevelopmentProbe initial, WorkflowProgress progress, DateTimeOffset now,
         IWindowOwnerResolver windowOwnerResolver)
     {
-        if (Require(root, state, initial.StartedAt) is null)
+        Require(root, state, initial.StartedAt);
+        if (!RequiredStateContracts.UsesSourceNavigation(root))
             return;
         if (initial.Command.ElementAtOrDefault(2) != "inspect" ||
-            !SurfaceTreeComparison.IsTree(root, initial.StandardOutputPath, out _))
-            throw new InvalidDataException("Navigation must begin with a complete current target inspect.");
+            !SurfaceTreeComparison.IsTree(root, initial.StandardOutputPath, out _, requireComplete: false))
+            throw new InvalidDataException("Navigation must begin with a supported current target inspect.");
         var startId = state.Verification!.StartSurfaceId;
         if (startId is null)
         {
@@ -160,10 +166,13 @@ public static class SourceNavigationContracts
         }
         var start = RequiredStateContracts.Read(root).States.SingleOrDefault(item => item.Id == startId) ??
             throw new InvalidDataException($"Unknown navigation start surface: {startId}.");
-        var contract = Read<SourceNavigationContract>(root, ContractPath(startId));
-        start.Verification = contract.Navigation;
-        start.Source = contract.Source;
         var proof = Read<StateClosureAttestation>(root, StateClosureProtocol.AttestationPath(startId));
+        var (contract, contractError) = EnforcementStore.TryLoadAsync<SourceNavigationContract>(
+            root, ContractPath(startId)).GetAwaiter().GetResult();
+        if (contractError is not null)
+            throw new InvalidDataException(contractError);
+        start.Verification = proof.Navigation ?? contract?.Navigation ?? start.Verification;
+        start.Source = proof.Source ?? contract?.Source ?? start.Source;
         start.Target = new StateObservation
         {
             Status = proof.CheckIds.Contains(SurfaceCheckIds.TargetReachable) ? "passed" :
@@ -178,7 +187,8 @@ public static class SourceNavigationContracts
         if (!StateClosureProtocol.VerifyRecordedLevel(root, start, replay, now, out var verified, out var reason, windowOwnerResolver) ||
             !verified.CheckIds.Contains(SurfaceCheckIds.TargetReachable) ||
             proof.RecordedAt > initial.StartedAt ||
-            !SurfaceTreeComparison.Compare(root, verified.TargetTreeEvidence!, initial.StandardOutputPath).Matches)
+            !SurfaceTreeComparison.Compare(root, verified.TargetTreeEvidence!, initial.StandardOutputPath,
+                requireComplete: false).Matches)
             throw new InvalidDataException(
                 $"Navigation start surface {startId} is not current and reachable, or its target UI state changed. Recover that state before retrying. {reason}");
     }
@@ -189,7 +199,8 @@ public static class SourceNavigationContracts
         DateTimeOffset now, IWindowOwnerResolver windowOwnerResolver,
         bool startAlreadyAuthenticated = false)
     {
-        if (Require(root, state) is null)
+        Require(root, state);
+        if (!RequiredStateContracts.UsesSourceNavigation(root))
             return;
         if (probes.Count != state.Verification!.TreeProbeIndex + 1)
             throw new InvalidDataException("The complete source-verified navigation trace is required.");

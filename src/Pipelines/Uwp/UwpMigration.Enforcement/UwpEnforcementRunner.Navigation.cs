@@ -98,7 +98,8 @@ public sealed partial class UwpEnforcementRunner
         {
             var start = plan.States.SingleOrDefault(item => item.Id == startId) ??
                 throw new InvalidDataException($"Unknown navigation start surface: {startId}.");
-            SourceNavigationContracts.Require(workspace.Target, start);
+            if (SourceNavigationContracts.Require(workspace.Target, start) is null)
+                throw new InvalidDataException($"Capture and bind source start surface {startId} before source discovery.");
             if (!SurfaceTreeComparison.Compare(workspace.Target, start.Source.TreeEvidence!, probes[0].StandardOutputPath).Matches)
                 throw new InvalidDataException($"Source start state differs from surface {startId}; recover the declared state before discovery.");
         }
@@ -136,8 +137,9 @@ public sealed partial class UwpEnforcementRunner
             var workspace = await PrepareWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
             state = workspace.Input.StatePlan?.States.SingleOrDefault(item => item.Id == stateId) ??
                 throw new InvalidDataException($"Unknown planned surface: {stateId}.");
-            if (SourceNavigationContracts.Require(workspace.Target, state) is null)
-                throw new InvalidDataException("Automatic navigation requires a source-verified route in a fresh workspace.");
+            SourceNavigationContracts.Require(workspace.Target, state);
+            if (!RequiredStateContracts.UsesSourceNavigation(workspace.Target))
+                throw new InvalidDataException("Automatic navigation requires a declared route in a fresh workspace.");
         }
         var probes = new List<UiDevelopmentProbe>();
         async Task<UiDevelopmentProbe> CaptureAsync(IReadOnlyList<string> command)

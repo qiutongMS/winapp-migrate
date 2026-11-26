@@ -44,7 +44,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Closure_RevalidatesStaleResolutionAndFailedComparisonReopensSemanticWork()
+    public void Closure_RevalidatesStaleReachabilityWithoutReopeningForDiagnosticComparison()
     {
         using var fixture = new EvaluatorFixture();
         var input = LifecycleInput(fixture) with
@@ -77,7 +77,7 @@ public sealed partial class EnforcementEvaluatorTests
         {
             Progress = stale.Workflow, TargetFingerprint = "changed", GeneratedAt = LifecycleNow.AddMinutes(4)
         });
-        Assert.AreEqual(WorkflowStage.SemanticConvergence, failed.Stage);
+        Assert.AreEqual(WorkflowStage.Closure, failed.Stage);
         Assert.AreEqual("state-1", failed.ActiveSlice);
         Assert.AreEqual("state", failed.Frontier?.Kind);
     }

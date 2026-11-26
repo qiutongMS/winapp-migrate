@@ -49,6 +49,8 @@ internal sealed class TodoAssessmentSession(
             Status = summary.Result == "excluded" ? "excluded"
                 : summary.Level == "unverified" ? "pending"
                 : checkIds.All(check => summary.CheckIds.Contains(check, StringComparer.Ordinal)) ? "verified"
+                : summary.IsReachable && checkIds.Contains(SurfaceCheckIds.StructureMatch, StringComparer.Ordinal)
+                    ? "human-validation-required"
                 : summary.Result == SurfaceVerificationResult.HumanValidationRequired ? "human-validation-required"
                 : "failed",
             Reason = summary.Reason,

@@ -130,7 +130,7 @@ public sealed partial class RunnerAcceptanceTests
         var process = new FakeProcessRunner(BuildSuccess(), ReplaySuccess());
         var snapshot = await new UwpEnforcementRunner(process).RunAsync(fixture.Root, new UwpEnforcementOptions());
         Assert.AreEqual(WorkflowStage.SemanticConvergence, snapshot.Stage);
-        Assert.AreEqual("blocked", snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.IsFalse(snapshot.Gates.Any(gate => gate.Id == "source-oracle"));
         Assert.AreEqual(2, process.CallCount);
         Assert.IsTrue(snapshot.Build!.Success);
         Assert.IsTrue(snapshot.Replay!.Success);
@@ -160,7 +160,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, ".migration-evidence/state-plan.json", plan);
 
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        Assert.AreEqual("blocked", snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.IsFalse(snapshot.Gates.Any(gate => gate.Id == "source-oracle"));
         CollectionAssert.Contains(snapshot.Disposition!.AllowedOperations, WorkflowOperation.UiAction);
         var result = await runner.InvokeUiAsync(fixture.Root, "winapp", ["list-windows", "--json"]);
 

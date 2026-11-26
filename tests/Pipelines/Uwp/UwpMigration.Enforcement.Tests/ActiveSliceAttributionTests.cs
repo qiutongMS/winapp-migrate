@@ -109,7 +109,7 @@ public sealed partial class EnforcementEvaluatorTests
         } };
 
         if (malformed == "null-target")
-            Assert.IsFalse(StateClosureProtocol.HasHistoricalParity(input.TargetRoot, state));
+            Assert.IsFalse(StateClosureProtocol.HasHistoricalReachability(input.TargetRoot, state));
         Assert.ThrowsExactly<InvalidDataException>(() => StateAttribution.Authorize(input));
         var snapshot = EnforcementEvaluator.Evaluate(input with { Progress = null });
         Assert.AreEqual("blocked", snapshot.Gates.Single(gate => gate.Id == "state-plan").Status);
@@ -245,7 +245,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("category-selection", recovered.Frontier!.Id);
         Assert.AreEqual("category-slice", recovered.Frontier.SliceId);
         var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
-        Assert.IsTrue(StateClosureProtocol.HasHistoricalParity(fixture.Root, plan.States[0]));
+        Assert.IsTrue(StateClosureProtocol.HasHistoricalReachability(fixture.Root, plan.States[0]));
     }
 
     [TestMethod]

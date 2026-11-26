@@ -10,18 +10,20 @@ namespace UwpMigration.Enforcement;
 internal static class TodoCompletionContract
 {
     internal static bool IsMachineCheck(MigrationCompletionCheck check) =>
-        check.VerificationKind is "surface-check" or "surface-binding" || IsProjectCheck(check);
+        check.VerificationKind is "surface-check" or "surface-binding" &&
+            (check.AssertionIds.Count == 0 || check.AssertionIds.Any(id => id != SurfaceCheckIds.StructureMatch)) ||
+        IsProjectCheck(check);
 
     internal static IReadOnlyList<MigrationCompletionCheck> PendingBindings(
         MigrationTodo todo, StatePlanDocument? plan) =>
         (todo.Guidance?.CompletionChecks ?? []).Where(check =>
-            check.VerificationKind == "surface-binding" ||
+            IsMachineCheck(check) && (check.VerificationKind == "surface-binding" ||
             todo.Origin == "mechanical" && check.VerificationKind == "surface-check" &&
             check.Target == "app-launch" &&
             plan is not null && plan.States.All(state => state.Id != "app-launch") &&
             (todo.Id, todo.Guidance?.ReasonCode, check.Id) is
                 ("UWMIG001", "preserved-uwp-resource-contract-requires-merge", "app-resource-replay-passed") or
-                ("UWMIG004", "preserved-uwp-startup-contract-requires-port", "startup-replay-passed"))
+                ("UWMIG004", "preserved-uwp-startup-contract-requires-port", "startup-replay-passed")))
             .ToArray();
 
     private static bool IsProjectCheck(MigrationCompletionCheck check) =>
@@ -32,13 +34,13 @@ internal static class TodoCompletionContract
     internal static IReadOnlyList<MigrationCompletionCheck> StateChecks(
         MigrationTodo todo) =>
         (todo.Guidance?.CompletionChecks ?? [])
-            .Where(check => check.VerificationKind == "surface-check")
+            .Where(check => check.VerificationKind == "surface-check" && IsMachineCheck(check))
             .ToArray();
 
     internal static List<string> StateIds(MigrationTodo todo)
     {
         var stateIds = new HashSet<string>(StringComparer.Ordinal);
-        var checks = todo.Guidance?.CompletionChecks ?? [];
+        var checks = StateChecks(todo);
         foreach (var check in checks)
         {
             if (check.VerificationKind == "surface-check")

@@ -52,7 +52,9 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("state-1", mapped.Target);
         CollectionAssert.AreEqual(new[] { SurfaceCheckIds.StructureMatch }, mapped.AssertionIds);
         CollectionAssert.Contains(imported.Discovery!.Evidence, "old-untrusted-proof.json");
-        Assert.AreEqual(imported.Id, before.HumanValidationItems.Single().TodoId);
+        Assert.HasCount(2, before.HumanValidationItems);
+        Assert.IsTrue(before.HumanValidationItems.All(item => item.TodoId == imported.Id));
+        Assert.IsTrue(before.HumanValidationItems.Any(item => item.CheckId == mapped.Id));
 
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
@@ -370,8 +372,8 @@ public sealed partial class RunnerAcceptanceTests
 
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
-        Assert.AreEqual("passed",
-            snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.IsFalse(snapshot.Gates.Any(gate => gate.Id == "source-oracle"));
+        Assert.AreEqual("captured", (await fixture.LoadAsync<StatePlanDocument>(ClosurePlan)).States[0].Source.Status);
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
         Assert.IsEmpty(snapshot.Workflow!.Operations);
     }

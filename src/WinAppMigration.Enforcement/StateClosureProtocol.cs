@@ -25,6 +25,12 @@ public static class SurfaceVerificationResult
 
 public sealed class StateClosureAttestation
 {
+    [JsonPropertyName("navigation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StateVerificationContract? Navigation { get; set; }
+    [JsonPropertyName("source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StateObservation? Source { get; set; }
     [JsonPropertyName("comparisonRules")]
     public string? ComparisonRules { get; set; }
     [JsonPropertyName("requiredContractHash")]
@@ -87,7 +93,7 @@ public static class StateClosureProtocol
         "sp-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             Path.GetFullPath(root.FullName).ToUpperInvariant() + "\n" + stateId)))[..32];
 
-    public static bool HasHistoricalParity(
+    public static bool HasHistoricalReachability(
         DirectoryInfo root,
         MigrationState state)
     {
@@ -95,12 +101,11 @@ public static class StateClosureProtocol
         {
             if (state.Disposition != "required" ||
                 state.Source is not
-                    { Status: "captured", Evidence: not null } ||
+                    { Evidence: not null } ||
                 state.Target is not
                     { Status: "passed", Evidence: not null } ||
-                state.Comparison is not { Status: "verified" } ||
-                state.Target.VerificationLevel !=
-                    StateVerificationLevel.SurfaceParityVerified ||
+                state.Target.VerificationLevel is not
+                    (StateVerificationLevel.SurfaceReachable or StateVerificationLevel.SurfaceParityVerified) ||
                 state.Target.Attestation != AttestationPath(state.Id))
             {
                 return false;
@@ -110,7 +115,7 @@ public static class StateClosureProtocol
                     root,
                     state.Target.Attestation);
             return StateClosureSeal.Verify(proof) &&
-                proof.Result == SurfaceVerificationResult.Verified &&
+                proof.CheckIds.Contains(SurfaceCheckIds.TargetReachable, StringComparer.Ordinal) &&
                 proof.StateId == state.Id &&
                 proof.RequiredContractHash ==
                     RequiredStateContracts.Require(
@@ -124,9 +129,6 @@ public static class StateClosureProtocol
                 proof.RequiredActionIds.SequenceEqual(
                     state.Verification!.RequiredActions.Select(
                         action => action.Id)) &&
-                proof.CheckIds.SequenceEqual(
-                    SurfaceCheckIds.All,
-                    StringComparer.Ordinal) &&
                 proof.Evidence.SequenceEqual(
                     state.Target.Evidence,
                     StringComparer.Ordinal) &&
@@ -303,15 +305,6 @@ public static class StateClosureProtocol
         if (replay.RequiredContractHash != requiredHash)
             throw new InvalidDataException(
                 "Canonical replay is not bound to the immutable surface contract.");
-        if (state.Source.Status != "captured" ||
-            string.IsNullOrWhiteSpace(state.Source.TreeEvidence) ||
-            !state.Source.Evidence.Contains(
-                state.Source.TreeEvidence,
-                StringComparer.Ordinal))
-        {
-            throw new InvalidDataException(
-                $"Surface {state.Id} requires captured source UIA tree evidence.");
-        }
         probePaths = probePaths.Select(path =>
         {
             if (!EnforcementStore.TryResolveContainedPath(root, path, out var fullPath, out var error))
@@ -432,7 +425,7 @@ public static class StateClosureProtocol
             if (probe.Command[2] == "screenshot")
             {
                 throw new InvalidDataException(
-                    "Screenshots are not part of UI Surface Parity closure.");
+                    "Screenshots do not prove target surface reachability.");
             }
             var uiArguments =
                 probe.Command.Skip(2).ToArray();
@@ -513,7 +506,8 @@ public static class StateClosureProtocol
                 SurfaceTreeComparison.IsTree(
                     root,
                     targetTree,
-                    out var treeReason);
+                    out var treeReason,
+                    requireComplete: false);
             if (!targetTreeValid)
                 issues.Add(treeReason);
         }
@@ -522,11 +516,17 @@ public static class StateClosureProtocol
             navigation.Count ==
                 state.Verification.RequiredActions.Count &&
             issues.Count == 0;
+        var sourceVerified = !RequiredStateContracts.UsesSourceNavigation(root) ||
+            SourceNavigationContracts.Require(root, state) is not null;
         var comparison = targetTree is null
             ? new SurfaceTreeComparisonResult(
                 false,
                 false,
                 "No target UIA tree was captured.")
+            : !sourceVerified || state.Source.Status != "captured" || state.Source.TreeEvidence is null ||
+                !state.Source.Evidence.Contains(state.Source.TreeEvidence, StringComparer.Ordinal)
+            ? new SurfaceTreeComparisonResult(false, false,
+                "No complete captured source UIA tree is available; comparison remains an optional review item.")
             : SurfaceTreeComparison.Compare(
                 root,
                 state.Source.TreeEvidence!,
@@ -534,13 +534,15 @@ public static class StateClosureProtocol
         if (reachable && !comparison.Matches)
             issues.Add(comparison.Reason);
 
-        var result = !targetTreeValid || !comparison.Comparable && !comparison.HasApplicationDifferences
+        var result = !targetTreeValid
             ? SurfaceVerificationResult.HumanValidationRequired
             : !reachable
                 ? SurfaceVerificationResult.Unreachable
-                : !comparison.Matches
-                    ? SurfaceVerificationResult.Mismatch
-                    : SurfaceVerificationResult.Verified;
+                : !comparison.Comparable && !comparison.HasApplicationDifferences
+                    ? SurfaceVerificationResult.HumanValidationRequired
+                    : !comparison.Matches
+                        ? SurfaceVerificationResult.Mismatch
+                        : SurfaceVerificationResult.Verified;
         var checkIds = new List<string>();
         if (reachable)
             checkIds.Add(SurfaceCheckIds.TargetReachable);
@@ -549,6 +551,8 @@ public static class StateClosureProtocol
 
         return new StateClosureAttestation
         {
+            Navigation = state.Verification,
+            Source = state.Source,
             StateId = state.Id,
             StateContractFingerprint = fingerprint,
             RequiredContractHash = requiredHash,
@@ -683,7 +687,7 @@ public static class StateClosureProtocol
             out evidence,
             out reason,
             windowOwnerResolver,
-            requireParity: true);
+            requireReachability: true);
 
     internal static bool VerifyRecordedLevel(
         DirectoryInfo root,
@@ -701,7 +705,7 @@ public static class StateClosureProtocol
             out evidence,
             out reason,
             windowOwnerResolver,
-            requireParity: false);
+            requireReachability: false);
 
     public static StateVerificationSummary AssessLevel(
         DirectoryInfo root,
@@ -714,7 +718,7 @@ public static class StateClosureProtocol
             return new StateVerificationSummary(
                 state.Id,
                 "excluded",
-                state.ExclusionReason ?? "Excluded from UI surface parity.")
+                state.ExclusionReason ?? "Excluded from UI surface reachability.")
             {
                 Result = "excluded"
             };
@@ -750,7 +754,7 @@ public static class StateClosureProtocol
         [NotNullWhen(true)] out StateClosureAttestation? evidence,
         out string reason,
         IWindowOwnerResolver? windowOwnerResolver,
-        bool requireParity)
+        bool requireReachability)
     {
         evidence = null;
         using var verification = StateClosureSeal.BeginVerification();
@@ -888,9 +892,9 @@ public static class StateClosureProtocol
                 throw new InvalidDataException(
                     "Surface observation status does not match product derivation.");
             }
-            if (requireParity && !verified)
+            if (requireReachability && !reachable)
                 throw new InvalidDataException(
-                    $"Surface {state.Id} result is {derived.Result}; UI surface parity is not verified.");
+                    $"Surface {state.Id} target reachability is not verified; diagnostic result is {derived.Result}.");
             reason =
                 $"Surface {state.Id} has a re-derived machine-verifiable closure attestation.";
             evidence = derived;

@@ -66,7 +66,7 @@ public static class TodoExecutionService
         var assessments = context.Report.Todos.Select(todo =>
             Assess(session, todo)).ToArray();
         var surfaces = context.Plan?.States.Select(state =>
-            session.AssessSurface(state, SurfaceCheckIds.All)).ToArray() ?? [];
+            session.AssessSurface(state, [SurfaceCheckIds.TargetReachable])).ToArray() ?? [];
         return TodoStatusService.Build(
             context.Report, context.Plan, assessments, context.Progress, surfaces);
     }
@@ -271,11 +271,6 @@ public static class TodoExecutionService
         }).ToList();
         var projectChecksPass = session.ProjectChecksPass(todo);
         var pendingBindings = TodoCompletionContract.PendingBindings(todo, context.Plan);
-        var diagnostics = surfaces.Where(surface => surface.Status != "verified")
-            .SelectMany(surface => surface.ComparisonDiagnostics)
-            .Where(item => !item.IsNormalization).ToList();
-        var repair = diagnostics.FirstOrDefault(item => item.RepairOwner == "application") ??
-            diagnostics.FirstOrDefault();
         var handoffs = BuildHumanValidationItems(todo, context.Plan, surfaces);
         var verificationStatus = surfaces.Any(surface => surface.Status == "failed")
             ? "failed"
@@ -286,8 +281,8 @@ public static class TodoExecutionService
                     : "verified";
         var next = pendingBindings.Count > 0
             ? ("bind-surface", $"Bind completion check '{pendingBindings[0].Id}' to the actual required surface in the inventory; preserve its exact surface checks.")
-            : repair is { RepairOwner: "capture" or "tool" }
-            ? (repair.RepairOwner == "capture" ? "review-inputs" : "repair-tool", repair.SuggestedAction)
+            : verificationStatus == "human-validation-required"
+            ? ("human-validation", "Hand off diagnostic UIA and out-of-scope obligations; do not retry tree matching as a machine gate.")
             : implementationStatus == "pending"
             ? ("record-implementation", $"Implement TODO '{todo.Id}' and record its implementation result; surface evidence does not prove business behavior.")
             : verificationStatus switch
@@ -322,7 +317,7 @@ public static class TodoExecutionService
                 ExpectedOutcome = check.VerificationKind is "todo-resolution-evidence" or "report-collection-status" or "report-field"
                     ? string.Join(" ", todo.Guidance?.CompletionConditions ?? [todo.Reason])
                     : check.Expected,
-                Reason = "This implementation/behavior obligation is outside machine-verifiable project and UI Surface Parity checks."
+                Reason = "This implementation/behavior or UIA diagnostic obligation is outside machine-verifiable project and UI Surface Reachability checks."
             }).ToList();
         if (checks.Count == 0)
             handoffs.Add(new HumanValidationItem
@@ -365,7 +360,7 @@ public static class TodoExecutionService
                 StateId = state.Id, AssertionIds = surface.AssertionIds,
                 Behavior = $"Compare surface '{state.Id}'.",
                 Actions = state.Verification!.RequiredActions.Select(action => string.Join(" ", action.Command)).ToList(),
-                ExpectedOutcome = "The target is reachable and its semantic UIA tree matches the source.",
+                ExpectedOutcome = "Review the reported UIA differences or capture limitations against the source; tree equality is not a machine acceptance condition.",
                 Reason = surface.Reason ?? "The attempted product capture did not produce comparable trees.",
                 Evidence = surface.Evidence
             });
