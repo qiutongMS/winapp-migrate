@@ -691,6 +691,10 @@ public sealed record PipelineValidationState(string Id, string? Status, string? 
 public sealed record StateVerificationSummary(string Id, string Level, string Reason)
 {
     public string Result { get; init; } = SurfaceVerificationResult.Pending;
+    [JsonIgnore]
+    public IReadOnlyList<string> CheckIds { get; init; } = [];
+    [JsonIgnore]
+    public IReadOnlyList<string> Evidence { get; init; } = [];
     [JsonPropertyName("comparisonDiagnostics")]
     public List<SurfaceComparisonDiagnostic>? ComparisonDiagnostics { get; init; }
 }

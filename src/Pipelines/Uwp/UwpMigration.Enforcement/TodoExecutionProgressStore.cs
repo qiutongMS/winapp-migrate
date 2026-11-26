@@ -52,6 +52,13 @@ internal static class TodoExecutionProgressStore
         {
             throw new InvalidDataException(replayError);
         }
+        return new TodoExecutionContext(
+            report, plan, build, replay, await LoadProgressAsync(target, cancellationToken));
+    }
+
+    internal static async Task<TodoExecutionProgressDocument> LoadProgressAsync(
+        DirectoryInfo target, CancellationToken cancellationToken)
+    {
         var (progress, progressError) =
             await EnforcementStore.TryLoadAsync<TodoExecutionProgressDocument>(
                 target,
@@ -63,12 +70,7 @@ internal static class TodoExecutionProgressStore
         }
         progress ??= new TodoExecutionProgressDocument();
         Validate(progress);
-        return new TodoExecutionContext(
-            report,
-            plan,
-            build,
-            replay,
-            progress);
+        return progress;
     }
 
     internal static Task SaveAsync(

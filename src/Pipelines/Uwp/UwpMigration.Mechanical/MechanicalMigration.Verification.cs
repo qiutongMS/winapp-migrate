@@ -889,41 +889,14 @@ public static partial class MechanicalMigration
                 .Order(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            var incompatibleUwpResiduals = FindIncompatibleUwpResiduals(targetRoot);
-            var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(incompatibleUwpResiduals);
-            RefreshUwpCompatibilityTodo(report, incompatibleUwpResiduals);
-            RefreshUncertainNamespaceTextTodo(targetRoot, report);
-            RefreshUnresolvedApiIdentityTodo(targetRoot, report);
             var itemEvaluation = await EvaluateProjectItemFactsAsync(targetRoot, targetProject, evaluator, cancellationToken);
             var entryEvaluation = itemEvaluation.RawEvaluation ?? MsBuildProjectItemEvaluation.Failure(itemEvaluation.Error ?? "Target item facts are unavailable.");
             if (report.Source.ProjectFile is { } sourceProjectFile)
                 projectItems = MigrateSourceProjectItems(sourceRoot, Path.Combine(sourceRoot, sourceProjectFile),
                     targetRoot, targetProject, applyChanges: false, itemEvaluation);
-            var targetProjectGraph = await AnalyzeTargetProjectGraphAsync(
-                targetRoot,
-                targetProject,
-                evaluator,
-                cancellationToken,
-                entryEvaluation);
-            RefreshMechanicalTodos(
-                targetRoot,
-                report,
-                residuals,
-                projectItems,
-                targetProjectGraph);
-            var activationContracts = CreateActivationVerification(
-                report.ActivationAnalysis);
-
-            var failed = residuals.Count > 0
-                || uninspectedFiles > 0
-                || unclassified.Count > 0
-                || projectItems.MissingTargetItems.Count > 0
-                || targetProjectGraph.Status is "failed" or "incomplete"
-                || HasActivationMechanicalFailure(report.ActivationAnalysis);
-            return new MigrationMechanicalVerification
-            {
-                Status = failed ? "failed" : "passed",
-                Inventory = new MigrationFileInventory
+            return await CompleteMechanicalVerificationAsync(
+                targetRoot, targetProject, projectItems, report, evaluator, entryEvaluation,
+                new MigrationFileInventory
                 {
                     SourceFiles = sourceRelativePaths.Count,
                     ClassifiedFiles = sourceRelativePaths.Count - unclassified.Count,
@@ -932,13 +905,7 @@ public static partial class MechanicalMigration
                     IntentionallyExcludedFiles = excludedSet.Count,
                     UnclassifiedFiles = unclassified
                 },
-                LegacyNamespaceResiduals = residuals,
-                IncompatibleUwpResiduals = incompatibleUwpResiduals,
-                UninspectedFiles = uninspectedFiles,
-                ProjectItems = CreateProjectItemVerification(projectItems),
-                TargetProjectGraph = targetProjectGraph,
-                ActivationContracts = activationContracts
-            };
+                requireIncompatibleUwpClosure: false, cancellationToken);
         }
 
         internal static async Task<MigrationMechanicalVerification>
@@ -974,6 +941,23 @@ public static partial class MechanicalMigration
                 evaluator,
                 cancellationToken,
                 projectItemEvaluation);
+            return await CompleteMechanicalVerificationAsync(
+                targetRoot, targetProject, projectItems, report, evaluator,
+                projectItemEvaluation.RawEvaluation, report.MechanicalVerification.Inventory,
+                requireIncompatibleUwpClosure: true, cancellationToken);
+        }
+
+        private static async Task<MigrationMechanicalVerification> CompleteMechanicalVerificationAsync(
+            string targetRoot,
+            string targetProject,
+            ProjectItemMigrationResult projectItems,
+            MigrationReport report,
+            IMsBuildProjectItemEvaluator evaluator,
+            MsBuildProjectItemEvaluation? entryEvaluation,
+            MigrationFileInventory inventory,
+            bool requireIncompatibleUwpClosure,
+            CancellationToken cancellationToken)
+        {
             var incompatibleUwpResiduals = FindIncompatibleUwpResiduals(targetRoot);
             var (residuals, uninspectedFiles) = FindLegacyNamespaceResiduals(incompatibleUwpResiduals);
             RefreshUwpCompatibilityTodo(report, incompatibleUwpResiduals);
@@ -984,7 +968,7 @@ public static partial class MechanicalMigration
                 targetProject,
                 evaluator,
                 cancellationToken,
-                projectItemEvaluation?.RawEvaluation);
+                entryEvaluation);
             RefreshMechanicalTodos(
                 targetRoot,
                 report,
@@ -995,15 +979,16 @@ public static partial class MechanicalMigration
                 report.ActivationAnalysis);
 
             var failed = residuals.Count > 0
-                || incompatibleUwpResiduals.Count > 0
-                || report.MechanicalVerification.Inventory.UnclassifiedFiles.Count > 0
+                // Creation leaves semantic incompatibilities as TODOs; explicit verification requires their closure.
+                || (requireIncompatibleUwpClosure ? incompatibleUwpResiduals.Count > 0 : uninspectedFiles > 0)
+                || inventory.UnclassifiedFiles.Count > 0
                 || projectItems.MissingTargetItems.Count > 0
                 || targetProjectGraph.Status is "failed" or "incomplete"
                 || HasActivationMechanicalFailure(report.ActivationAnalysis);
             return new MigrationMechanicalVerification
             {
                 Status = failed ? "failed" : "passed",
-                Inventory = report.MechanicalVerification.Inventory,
+                Inventory = inventory,
                 LegacyNamespaceResiduals = residuals,
                 IncompatibleUwpResiduals = incompatibleUwpResiduals,
                 UninspectedFiles = uninspectedFiles,

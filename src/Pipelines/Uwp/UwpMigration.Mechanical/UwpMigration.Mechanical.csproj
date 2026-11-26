@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <Compile Include="..\..\..\Shared\ProcessExecution.cs" Link="Shared\ProcessExecution.cs" />
     <ProjectReference Include="..\UwpMigration.Contracts\UwpMigration.Contracts.csproj" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
   </ItemGroup>

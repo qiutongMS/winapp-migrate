@@ -91,24 +91,24 @@ internal static class TodoCompletionContract
                     StringComparer.Ordinal)));
     }
 
-    internal static bool UsesProjectClosureOnly(MigrationTodo todo)
-    {
-        var checks = todo.Guidance?.CompletionChecks ?? [];
-        return checks.Count > 0 &&
-            checks.All(IsProjectCheck);
-    }
-
     internal static bool ProjectClosureChecksPass(
         DirectoryInfo target,
         MigrationTodo todo,
         MigrationReport report,
         BuildAttestation? build,
-        string targetFingerprint)
+        string targetFingerprint,
+        Dictionary<(string Kind, string Target, string Expected), bool>? results = null,
+        DateTimeOffset? now = null)
     {
         var checks = (todo.Guidance?.CompletionChecks ?? [])
             .Where(IsProjectCheck)
             .ToArray();
-        return checks.All(check => check.VerificationKind switch
+        return checks.All(check =>
+        {
+            var key = (check.VerificationKind, check.Target, check.Expected);
+            if (results?.TryGetValue(key, out var cached) == true)
+                return cached;
+            var passed = check.VerificationKind switch
             {
                 "build-attestation" =>
                     check.Target == "target-build" &&
@@ -116,7 +116,7 @@ internal static class TodoCompletionContract
                     build is { Success: true, StructuredOutput: true, AnalyzerPrivateAssets: true } &&
                     !string.IsNullOrWhiteSpace(build.AnalyzerPackage) &&
                     build.TargetFingerprint == targetFingerprint &&
-                    build.StartedAt <= build.CompletedAt && build.CompletedAt <= DateTimeOffset.UtcNow &&
+                    build.StartedAt <= build.CompletedAt && build.CompletedAt <= (now ?? DateTimeOffset.UtcNow) &&
                     CanonicalAttestationTrust.Verify(target, build),
                 "report-field" =>
                     ReportFieldMatches(report, check.Target, check.Expected),
@@ -124,7 +124,10 @@ internal static class TodoCompletionContract
                     check.Target == "target-source" && check.Expected == "passed" &&
                     MechanicalMigration.Engine.FindIncompatibleUwpResiduals(target.FullName).Count == 0,
                 _ => false
-            });
+            };
+            results?.Add(key, passed);
+            return passed;
+        });
     }
 
     private static bool ReportFieldMatches(

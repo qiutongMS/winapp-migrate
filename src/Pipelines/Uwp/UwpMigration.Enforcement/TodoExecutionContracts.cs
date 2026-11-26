@@ -20,16 +20,10 @@ public sealed class TodoExecutionProgressDocument
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed class TodoExecutionProgress
+public sealed partial class TodoExecutionProgress
 {
     [JsonPropertyName("todoId")]
     public required string TodoId { get; set; }
-
-    [JsonPropertyName("currentApproachKey")]
-    public string? CurrentApproachKey { get; set; }
-
-    [JsonPropertyName("currentApproachRationale")]
-    public string? CurrentApproachRationale { get; set; }
 
     [JsonPropertyName("attempt")]
     public int Attempt { get; set; }
@@ -39,7 +33,7 @@ public sealed class TodoExecutionProgress
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed class TodoExecutionEvent
+public sealed partial class TodoExecutionEvent
 {
     [JsonPropertyName("sequence")]
     public int Sequence { get; set; }
@@ -55,9 +49,6 @@ public sealed class TodoExecutionEvent
 
     [JsonPropertyName("summary")]
     public required string Summary { get; set; }
-
-    [JsonPropertyName("approachKey")]
-    public string? ApproachKey { get; set; }
 
     [JsonPropertyName("failureSignature")]
     public string? FailureSignature { get; set; }

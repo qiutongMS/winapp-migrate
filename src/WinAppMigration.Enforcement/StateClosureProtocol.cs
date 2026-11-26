@@ -732,6 +732,8 @@ public static class StateClosureProtocol
                 string.Join(" ", evidence.Issues))
             {
                 Result = evidence.Result,
+                CheckIds = evidence.CheckIds,
+                Evidence = [AttestationPath(state.Id)],
                 ComparisonDiagnostics = evidence.ComparisonDiagnostics
             }
             : new StateVerificationSummary(
@@ -904,85 +906,6 @@ public static class StateClosureProtocol
             reason = exception.Message;
             return false;
         }
-    }
-
-    public static bool FindingSatisfied(
-        DirectoryInfo root,
-        SemanticFinding finding,
-        StatePlanDocument? plan,
-        ReplayAttestation? replay,
-        DateTimeOffset now,
-        IWindowOwnerResolver? windowOwnerResolver = null)
-    {
-        if (plan is null ||
-            finding.StateIds is not { Count: > 0 } ||
-            finding.CompletionAssertions is not { Count: > 0 } ||
-            finding.CompletionAssertions.Any(item =>
-                item is null ||
-                !finding.StateIds.Contains(
-                    item.StateId,
-                    StringComparer.Ordinal)) ||
-            finding.StateIds.Any(id =>
-                !finding.CompletionAssertions.Any(item =>
-                    item.StateId == id)))
-        {
-            return false;
-        }
-        return finding.StateIds.All(id =>
-            FindingStateSatisfied(
-                root,
-                finding,
-                plan,
-                replay,
-                now,
-                id,
-                windowOwnerResolver));
-    }
-
-    internal static bool FindingStateSatisfied(
-        DirectoryInfo root,
-        SemanticFinding finding,
-        StatePlanDocument? plan,
-        ReplayAttestation? replay,
-        DateTimeOffset now,
-        string stateId,
-        IWindowOwnerResolver? windowOwnerResolver = null)
-    {
-        if (plan is null ||
-            finding.StateIds is not { Count: > 0 } ||
-            !finding.StateIds.Contains(
-                stateId,
-                StringComparer.Ordinal) ||
-            finding.CompletionAssertions is not { Count: > 0 })
-        {
-            return false;
-        }
-        var checks = finding.CompletionAssertions
-            .Where(item =>
-                item is not null &&
-                item.StateId == stateId)
-            .ToArray();
-        if (checks.Length == 0)
-            return false;
-        var state =
-            plan.States.SingleOrDefault(
-                candidate => candidate.Id == stateId);
-        if (state is null ||
-            !VerifyRecordedLevel(
-                root,
-                state,
-                replay,
-                now,
-                out var proof,
-                out _,
-                windowOwnerResolver))
-        {
-            return false;
-        }
-        return checks.All(item =>
-            proof.CheckIds.Contains(
-                item.AssertionId,
-                StringComparer.Ordinal));
     }
 
     private static void CheckFile(

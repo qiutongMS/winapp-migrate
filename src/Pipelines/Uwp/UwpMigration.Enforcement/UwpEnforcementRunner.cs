@@ -117,6 +117,25 @@ public sealed partial class UwpEnforcementRunner
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
     }
 
+    public static async Task<(EnforcementSnapshot Closure, TodoStatusSummary Todos)> StatusAsync(
+        DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver,
+        CancellationToken cancellationToken = default)
+    {
+        await using var enforcementLock = await EnforcementStore.AcquireLockAsync(
+            ResolveLockTarget(target), cancellationToken);
+        using var verification = StateClosureSeal.BeginVerification();
+        var workspace = await LoadWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
+        var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
+        var context = new TodoExecutionContext(workspace.Report, workspace.Input.StatePlan,
+            workspace.Build, workspace.Input.Replay,
+            await TodoExecutionProgressStore.LoadProgressAsync(workspace.Target, cancellationToken));
+        var todos = TodoExecutionService.Status(new TodoAssessmentSession(
+            workspace.Target, context, workspace.Fingerprint, windowOwnerResolver,
+            workspace.Input.GeneratedAt, snapshot.StateVerifications, workspace.ProjectChecks));
+        await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
+        return (snapshot, todos);
+    }
+
     public static async Task<EnforcementSnapshot> StopAsync(
         DirectoryInfo target, string reason, CancellationToken cancellationToken = default)
     {
@@ -685,7 +704,7 @@ public sealed partial class UwpEnforcementRunner
         var report = await MigrationReportStore.LoadAsync(
             workspace.ReportPath,
             cancellationToken);
-        SynchronizeRequiredTodos(report, plan, workspace);
+        SynchronizeRequiredTodos(report, plan, workspace, current.StateVerifications);
         report.Validation.SourceBaseline.Status = summary.SourceStatus;
         report.Validation.SourceBaseline.States = plan.States.Select(state =>
             new MigrationValidationState
@@ -724,7 +743,8 @@ public sealed partial class UwpEnforcementRunner
     private static void SynchronizeRequiredTodos(
         MigrationReport report,
         StatePlanDocument plan,
-        Workspace workspace)
+        Workspace workspace,
+        IReadOnlyList<StateVerificationSummary> verifications)
     {
         var duplicate = report.Todos
             .GroupBy(todo => todo.Id, StringComparer.Ordinal)
@@ -736,32 +756,16 @@ public sealed partial class UwpEnforcementRunner
                 "migration-report.json TODO IDs must be non-empty and unique before report synchronization.");
         }
 
+        var context = new TodoExecutionContext(report, plan, workspace.Build, workspace.Input.Replay, new());
+        var session = new TodoAssessmentSession(workspace.Target, context, workspace.Fingerprint,
+            workspace.Input.WindowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
+            workspace.Input.GeneratedAt, verifications, workspace.ProjectChecks);
         foreach (var todo in report.Todos.Where(todo =>
             string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase) &&
             (string.Equals(todo.Status, "pending", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(todo.Status, "verified", StringComparison.OrdinalIgnoreCase))))
         {
-            var requiredStateIds = TodoCompletionContract.StateIds(todo);
-            var states = plan.States.Where(state =>
-                requiredStateIds.Contains(state.Id, StringComparer.Ordinal)).ToArray();
-            var projectChecksPass =
-                TodoCompletionContract.ProjectClosureChecksPass(
-                    workspace.Target,
-                    todo,
-                    report,
-                    workspace.Build,
-                    workspace.Fingerprint);
-            var stateChecksBound =
-                TodoCompletionContract.StateChecksAreBound(todo, plan);
-            if (projectChecksPass &&
-                stateChecksBound &&
-                TodoExecutionService.OutOfScopeHandoffs(todo).Count == 0 &&
-                ((requiredStateIds.Count == 0 &&
-                    TodoCompletionContract.UsesProjectClosureOnly(todo)) ||
-                requiredStateIds.Count > 0 &&
-                states.Length == requiredStateIds.Count &&
-                states.All(state =>
-                    StateClosureProtocol.Verify(workspace.Target, state, workspace.Input.Replay, workspace.Input.GeneratedAt, out _, workspace.Input.WindowOwnerResolver))))
+            if (TodoExecutionService.Assess(session, todo).VerificationStatus == "verified")
             {
                 todo.Status = "verified";
             }
@@ -779,7 +783,9 @@ public sealed partial class UwpEnforcementRunner
         StatePlanDocument? plan,
         string? statePlanError,
         BuildAttestation? build,
-        string targetFingerprint)
+        string targetFingerprint,
+        Dictionary<(string Kind, string Target, string Expected), bool> projectChecks,
+        DateTimeOffset now)
     {
         if (plan is null || !string.IsNullOrWhiteSpace(statePlanError))
         {
@@ -800,7 +806,7 @@ public sealed partial class UwpEnforcementRunner
         foreach (var todo in report.Todos.Where(todo =>
             string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase)))
         {
-            if (!TodoCompletionContract.ProjectClosureChecksPass(target, todo, report, build, targetFingerprint))
+            if (!TodoCompletionContract.ProjectClosureChecksPass(target, todo, report, build, targetFingerprint, projectChecks, now))
                 return (false, $"Required TODO {todo.Id} has an unsatisfied current project completion check.");
             if (!TodoCompletionContract.StateChecksAreBound(todo, plan))
                 return (false,
@@ -1253,6 +1259,10 @@ public sealed partial class UwpEnforcementRunner
             report.MechanicalVerification.Status == "passed" &&
             incompatibleUwpResiduals.Count == 0;
         EnforcementTrace.Mark("workspace.report-closure.begin");
+        var projectChecks = new Dictionary<(string Kind, string Target, string Expected), bool>
+        {
+            [("target-uwp-compatibility", "target-source", "passed")] = incompatibleUwpResiduals.Count == 0
+        };
         var (reportClosureReady, reportClosureReason) =
             AssessReportClosure(
                 target,
@@ -1260,7 +1270,9 @@ public sealed partial class UwpEnforcementRunner
                 statePlan,
                 statePlanError,
                 build,
-                fingerprint);
+                fingerprint,
+                projectChecks,
+                generatedAt);
         EnforcementTrace.Mark("workspace.report-closure.end");
         var input = new EnforcementEvaluationInput
         {
@@ -1307,12 +1319,14 @@ public sealed partial class UwpEnforcementRunner
         return new Workspace(
             target,
             reportPath,
+            report,
             targetProject,
             fingerprint,
             analyzer,
             attempts,
             build,
-            input);
+            input,
+            projectChecks);
     }
 
     private static DirectoryInfo ResolveLockTarget(DirectoryInfo requestedTarget)
@@ -1470,10 +1484,12 @@ public sealed partial class UwpEnforcementRunner
     private sealed record Workspace(
         DirectoryInfo Target,
         string ReportPath,
+        MigrationReport Report,
         string TargetProject,
         string Fingerprint,
         AnalyzerReferenceStatus Analyzer,
         AttemptLedger Attempts,
         BuildAttestation? Build,
-        EnforcementEvaluationInput Input);
+        EnforcementEvaluationInput Input,
+        Dictionary<(string Kind, string Target, string Expected), bool> ProjectChecks);
 }

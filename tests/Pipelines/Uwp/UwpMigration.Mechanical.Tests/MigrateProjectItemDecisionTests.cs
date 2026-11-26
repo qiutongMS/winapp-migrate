@@ -6,7 +6,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using WinAppMigration.Cli.Pipelines.Uwp;
 using UwpMigration.Contracts;
+using UwpMigration.Enforcement;
 using UwpMigration.Mechanical;
+using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Mechanical.Tests;
 
@@ -655,6 +657,27 @@ public sealed class MigrateProjectItemDecisionTests : MigrateCommandTestBase
             0,
             facts.EvaluationCount,
             "Unsupported projects must fail before invoking dotnet msbuild.");
+    }
+
+    [TestMethod]
+    public async Task DecideProjectItem_WaitsForEnforcementLockBeforeEvaluatingOrWriting()
+    {
+        var (_, target) = await CreateDecisionMigrationAsync("LockedDecisionApp", includeDispositionItems: true);
+        var facts = await ArrangeTargetFactsAsync(target);
+        var items = await ReadDecisionItemsAsync(target);
+        var before = await ReadAsync(target, "migration-report.json");
+        await using var enforcementLock = await EnforcementStore.AcquireLockAsync(target, TestContext.CancellationToken);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        var operation = new UwpMechanicalService(FakeMsBuildEvaluator).DecideProjectItemAsync(
+            new(target, ItemId(items, @"Legacy\**\*.json"), "target-not-required",
+                "The target does not consume this payload.", null, null, [], "target-platform-not-applicable"),
+            cancellation.Token);
+        await Task.WhenAny(operation, Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.CancellationToken));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => operation);
+        Assert.AreEqual(0, facts.EvaluationCount);
+        Assert.AreEqual(before, await ReadAsync(target, "migration-report.json"));
     }
 
     [TestMethod]
