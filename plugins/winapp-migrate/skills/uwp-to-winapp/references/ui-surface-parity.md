@@ -4,7 +4,9 @@ Use this guide to prepare `.migration-evidence\state-plan.json` and interpret su
 
 ## Plan inputs
 
-Account for each source definition exactly once with kind `window`, `page`, `dialog`, `flyout`, or `user-control`. A `required` surface needs authenticated target navigation ending in a supported target inspection; a source tree is optional diagnostic evidence. An `excluded` surface needs a concrete reason, `navigation: null`, and `excluded` source, target, and comparison statuses.
+Account for each source definition exactly once with kind `window`, `page`, `dialog`, `flyout`, or `user-control`. A `required` surface needs immutable `targetIdentity` landmarks and authenticated navigation ending in a supported target inspection that observes those landmarks. A source tree is optional diagnostic evidence. An `excluded` surface needs a concrete reason, `navigation: null`, `targetIdentity: []`, and `excluded` source, target, and comparison statuses.
+
+Declare a small set of destination-specific target landmarks before sealing the inventory. Each landmark specifies `type` and an `automationId` or stable `name` (or both). Every landmark must have exactly one observed visible match (`isOffscreen: false` on the landmark itself); provider host flags do not suppress explicitly visible descendants. Prefer a page-owned root or heading, not a shared application window or the navigation button that opens the destination. Missing, hidden, ambiguous, or unobserved landmarks do not prove reachability; a successful invoke or any tree change is insufficient. Increase capture depth only as needed to observe these landmarks, not to match the whole tree. Optional `isEnabled`, `isSelected`, and `hasKeyboardFocus` constrain explicitly required scene state; omitted properties, unrelated text/data, hierarchy, and focus are not identity requirements.
 
 Run `winapp-migrate uwp source inventory "<target>"` before authoring the plan. It lists definition keys and kinds without launching either application or starting evidence operations. XAML roots use their relative file paths; inline XAML and C# popup declarations use `path#L<line>C<column>` keys. Source-only C# analysis resolves aliases and local base-type chains; unresolved custom XAML roots are reported rather than silently omitted. Review startup/navigation and runtime-created UI beyond statically discoverable declarations; a tool limitation is not a reason to drop a required surface.
 
@@ -20,6 +22,9 @@ Minimal startup-page example; replace its ID and source path with the actual inv
       "disposition": "required",
       "sourceDefinitions": ["Views/MainPage.xaml"],
       "criticality": "required",
+      "targetIdentity": [
+        { "type": "Pane", "automationId": "MainPageRoot" }
+      ],
       "navigation": {
         "requiredActions": [],
         "treeProbeIndex": 0
@@ -34,7 +39,7 @@ Minimal startup-page example; replace its ID and source path with the actual inv
 
 ## Navigation and sealing
 
-Seal the inventory with `closure seal-contract` before source discovery or target operations. Required-contract schema `3.0` freezes the obligations, not draft navigation recipes. Navigation may remain null during discovery, but declare the actual route from source understanding before target capture. Source observation and binding are optional. Existing required-contract schema `2.0` retains its old immutable navigation and needs a fresh workspace for this lifecycle.
+Seal the inventory with `closure seal-contract` before source discovery or target operations. Required-contract schema `3.0` freezes the obligations and target identity landmarks, not draft navigation recipes. Navigation may remain null during discovery, but declare the actual route from source understanding before target capture. Source observation and binding are optional. Missing identities require a corrected plan and fresh contract/evidence, not automatic acceptance of previous receipts. Existing required-contract schema `2.0` retains its old immutable navigation and needs a fresh workspace for this lifecycle.
 
 Identify the route's starting surface with `startSurfaceId`; omit it only for a fresh launch before any state-changing action. Probe 0 is a current target inspect. Actions occupy consecutive indices 1..N, followed by a final inspect at N+1. A zero-action surface uses only inspect at index 0:
 
@@ -58,7 +63,7 @@ The inventory check still rejects missing, extra, duplicate, or kind-mismatched 
 
 Use source-run-authorized HWNDs for optional `source capture` and the current replay-owned HWND for target `closure capture --surface`. Submit all navigation probes in their declared order and finish with `inspect --json`. A supported partial target observation can establish reachability alongside the actual authenticated route, but never full tree parity. If a complete authenticated source baseline is available, the tool also compares the complete trees. Use an unbound `closure capture "<target>" -- list-windows --json` for window discovery.
 
-Prefer `closure navigate "<target>" --surface "<surface-id>" --window <target-hwnd>`. It verifies the current starting state against the recorded target observation of `startSurfaceId`, executes actions sequentially, and stops at the first failure. Successful execution records reachability even if comparison is absent, unsupported, or mismatched. This same-platform starting-state check is route authentication, not UWP/WinUI tree equivalence. Committed proofs retain the declared route/source snapshot for dependent routes without mandatory source capture. Failed or interleaved actions cannot be omitted.
+Prefer `closure navigate "<target>" --surface "<surface-id>" --window <target-hwnd>`. It authenticates the current proof of `startSurfaceId` and checks that surface's declared identity landmarks in the initial target inspect, executes actions sequentially, and stops at the first failure. Recording then requires the destination's landmarks in the final inspect, even if source comparison is absent, unsupported, or mismatched. Neither check requires the complete target snapshot to remain identical: incidental focus or unrelated dynamic text may change unless explicitly constrained by a landmark. Committed proofs retain the declared route/source snapshot for dependent routes without mandatory source capture. Failed or interleaved actions cannot be omitted.
 
 ## Changes and retries
 
@@ -80,7 +85,7 @@ Both gateways default JSON inspect to `--depth 30` and preserve explicit depth a
 
 The tool aligns supported native UWP `ApplicationFrameWindow`/`CoreWindow` hosts and WinUI desktop content bridges before comparing every application descendant and the outer window's semantic properties. Recognized caption/input hosts and paired `Xaml_WindowedPopupClass` versus `PopupWindowSiteBridge`/`InputSiteWindowClass` shells can be normalized; logical popups, tooltip/menu content, order, and semantic state remain compared. A popup's `isOffscreen: true` never justifies removing its visible descendants. Extra controls, unpaired popups, unknown host shapes, or meaningful wrapper state prevent normalization and require a tool-support handoff. Raw captures and their hashes remain unchanged.
 
-Starting-state checks compare the recorded/current target observations without cross-platform host normalization, including observed native captions and popup descendants. An unchanged popup need not block navigation; changed or missing observed content still rejects the declared starting state.
+Starting-state checks validate the declared target landmarks, not complete recorded/current tree equality or cross-platform host normalization. Relevant selection, enabled state, or focus can be explicitly required; missing or hidden landmarks still reject the start. Complete tree comparison remains diagnostic only.
 
 Surface attestations, assessments, and the comparison index retain `comparisonDiagnostics`: kind, `repairOwner`, suggested review, evidence paths, raw locations, and expected/actual values. They do not create a machine repair frontier when target reachability is proved. Date-like text remains a mismatch, not an ignored dynamic value. Unsupported boundaries produce `human-validation-required`; independently observed tree differences retain `surface-mismatch`. These are diagnostic outcomes, not proof of an application defect or a reason to continue until framework trees match.
 

@@ -211,6 +211,7 @@ public static class RequiredStateContracts
             Slice = legacyNavigation ? null : state.Slice,
             Dependencies = legacyNavigation ? [] : [.. state.Dependencies],
             FeaturePaths = legacyNavigation ? [] : [.. state.FeaturePaths],
+            TargetIdentity = state.TargetIdentity.Select(element => element with { }).ToList(),
             Verification = !legacyNavigation || state.Verification is null
                 ? null
                 : JsonSerializer.Deserialize<StateVerificationContract>(
@@ -344,6 +345,7 @@ public static class RequiredStateContracts
             {
                 if (string.IsNullOrWhiteSpace(surface.ExclusionReason) ||
                     surface.Verification is not null ||
+                    surface.TargetIdentity is not { Count: 0 } ||
                     surface.Source.Status != "excluded" ||
                     surface.Target.Status != "excluded" ||
                     surface.Comparison.Status != "excluded")
@@ -353,6 +355,16 @@ public static class RequiredStateContracts
                 }
                 continue;
             }
+
+            if (surface.TargetIdentity is not { Count: > 0 } ||
+                surface.TargetIdentity.Any(element =>
+                    element is null || string.IsNullOrWhiteSpace(element.Type) ||
+                    string.IsNullOrWhiteSpace(element.AutomationId) && string.IsNullOrWhiteSpace(element.Name) ||
+                    element.AutomationId is not null && string.IsNullOrWhiteSpace(element.AutomationId) ||
+                    element.Name is not null && string.IsNullOrWhiteSpace(element.Name)) ||
+                surface.TargetIdentity.Distinct().Count() != surface.TargetIdentity.Count)
+                throw new InvalidDataException(
+                    $"Required surface {surface.Id} needs nonempty, distinct targetIdentity landmarks with a type and AutomationId or name. Declare destination-specific landmarks before sealing the inventory.");
 
             var navigation = surface.Verification;
             if (surface.Criticality != StateCriticality.Required)

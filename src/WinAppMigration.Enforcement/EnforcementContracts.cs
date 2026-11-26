@@ -59,6 +59,9 @@ public sealed class MigrationState
     [JsonPropertyName("navigation")]
     public StateVerificationContract? Verification { get; set; }
 
+    [JsonPropertyName("targetIdentity")]
+    public List<SurfaceIdentityElement> TargetIdentity { get; set; } = [];
+
     [JsonPropertyName("source")]
     public required StateObservation Source { get; set; }
 
@@ -169,6 +172,28 @@ public sealed class StateVerificationContract
 
     [JsonPropertyName("treeProbeIndex")]
     public int TreeProbeIndex { get; set; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record SurfaceIdentityElement
+{
+    [JsonPropertyName("type")]
+    public required string Type { get; init; }
+
+    [JsonPropertyName("automationId")]
+    public string? AutomationId { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("isEnabled")]
+    public bool? IsEnabled { get; init; }
+
+    [JsonPropertyName("isSelected")]
+    public bool? IsSelected { get; init; }
+
+    [JsonPropertyName("hasKeyboardFocus")]
+    public bool? HasKeyboardFocus { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

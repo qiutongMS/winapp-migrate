@@ -36,7 +36,7 @@ internal sealed record SurfaceTreeComparisonResult(
 internal static class SurfaceTreeComparison
 {
     // Bump when parsing, normalization, or comparison semantics change.
-    internal const string RulesIdentity = "semantic-uia:1";
+    internal const string RulesIdentity = "semantic-uia:2";
 
     private const int MaximumDifferences = 8;
     private const int MaximumValueCharacters = 256;
@@ -144,6 +144,64 @@ internal static class SurfaceTreeComparison
         {
             reason = exception.Message;
             return false;
+        }
+    }
+
+    internal static bool MatchesIdentity(
+        DirectoryInfo root,
+        string path,
+        IReadOnlyList<SurfaceIdentityElement> identity,
+        out string reason)
+    {
+        try
+        {
+            if (identity.Count == 0)
+                throw new InvalidDataException("No target surface identity landmarks were declared.");
+            using var document = JsonDocument.Parse(
+                File.ReadAllText(Resolve(root, path)), DocumentOptions);
+            var nodes = ReadWindows(document.RootElement, requireComplete: false)
+                .SelectMany(window => window.Roots)
+                .SelectMany(VisibleNodes)
+                .ToArray();
+            foreach (var landmark in identity)
+            {
+                var matches = nodes.Count(node =>
+                    Matches(node, "type", landmark.Type) &&
+                    (landmark.AutomationId is null || Matches(node, "automationId", landmark.AutomationId)) &&
+                    (landmark.Name is null || Matches(node, "name", landmark.Name)) &&
+                    MatchesState(node, "isEnabled", landmark.IsEnabled) &&
+                    MatchesState(node, "isSelected", landmark.IsSelected) &&
+                    MatchesState(node, "hasKeyboardFocus", landmark.HasKeyboardFocus));
+                if (matches != 1)
+                {
+                    reason = $"Target identity landmark '{landmark.Type}:{landmark.AutomationId ?? landmark.Name}' has {matches} visible matches for its declared properties; exactly one is required.";
+                    return false;
+                }
+            }
+            reason = "The declared target surface identity landmarks are uniquely visible.";
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            reason = $"Target surface identity could not be verified: {exception.Message}";
+            return false;
+        }
+
+        static bool Matches(SemanticNode node, string property, string expected) =>
+            node.Properties.TryGetValue(property, out var actual) &&
+            string.Equals(actual, expected, StringComparison.Ordinal);
+
+        static bool MatchesState(SemanticNode node, string property, bool? expected) =>
+            expected is null || Matches(node, property, expected.Value ? "true" : "false");
+
+        static IEnumerable<SemanticNode> VisibleNodes(SemanticNode node)
+        {
+            if (Matches(node, "isOffscreen", "false"))
+                yield return node;
+            foreach (var child in node.Children)
+                foreach (var descendant in VisibleNodes(child))
+                    yield return descendant;
         }
     }
 

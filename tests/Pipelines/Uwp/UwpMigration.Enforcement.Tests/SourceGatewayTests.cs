@@ -701,6 +701,7 @@ public sealed partial class SourceGatewayTests
                     new()
                     {
                         Id = "source-state", Kind = "window", SourceDefinitions = ["MainPage.xaml"],
+                        TargetIdentity = [new() { Type = "Window", Name = "Ready" }],
                         Verification = new StateVerificationContract { TreeProbeIndex = 0 },
                         Source = new StateObservation { Status = "not-run" },
                         Target = new StateObservation { Status = "not-run" },
@@ -722,6 +723,7 @@ public sealed partial class SourceGatewayTests
                     {
                         Id = "store",
                         SourceDefinitions = ["StorePage.xaml"],
+                        TargetIdentity = [new() { Type = "Window", Name = "Store" }],
                         Source = new StateObservation { Status = "not-run" },
                         Target = new StateObservation { Status = "not-run" },
                         Comparison = new StateComparison { Status = "not-run" }

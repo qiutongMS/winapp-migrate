@@ -36,6 +36,7 @@ public sealed partial class RunnerAcceptanceTests
         plan.States.Add(new MigrationState
         {
             Id = "purchase", Kind = "user-control", SourceDefinitions = ["PurchaseView.xaml"],
+            TargetIdentity = [new() { Type = "Pane", AutomationId = "purchase" }],
             Verification = new StateVerificationContract { TreeProbeIndex = 0 },
             Source = new StateObservation { Status = "not-run" },
             Target = new StateObservation { Status = "not-run" },
@@ -191,6 +192,7 @@ public sealed partial class RunnerAcceptanceTests
             Id = "settings-dialog",
             Kind = "dialog",
             SourceDefinitions = ["SettingsDialog.xaml"],
+            TargetIdentity = [new() { Type = "Window", Name = "Settings" }],
             Verification = new StateVerificationContract
             {
                 TreeProbeIndex = 0

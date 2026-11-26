@@ -14,6 +14,29 @@
     }
   },
   "$defs": {
+    "identityElement": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "automationId": { "type": ["string", "null"], "minLength": 1 },
+        "name": { "type": ["string", "null"], "minLength": 1 },
+        "isEnabled": { "type": ["boolean", "null"] },
+        "isSelected": { "type": ["boolean", "null"] },
+        "hasKeyboardFocus": { "type": ["boolean", "null"] }
+      },
+      "anyOf": [
+        {
+          "required": ["automationId"],
+          "properties": { "automationId": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "required": ["name"],
+          "properties": { "name": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
     "navigationAction": {
       "type": "object",
       "required": ["id", "probeIndex", "command"],
@@ -75,6 +98,7 @@
         "sourceDefinitions",
         "criticality",
         "navigation",
+        "targetIdentity",
         "source",
         "target",
         "comparison"
@@ -108,6 +132,11 @@
             { "type": "null" }
           ]
         },
+        "targetIdentity": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identityElement" }
+        },
         "source": { "$ref": "#/$defs/observation" },
         "target": { "$ref": "#/$defs/observation" },
         "comparison": { "$ref": "#/$defs/comparison" }
@@ -122,6 +151,7 @@
             "properties": {
               "exclusionReason": { "type": "string", "minLength": 1 },
               "navigation": { "type": "null" },
+              "targetIdentity": { "maxItems": 0 },
               "source": {
                 "properties": { "status": { "const": "excluded" } }
               },
@@ -132,6 +162,9 @@
                 "properties": { "status": { "const": "excluded" } }
               }
             }
+          },
+          "else": {
+            "properties": { "targetIdentity": { "minItems": 1 } }
           }
         }
       ]

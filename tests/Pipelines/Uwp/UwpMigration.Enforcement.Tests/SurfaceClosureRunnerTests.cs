@@ -11,7 +11,7 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class RunnerAcceptanceTests
 {
     private const string ClosureTree =
-        """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""";
+        """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false}]}]}""";
     private const string ClosurePlan =
         ".migration-evidence/state-plan.json";
 
@@ -81,7 +81,7 @@ public sealed partial class RunnerAcceptanceTests
         using var fixture = await RunnerFixture.CreateAsync();
         var tree = unsupportedHost
             ? """
-              {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","className":"WinUIDesktopWin32WindowClass","children":[
+              {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false,"className":"WinUIDesktopWin32WindowClass","children":[
                 {"type":"Pane","className":"Microsoft.UI.Content.DesktopChildSiteBridge","children":[
                   {"type":"Pane","className":"InputSiteWindowClass","children":[{"type":"Text","name":"Ready"}]}]}
               ]}]}]}
@@ -155,7 +155,7 @@ public sealed partial class RunnerAcceptanceTests
         await new UwpEnforcementRunner(new FakeProcessRunner(ReplaySuccess()))
             .RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
         const string unsupported = """
-            {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready",
+            {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false,
             "className":"WinUIDesktopWin32WindowClass","children":[{"type":"Pane","className":"UnknownNativeHost",
             "children":[{"type":"Text","name":"Ready"}]}]}]}]}
             """;
@@ -221,6 +221,8 @@ public sealed partial class RunnerAcceptanceTests
     public async Task SurfaceClosure_NestedUnsupportedComparisonHasConsistentHandoffsAndRetryPolicy(bool applicationDifference)
     {
         var (source, target) = SurfaceTreeComparisonTests.NavigationViewTrees();
+        source["windows"]![0]!["elements"]![0]!["automationId"] = "main";
+        target["windows"]![0]!["elements"]![0]!["automationId"] = "main";
         target["windows"]![0]!["elements"]![0]!["children"]![0]!["children"]![0]!["children"]![0]!["children"]![1]!["automationId"] =
             "UnrecognizedScroll";
         if (applicationDifference)
@@ -262,6 +264,7 @@ public sealed partial class RunnerAcceptanceTests
             {
                 Id = $"state-{index}",
                 SourceDefinitions = [definition],
+                TargetIdentity = [new() { Type = "Window", AutomationId = "main" }],
                 Verification = new StateVerificationContract { TreeProbeIndex = 0 },
                 Source = new StateObservation { Status = "not-run" },
                 Target = new StateObservation { Status = "not-run" },
@@ -448,7 +451,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(SurfaceVerificationResult.Pending, pending.StateVerifications.Single().Result);
         var probe = await CaptureClosureProbeAsync(fixture,
             new EnforcementProcessResult(0,
-                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Changed"}]}]}""", ""));
+                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Changed","isOffscreen":false}]}]}""", ""));
         var failed = await UwpEnforcementRunner.RecordSurfaceAsync(
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         Assert.AreEqual(SurfaceVerificationResult.Mismatch, failed.StateVerifications.Single().Result);
@@ -484,7 +487,7 @@ public sealed partial class RunnerAcceptanceTests
         else
         {
             target = """
-                {"windows":[{"elements":[{"type":"Window","name":"Ready","className":"WinUIDesktopWin32WindowClass","children":[
+                {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false,"className":"WinUIDesktopWin32WindowClass","children":[
                   {"type":"Pane","className":"Microsoft.UI.Content.DesktopChildSiteBridge","children":[
                     {"type":"Pane","className":"InputSiteWindowClass","children":[{"type":"Text","name":"Ready"}]}]}
                 ]}]}]}

@@ -186,11 +186,13 @@ public static class SourceNavigationContracts
             proof.Result == SurfaceVerificationResult.Mismatch ? "failed" : "unverified";
         if (!StateClosureProtocol.VerifyRecordedLevel(root, start, replay, now, out var verified, out var reason, windowOwnerResolver) ||
             !verified.CheckIds.Contains(SurfaceCheckIds.TargetReachable) ||
-            proof.RecordedAt > initial.StartedAt ||
-            !SurfaceTreeComparison.Compare(root, verified.TargetTreeEvidence!, initial.StandardOutputPath,
-                requireComplete: false).Matches)
+            proof.RecordedAt > initial.StartedAt)
             throw new InvalidDataException(
-                $"Navigation start surface {startId} is not current and reachable, or its target UI state changed. Recover that state before retrying. {reason}");
+                $"Navigation start surface {startId} is not current and reachable. Recover that state before retrying. {reason}");
+        if (!SurfaceTreeComparison.MatchesIdentity(root, initial.StandardOutputPath,
+                start.TargetIdentity, out var identityReason))
+            throw new InvalidDataException(
+                $"Navigation start surface {startId} is missing its declared identity or required state. {identityReason} Recover that state before retrying.");
     }
 
     internal static void ValidateTargetTrace(

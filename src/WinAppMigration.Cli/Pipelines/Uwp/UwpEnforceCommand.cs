@@ -76,7 +76,7 @@ internal sealed class UwpEnforceCommand : Command
     private sealed class NavigateCommand : Command
     {
         internal NavigateCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
-            : base("navigate", "Verify the declared target start, execute its route fail-fast, and record authenticated reachability with optional UIA diagnostics.")
+            : base("navigate", "Verify the declared target start identity, execute its route fail-fast, and collect destination observations for authenticated reachability.")
         {
             var target = TargetArgument();
             var surface = new Option<string>("--surface") { Required = true };
@@ -386,7 +386,7 @@ internal sealed class UwpEnforceCommand : Command
             IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "record-surface",
-                "Derive target reachability from authenticated navigation and supported target observations, retaining optional UIA comparison diagnostics.")
+                "Derive target reachability from authenticated navigation and visible destination identity landmarks, retaining optional UIA comparison diagnostics.")
         {
             var target = TargetArgument();
             var state = new Option<string>("--surface")

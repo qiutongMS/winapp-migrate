@@ -182,6 +182,7 @@ public static class StateClosureProtocol
             Dependencies = state.Dependencies,
             Criticality = state.Criticality,
             FeaturePaths = state.FeaturePaths,
+            TargetIdentity = state.TargetIdentity,
             Verification = state.Verification,
             Source = state.Source,
             Target = new StateObservation { Status = "not-run" },
@@ -516,6 +517,12 @@ public static class StateClosureProtocol
             navigation.Count ==
                 state.Verification.RequiredActions.Count &&
             issues.Count == 0;
+        if (reachable && !SurfaceTreeComparison.MatchesIdentity(
+                root, targetTree!, state.TargetIdentity, out var identityReason))
+        {
+            issues.Add($"Surface {state.Id} destination was not identified. {identityReason}");
+            reachable = false;
+        }
         var sourceVerified = !RequiredStateContracts.UsesSourceNavigation(root) ||
             SourceNavigationContracts.Require(root, state) is not null;
         var comparison = targetTree is null

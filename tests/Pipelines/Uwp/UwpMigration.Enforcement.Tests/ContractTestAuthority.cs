@@ -26,6 +26,8 @@ internal static class ContractTestAuthority
         {
             if (state.SourceDefinitions.Count == 0)
                 state.SourceDefinitions.Add("MainPage.xaml");
+            if (state.Disposition == "required" && state.TargetIdentity.Count == 0)
+                state.TargetIdentity = [new() { Type = "Window", AutomationId = "main" }];
             state.Verification ??= new StateVerificationContract
             {
                 TreeProbeIndex = 0

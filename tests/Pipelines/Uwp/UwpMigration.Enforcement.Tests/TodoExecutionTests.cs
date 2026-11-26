@@ -774,6 +774,7 @@ public sealed partial class RunnerAcceptanceTests
         plan.States.Add(new MigrationState
         {
             Id = "other", Kind = "page", SourceDefinitions = ["Other.xaml"],
+            TargetIdentity = [new() { Type = "Window", Name = "Other" }],
             Verification = new StateVerificationContract { TreeProbeIndex = 0 },
             Source = new StateObservation { Status = "not-run" },
             Target = new StateObservation { Status = "not-run" },

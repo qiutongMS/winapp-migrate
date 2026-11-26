@@ -18,17 +18,19 @@ public sealed partial class RunnerAcceptanceTests
     public async Task SourceNavigation_VerifiesCurrentStartingStateWithoutRequiringParentParity(
         bool wrongStart, bool replayBetween, bool captureSource)
     {
-        const string sourceTree = """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Source"}]}]}""";
-        const string targetTree = """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Migrated"}]}]}""";
-        const string storeTree = """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Store"}]}]}""";
+        const string sourceTree = """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Source","isOffscreen":false}]}]}""";
+        const string targetTree = """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Migrated","isOffscreen":false}]}]}""";
+        const string storeTree = """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Store","isOffscreen":false}]}]}""";
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
         var plan = await NewRequiredPlanAsync(fixture);
+        plan.States[0].TargetIdentity = [new() { Type = "Window", Name = "Migrated" }];
         await File.WriteAllTextAsync(fixture.Path("StorePage.xaml"),
             """<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />""");
         var store = new MigrationState
         {
             Id = "store",
             SourceDefinitions = ["StorePage.xaml"],
+            TargetIdentity = [new() { Type = "Window", Name = "Store" }],
             Source = new StateObservation { Status = "not-run" },
             Target = new StateObservation { Status = "not-run" },
             Comparison = new StateComparison { Status = "not-run" }
@@ -153,11 +155,12 @@ public sealed partial class RunnerAcceptanceTests
         using var fixture = await RunnerFixture.CreateAsync(unstarted: true);
         var plan = await NewRequiredPlanAsync(fixture);
         plan.States[0].Verification = new StateVerificationContract { TreeProbeIndex = 0 };
+        plan.States[0].TargetIdentity = [new() { Type = "Window", Name = "Ready" }];
         await EnforcementStore.WriteAtomicAsync(fixture.Root, ClosurePlan, plan);
         await UwpEnforcementRunner.SealContractAsync(fixture.Root);
         await fixture.RunTargetAsync();
         var probe = await ContractProbeAsync(fixture, ["inspect", "--json", "-w", "42"],
-            """{"windows":[{"elements":[{"type":"Window","name":"Ready","hasMoreChildren":true}]}]}""");
+            """{"windows":[{"elements":[{"type":"Window","name":"Ready","isOffscreen":false,"hasMoreChildren":true}]}]}""");
         var recorded = await UwpEnforcementRunner.RecordSurfaceAsync(fixture.Root,
             TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         var finalize = new UwpEnforceCommand(new FakeProcessRunner(), TestWindowOwnerResolver.Shared)

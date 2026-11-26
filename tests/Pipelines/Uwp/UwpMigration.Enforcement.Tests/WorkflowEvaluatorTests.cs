@@ -265,6 +265,7 @@ public sealed partial class EnforcementEvaluatorTests
         Id = id,
         Kind = "page",
         SourceDefinitions = [$"{id}.xaml"],
+        TargetIdentity = [new() { Type = "Window", AutomationId = "main" }],
         Verification = new StateVerificationContract { TreeProbeIndex = 0 },
         Source = new StateObservation
         {

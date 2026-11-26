@@ -1327,7 +1327,7 @@ public sealed partial class RunnerAcceptanceTests
                 await EnforcementStore.WriteTextAtomicAsync(
                     root,
                     ".migration-evidence/states/state-1/source-ui.json",
-                    """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
+                    """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false}]}]}""");
             }
             await File.WriteAllTextAsync(
                 System.IO.Path.Combine(root.FullName, "migration-report.json"),
@@ -1346,6 +1346,7 @@ public sealed partial class RunnerAcceptanceTests
                             Id = "state-1",
                             Kind = "page",
                             SourceDefinitions = ["MainPage.xaml"],
+                            TargetIdentity = [new() { Type = "Window", AutomationId = "main" }],
                             Verification = new StateVerificationContract
                             {
                                 TreeProbeIndex = 0
@@ -1432,7 +1433,7 @@ public sealed partial class RunnerAcceptanceTests
                 """{"success":true,"message":"The action completed."}""");
             await File.WriteAllTextAsync(
                 Path(".migration-evidence/states/state-1/stdout.log"),
-                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
+                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false}]}]}""");
         }
 
         internal async Task<MigrationReport> LoadReportAsync() =>
