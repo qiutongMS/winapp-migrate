@@ -26,7 +26,7 @@ public sealed partial class SourceGatewayTests
         var path = fixture.Resolve(SourceNavigationContracts.ContractPath("source-state"));
         var original = await File.ReadAllTextAsync(path);
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Target, TestWindowOwnerResolver.Shared);
-        Assert.AreEqual("passed", snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.IsFalse(snapshot.Gates.Any(gate => gate.Id == "source-oracle"));
 
         var supplemental = await gateway.CaptureAsync(fixture.Target, "winapp", ["inspect", "--json", "-w", "20"]);
 

@@ -76,7 +76,7 @@ internal sealed class UwpEnforceCommand : Command
     private sealed class NavigateCommand : Command
     {
         internal NavigateCommand(IEnforcementProcessRunner processRunner, IWindowOwnerResolver windowOwnerResolver)
-            : base("navigate", "Inspect and verify the declared target start state, execute the source-verified route fail-fast, and record honest surface evidence.")
+            : base("navigate", "Verify the declared target start identity, execute its route fail-fast, and collect destination observations for authenticated reachability.")
         {
             var target = TargetArgument();
             var surface = new Option<string>("--surface") { Required = true };
@@ -186,7 +186,7 @@ internal sealed class UwpEnforceCommand : Command
             var full = FullOutputOption();
             var strict = new Option<bool>("--strict")
             {
-                Description = "Return a nonzero exit code unless all required UI Surface Parity checks pass. Business behavior remains outside this scope."
+                Description = "Return a nonzero exit code unless all required machine project, inventory, and target reachability checks pass. UIA and business behavior remain diagnostic/human scope."
             };
             Arguments.Add(target);
             Options.Add(full);
@@ -386,7 +386,7 @@ internal sealed class UwpEnforceCommand : Command
             IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "record-surface",
-                "Derive UI Surface Parity from authenticated navigation probes and one complete semantic UIA tree inspection.")
+                "Derive target reachability from authenticated navigation and visible destination identity landmarks, retaining optional UIA comparison diagnostics.")
         {
             var target = TargetArgument();
             var state = new Option<string>("--surface")
@@ -429,13 +429,13 @@ internal sealed class UwpEnforceCommand : Command
         internal SynchronizeCommand(IWindowOwnerResolver windowOwnerResolver)
             : base(
                 "finalize",
-                "Synchronize migration-report validation summaries from canonical closure evidence and reassess final parity.")
+                "Synchronize honest report summaries and finalize current project, inventory, and target reachability; UIA parity is diagnostic only.")
         {
             var target = TargetArgument();
             var full = FullOutputOption();
             var strict = new Option<bool>("--strict")
             {
-                Description = "Return a nonzero exit code unless migration closure is fully verified."
+                Description = "Return a nonzero exit code unless all machine project, inventory, and target reachability gates pass."
             };
             Arguments.Add(target);
             Options.Add(full);

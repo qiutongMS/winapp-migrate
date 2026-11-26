@@ -18,9 +18,7 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, source.Stage);
         Assert.AreEqual("mechanical-stabilization", source.Phase);
         Assert.AreEqual("mechanical", source.Frontier?.Kind);
-        var sourceGate = source.Gates.Single(gate => gate.Id == "source-oracle");
-        Assert.AreEqual("blocked", sourceGate.Status);
-        StringAssert.Contains(sourceGate.Reason, "strict closure");
+        Assert.IsFalse(source.Gates.Any(gate => gate.Id == "source-oracle"));
 
         input.StatePlan.States[0].Source.Status = "captured";
         var mechanical = EnforcementEvaluator.Evaluate(input with { Progress = source.Workflow });
@@ -267,6 +265,7 @@ public sealed partial class EnforcementEvaluatorTests
         Id = id,
         Kind = "page",
         SourceDefinitions = [$"{id}.xaml"],
+        TargetIdentity = [new() { Type = "Window", AutomationId = "main" }],
         Verification = new StateVerificationContract { TreeProbeIndex = 0 },
         Source = new StateObservation
         {

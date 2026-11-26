@@ -26,7 +26,9 @@ public class ProcessRunnerTests : BaseCommandTests
             "$child = Start-Process -FilePath $PSHOME\\powershell.exe " +
             "-ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60' " +
             "-PassThru; " +
-            $"Set-Content -LiteralPath '{childPidPath.Replace("'", "''")}' -Value $child.Id; " +
+            $"$pidPath = '{childPidPath.Replace("'", "''")}'; " +
+            "Set-Content -LiteralPath ($pidPath + '.tmp') -Value $child.Id; " +
+            "Move-Item -LiteralPath ($pidPath + '.tmp') -Destination $pidPath; " +
             "while ($true) { [Console]::Out.WriteLine('stdout'); [Console]::Error.WriteLine('stderr'); Start-Sleep -Milliseconds 10 }";
         var runner = new ProcessRunner(windowsPowerShell);
         using var cancellation = new CancellationTokenSource();
@@ -35,16 +37,30 @@ public class ProcessRunnerTests : BaseCommandTests
             ["-NoProfile", "-NonInteractive", "-Command", childCommand],
             cancellation.Token);
 
-        var childPid = await WaitForChildPidAsync(
-            childPidPath,
-            TestContext.CancellationToken);
-        cancellation.Cancel();
+        try
+        {
+            var childPid = await WaitForChildPidAsync(
+                childPidPath,
+                TestContext.CancellationToken);
+            cancellation.Cancel();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
-            async () => await run);
-        await WaitForProcessExitAsync(
-            childPid,
-            TestContext.CancellationToken);
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await run);
+            await WaitForProcessExitAsync(
+                childPid,
+                TestContext.CancellationToken);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+            try
+            {
+                await run;
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+            }
+        }
     }
 
     private static async Task<int> WaitForChildPidAsync(

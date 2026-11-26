@@ -112,10 +112,16 @@ public static class SemanticSlicePlanner
             if (state.Source.Status != "captured" ||
                 !EvidenceExists(root, state.Source.Evidence, out _))
             {
-                reason = $"Required surface {state.Id} needs captured source-oracle evidence before parity can be verified and strict closure can pass.";
+                reason = $"Surface {state.Id} needs captured source-oracle evidence before diagnostic parity can be verified.";
                 return false;
             }
-            try { SourceNavigationContracts.Require(root, state); }
+            try
+            {
+                var navigation = SourceNavigationContracts.Require(root, state);
+                if (RequiredStateContracts.UsesSourceNavigation(root) &&
+                    navigation is null)
+                    throw new InvalidDataException($"Surface {state.Id} source comparison has no authenticated source-navigation binding.");
+            }
             catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
             {
                 reason = exception.Message;
@@ -137,23 +143,22 @@ public static class SemanticSlicePlanner
             {
                 var states = group.ToArray();
                 var verifications = states.Select(state => assessments[state.Id]).ToArray();
-                var reasons = states.Select((state, index) => StateReason(root, state, freshReplay, verifications[index])).ToArray();
+                var reasons = states.Select((state, index) => StateReason(state, freshReplay, verifications[index])).ToArray();
                 return new SemanticSlice(
                     group.Key,
                     states[0].Criticality,
                     states,
                     states.SelectMany(state => state.Dependencies).Distinct(StringComparer.Ordinal).ToArray(),
                     reasons.All(reason => reason is null),
-                    states.Any(state => state.Source.Status == "blocked" ||
-                        state.Target.Status == "blocked" || state.Comparison.Status == "blocked"),
-                    reasons.FirstOrDefault(reason => reason is not null) ?? $"Slice {group.Key} is verified.")
+                    states.Any(state => state.Target.Status == "blocked"),
+                    reasons.FirstOrDefault(reason => reason is not null) ?? $"Slice {group.Key} is reachable.")
                 {
                     ToolBlocked = verifications.Length > 0 && verifications.All(WorkflowCompletion.IsToolBlocked),
                     InputReviewRequired = verifications.Any(WorkflowCompletion.RequiresInputReview) &&
                         verifications.All(verification => WorkflowCompletion.RequiresInputReview(verification) ||
-                            WorkflowCompletion.IsToolBlocked(verification) || verification.Result == SurfaceVerificationResult.Verified),
+                            WorkflowCompletion.IsToolBlocked(verification) || verification.IsReachable),
                     Resolved = reasons.All(reason => reason is null) ||
-                        states.All(state => StateClosureProtocol.HasHistoricalParity(root, state))
+                        states.All(state => StateClosureProtocol.HasHistoricalReachability(root, state))
                 };
             }).ToArray();
     }
@@ -168,19 +173,13 @@ public static class SemanticSlicePlanner
                 candidate => candidate.Id == dependency && candidate.Resolved)));
 
     private static string? StateReason(
-        DirectoryInfo root, MigrationState state, ReplayAttestation? replay, StateVerificationSummary verification)
+        MigrationState state, ReplayAttestation? replay, StateVerificationSummary verification)
     {
-        if (state.Source.Status != "captured")
-            return $"Surface {state.Id} source status {state.Source.Status} is not captured.";
-        if (!EvidenceExists(root, state.Source.Evidence, out var sourceReason))
-            return $"Surface {state.Id} source: {sourceReason}";
         if (state.Target.Status != "passed")
             return $"Surface {state.Id} target status {state.Target.Status} is not closed.";
-        if (state.Comparison.Status != "verified")
-            return $"Surface {state.Id} comparison status {state.Comparison.Status} is not closed; use verified, blocked, unverified, or failed.";
         if (replay is null)
             return $"Surface {state.Id} requires a fresh canonical replay.";
-        return verification.Result == SurfaceVerificationResult.Verified ? null : verification.Reason;
+        return verification.IsReachable ? null : verification.Reason;
     }
 
     private static bool EvidenceExists(

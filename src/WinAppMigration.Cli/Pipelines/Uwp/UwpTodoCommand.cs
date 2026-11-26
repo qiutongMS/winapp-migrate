@@ -78,13 +78,8 @@ internal sealed class UwpTodoCommand : Command
             SetAction((result, token) => InvokeGuardedAsync(async () =>
             {
                 var targetValue = result.GetValue(target)!;
-                var closure = await UwpEnforcementRunner.AssessAsync(
+                var (closure, todos) = await UwpEnforcementRunner.StatusAsync(
                     targetValue,
-                    windowOwnerResolver,
-                    token);
-                var todos = await TodoExecutionService.StatusAsync(
-                    targetValue,
-                    closure.TargetFingerprint,
                     windowOwnerResolver,
                     token);
                 Write(new

@@ -11,7 +11,7 @@ namespace UwpMigration.Enforcement.Tests;
 public sealed partial class RunnerAcceptanceTests
 {
     private const string ClosureTree =
-        """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""";
+        """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false}]}]}""";
     private const string ClosurePlan =
         ".migration-evidence/state-plan.json";
 
@@ -76,12 +76,12 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task SurfaceClosure_FinalizesAuthenticatedFailureWithoutDeclaringParity(bool unsupportedHost)
+    public async Task SurfaceClosure_FinalizesReachabilityWithoutDeclaringDiagnosticParity(bool unsupportedHost)
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var tree = unsupportedHost
             ? """
-              {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","className":"WinUIDesktopWin32WindowClass","children":[
+              {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false,"className":"WinUIDesktopWin32WindowClass","children":[
                 {"type":"Pane","className":"Microsoft.UI.Content.DesktopChildSiteBridge","children":[
                   {"type":"Pane","className":"InputSiteWindowClass","children":[{"type":"Text","name":"Ready"}]}]}
               ]}]}]}
@@ -91,13 +91,15 @@ public sealed partial class RunnerAcceptanceTests
         await UwpEnforcementRunner.RecordSurfaceAsync(
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
 
-        var synchronized = await UwpEnforcementRunner.SynchronizeReportAsync(
-            fixture.Root, TestWindowOwnerResolver.Shared);
+        var strict = new UwpEnforceCommand(new FakeProcessRunner(), TestWindowOwnerResolver.Shared)
+            .Parse(["finalize", fixture.Root.FullName, "--strict"]);
+        Assert.AreEqual(0, await strict.InvokeAsync(strict.InvocationConfiguration, CancellationToken.None));
+        var synchronized = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
-        Assert.AreEqual("blocked", synchronized.Status);
-        Assert.AreEqual(unsupportedHost ? "tool-blocked" : "continue", synchronized.Disposition?.Kind);
+        Assert.AreEqual("passed", synchronized.Status);
+        Assert.AreEqual("complete", synchronized.Disposition?.Kind);
         Assert.AreEqual("passed", synchronized.Gates.Single(gate => gate.Id == "report-sync").Status);
-        Assert.AreEqual("blocked", synchronized.Gates.Single(gate => gate.Id == "state-closure").Status);
+        Assert.AreEqual("passed", synchronized.Gates.Single(gate => gate.Id == "state-closure").Status);
         Assert.AreEqual("passed", synchronized.Gates.Single(gate => gate.Id == "report-closure").Status);
         Assert.AreEqual(
             unsupportedHost ? SurfaceVerificationResult.HumanValidationRequired : SurfaceVerificationResult.Mismatch,
@@ -108,9 +110,6 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(unsupportedHost ? "unverified" : "failed", report.Validation.ParityStatus);
         Assert.AreEqual(tree, await File.ReadAllTextAsync(fixture.Path(probe.StandardOutputPath)));
 
-        var strict = new UwpEnforceCommand(new FakeProcessRunner(), TestWindowOwnerResolver.Shared)
-            .Parse(["finalize", fixture.Root.FullName, "--strict"]);
-        Assert.AreNotEqual(0, await strict.InvokeAsync(strict.InvocationConfiguration, CancellationToken.None));
     }
 
     [TestMethod]
@@ -156,7 +155,7 @@ public sealed partial class RunnerAcceptanceTests
         await new UwpEnforcementRunner(new FakeProcessRunner(ReplaySuccess()))
             .RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
         const string unsupported = """
-            {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready",
+            {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false,
             "className":"WinUIDesktopWin32WindowClass","children":[{"type":"Pane","className":"UnknownNativeHost",
             "children":[{"type":"Text","name":"Ready"}]}]}]}]}
             """;
@@ -167,7 +166,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("passed", synchronized.Gates.Single(gate => gate.Id == "report-sync").Status);
         Assert.AreEqual("needs-work", synchronized.Completion!.Outcome);
         CollectionAssert.AreEquivalent(new[] { "state-3", "state-4" }, synchronized.Completion.ActionableSurfaceIds.ToArray());
-        CollectionAssert.AreEqual(new[] { "state-2" }, synchronized.Completion.ToolBlockedSurfaceIds.ToArray());
+        Assert.IsEmpty(synchronized.Completion.ToolBlockedSurfaceIds);
         var report = await fixture.LoadReportAsync();
         Assert.AreEqual("partial", report.Validation.ParityStatus);
         CollectionAssert.AreEqual(new[] { "passed", "passed", "unverified", "not-run" },
@@ -222,6 +221,8 @@ public sealed partial class RunnerAcceptanceTests
     public async Task SurfaceClosure_NestedUnsupportedComparisonHasConsistentHandoffsAndRetryPolicy(bool applicationDifference)
     {
         var (source, target) = SurfaceTreeComparisonTests.NavigationViewTrees();
+        source["windows"]![0]!["elements"]![0]!["automationId"] = "main";
+        target["windows"]![0]!["elements"]![0]!["automationId"] = "main";
         target["windows"]![0]!["elements"]![0]!["children"]![0]!["children"]![0]!["children"]![0]!["children"]![1]!["automationId"] =
             "UnrecognizedScroll";
         if (applicationDifference)
@@ -233,13 +234,15 @@ public sealed partial class RunnerAcceptanceTests
             recorded.StateVerifications.Single().Result);
         Assert.IsTrue(recorded.HumanValidationItems.Any(item => item.StateId == "state-1"));
         var finalized = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        Assert.AreEqual(applicationDifference ? "continue" : "tool-blocked", finalized.Disposition?.Kind);
-        Assert.IsFalse(finalized.Disposition!.Terminal);
-        Assert.AreEqual(applicationDifference, finalized.Disposition.Retryable);
+        Assert.AreEqual("complete", finalized.Disposition?.Kind);
+        Assert.IsTrue(finalized.Disposition!.Terminal);
+        Assert.IsFalse(finalized.Disposition.Retryable);
         if (!applicationDifference)
         {
             var process = new FakeProcessRunner();
-            await new UwpEnforcementRunner(process).RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
+            var complete = await new UwpEnforcementRunner(process)
+                .RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
+            Assert.AreEqual("complete", complete.Disposition!.Kind);
             Assert.AreEqual(0, process.CallCount);
             await File.AppendAllTextAsync(fixture.Path("MainPage.xaml"), "\n");
             var reopened = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
@@ -261,6 +264,7 @@ public sealed partial class RunnerAcceptanceTests
             {
                 Id = $"state-{index}",
                 SourceDefinitions = [definition],
+                TargetIdentity = [new() { Type = "Window", AutomationId = "main" }],
                 Verification = new StateVerificationContract { TreeProbeIndex = 0 },
                 Source = new StateObservation { Status = "not-run" },
                 Target = new StateObservation { Status = "not-run" },
@@ -447,17 +451,14 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(SurfaceVerificationResult.Pending, pending.StateVerifications.Single().Result);
         var probe = await CaptureClosureProbeAsync(fixture,
             new EnforcementProcessResult(0,
-                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Changed"}]}]}""", ""));
+                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Changed","isOffscreen":false}]}]}""", ""));
         var failed = await UwpEnforcementRunner.RecordSurfaceAsync(
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
         Assert.AreEqual(SurfaceVerificationResult.Mismatch, failed.StateVerifications.Single().Result);
-        Assert.AreEqual("blocked", failed.Gates.Single(gate => gate.Id == "state-closure").Status);
-        Assert.AreEqual("application", failed.Frontier!.RepairOwner);
-        Assert.AreEqual("name", failed.Frontier.ComparisonDiagnostics!.Single().Property);
-        StringAssert.Contains(failed.Frontier.SuggestedAction!, "restore the target");
-        StringAssert.Contains(failed.Frontier.Reason, "Changed");
-        Assert.AreEqual(failed.StateVerifications.Single().ComparisonDiagnostics!.Single(),
-            failed.Frontier.ComparisonDiagnostics!.Single());
+        Assert.AreEqual("passed", failed.Gates.Single(gate => gate.Id == "state-closure").Status);
+        Assert.IsNull(failed.Frontier?.RepairOwner);
+        Assert.AreEqual("name", failed.StateVerifications.Single().ComparisonDiagnostics!.Single().Property);
+        Assert.IsTrue(failed.HumanValidationItems.Any(item => item.StateId == "state-1"));
 
         var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         var proofPath = plan.States.Single().Target.Attestation!;
@@ -486,7 +487,7 @@ public sealed partial class RunnerAcceptanceTests
         else
         {
             target = """
-                {"windows":[{"elements":[{"type":"Window","name":"Ready","className":"WinUIDesktopWin32WindowClass","children":[
+                {"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false,"className":"WinUIDesktopWin32WindowClass","children":[
                   {"type":"Pane","className":"Microsoft.UI.Content.DesktopChildSiteBridge","children":[
                     {"type":"Pane","className":"InputSiteWindowClass","children":[{"type":"Text","name":"Ready"}]}]}
                 ]}]}]}
@@ -498,10 +499,12 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
 
         Assert.AreEqual(expectedResult, snapshot.StateVerifications.Single().Result);
-        Assert.AreEqual(owner, snapshot.Frontier!.RepairOwner);
+        Assert.IsNull(snapshot.Frontier?.RepairOwner);
+        var diagnostic = snapshot.StateVerifications.Single().ComparisonDiagnostics!.Single();
+        Assert.AreEqual(owner, diagnostic.RepairOwner);
         var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         Assert.AreEqual(plan.States.Single().Source.TreeEvidence,
-            snapshot.Frontier.ComparisonDiagnostics!.Single().SourceEvidence);
+            diagnostic.SourceEvidence);
         var handoff = snapshot.HumanValidationItems.Single(item => item.StateId == "state-1");
         if (problem == "unsupported-host")
         {
@@ -509,13 +512,13 @@ public sealed partial class RunnerAcceptanceTests
         }
         else
         {
-            CollectionAssert.AreEqual(new[] { "state-1" }, snapshot.Completion!.InputReviewSurfaceIds.ToArray());
+            Assert.IsEmpty(snapshot.Completion!.InputReviewSurfaceIds);
             Assert.IsTrue(handoff.Actions.Any(action => action.Contains("comparable inputs", StringComparison.Ordinal)));
-            StringAssert.Contains(snapshot.Frontier.SuggestedAction!, "No text was ignored");
+            StringAssert.Contains(diagnostic.SuggestedAction, "No text was ignored");
         }
         var html = await File.ReadAllTextAsync(fixture.Path(".migration-evidence/comparison/index.html"));
         StringAssert.Contains(html, "Comparison diagnostics");
-        StringAssert.Contains(html, snapshot.Frontier.ComparisonDiagnostics!.Single().Kind);
+        StringAssert.Contains(html, diagnostic.Kind);
     }
 
     [TestMethod]

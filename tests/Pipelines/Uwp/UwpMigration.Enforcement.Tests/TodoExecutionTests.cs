@@ -130,6 +130,46 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    public async Task TodoExecution_RecordingImplementationPreservesLegacyApproachHistory()
+    {
+        using var fixture = await TodoFixtureAsync();
+        await EnforcementStore.WriteTextAtomicAsync(fixture.Root, EnforcementStore.TodoProgressPath, """
+            {
+              "schemaVersion": "3.0",
+              "todos": [{
+                "todoId": "UWMIG014",
+                "currentApproachKey": "preserve-template",
+                "currentApproachRationale": "Retain the source item presentation.",
+                "attempt": 1,
+                "events": [{
+                  "sequence": 1,
+                  "attempt": 1,
+                  "kind": "approach-selected",
+                  "outcome": "selected",
+                  "summary": "Selected the original presentation.",
+                  "approachKey": "preserve-template",
+                  "recordedAt": "2026-01-01T00:00:00Z",
+                  "evidence": []
+                }]
+              }]
+            }
+            """);
+
+        var assessment = await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, "UWMIG014", "implemented", "Preserved the source template.");
+
+        Assert.AreEqual("implemented", assessment.ImplementationStatus);
+        Assert.HasCount(1, assessment.History);
+        var progress = (await fixture.LoadAsync<TodoExecutionProgressDocument>(
+            EnforcementStore.TodoProgressPath)).Todos.Single();
+        Assert.AreEqual("preserve-template", progress.CurrentApproachKey);
+        Assert.AreEqual("Retain the source item presentation.", progress.CurrentApproachRationale);
+        Assert.HasCount(2, progress.Events);
+        Assert.AreEqual("preserve-template", progress.Events[0].ApproachKey);
+        Assert.AreEqual(TodoExecutionService.Implementation, progress.Events[1].Kind);
+    }
+
+    [TestMethod]
     public async Task TodoExecution_RetiredTodoKeepsHistoryWithoutBlockingCurrentTasks()
     {
         using var fixture = await RunnerFixture.CreateAsync();
@@ -155,7 +195,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public async Task TodoExecution_InputMismatchPreservesCaptureRepairFeedback()
+    public async Task TodoExecution_InputMismatchPreservesDiagnosticHandoffWithoutMachineRepair()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
@@ -174,8 +214,8 @@ public sealed partial class RunnerAcceptanceTests
         var assessment = (await TodoExecutionService.AssessAsync(
             fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
 
-        Assert.AreEqual("failed", assessment.VerificationStatus);
-        Assert.AreEqual("review-inputs", assessment.NextOperation);
+        Assert.AreEqual("human-validation-required", assessment.VerificationStatus);
+        Assert.AreEqual("human-validation", assessment.NextOperation);
         Assert.IsTrue(assessment.Surfaces.Single().ComparisonDiagnostics.Any(item =>
             item.RepairOwner == "capture" && !item.IsNormalization));
     }
@@ -294,7 +334,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    [DataRow("mismatch", "failed")]
+    [DataRow("mismatch", "human-validation-required")]
     [DataRow("unparseable", "human-validation-required")]
     public async Task TodoExecution_ConclusiveFailureAndAttemptedInconclusiveAreDistinct(string capture, string expected)
     {
@@ -311,7 +351,7 @@ public sealed partial class RunnerAcceptanceTests
             fixture.Root, "UWMIG014", TestWindowOwnerResolver.Shared)).Single();
         Assert.AreEqual(expected, assessment.VerificationStatus);
         Assert.AreEqual(expected, assessment.Surfaces.Single().Status);
-        Assert.AreEqual(capture == "unparseable" ? 1 : 0, assessment.HumanValidationItems.Count);
+        Assert.AreEqual(1, assessment.HumanValidationItems.Count);
     }
 
     [TestMethod]
@@ -566,12 +606,12 @@ public sealed partial class RunnerAcceptanceTests
         Assert.IsNull(handoff.StateId);
         StringAssert.Contains(handoff.ExpectedOutcome, "payload");
         CollectionAssert.AreEqual(todo.Guidance.Classification.DiscriminatingTests, handoff.Actions);
-        if (result == "passed")
+        if (result != "missing-build")
         {
             var completed = await UwpEnforcementRunner.SynchronizeReportAsync(
                 fixture.Root, TestWindowOwnerResolver.Shared);
             Assert.AreEqual("passed", completed.Status);
-            Assert.AreEqual(todo.Id, completed.HumanValidationItems.Single().TodoId);
+            Assert.AreEqual(todo.Id, completed.HumanValidationItems.Single(item => item.TodoId == todo.Id).TodoId);
             Assert.AreEqual("passed", (await UwpEnforcementRunner.AssessAsync(
                 fixture.Root, TestWindowOwnerResolver.Shared)).Status);
         }
@@ -734,6 +774,7 @@ public sealed partial class RunnerAcceptanceTests
         plan.States.Add(new MigrationState
         {
             Id = "other", Kind = "page", SourceDefinitions = ["Other.xaml"],
+            TargetIdentity = [new() { Type = "Window", Name = "Other" }],
             Verification = new StateVerificationContract { TreeProbeIndex = 0 },
             Source = new StateObservation { Status = "not-run" },
             Target = new StateObservation { Status = "not-run" },
@@ -748,6 +789,104 @@ public sealed partial class RunnerAcceptanceTests
                 "Cannot silently weaken an existing obligation.", [SurfaceCheckIds.TargetReachable]));
         var current = await fixture.LoadReportAsync();
         Assert.AreEqual("state-1", current.Todos.Single().Guidance!.CompletionChecks.Single().Target);
+    }
+
+    [TestMethod]
+    [DataRow("surface-check")]
+    [DataRow("surface-binding")]
+    public async Task TodoExecution_DiagnosticOnlyAssertionDoesNotRequireMachineSurfaceBinding(string kind)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = Uwmig014();
+        var check = todo.Guidance!.CompletionChecks.Single();
+        check.VerificationKind = kind;
+        check.Target = kind == "surface-binding" ? todo.Id : "diagnostic-review";
+        check.AssertionIds = [SurfaceCheckIds.StructureMatch];
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var probe = await CaptureClosureProbeAsync(fixture, new EnforcementProcessResult(
+            0, ClosureTree.Replace("Ready", "Changed", StringComparison.Ordinal), ""));
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("human-validation-required", assessment.VerificationStatus);
+        Assert.AreEqual("human-validation", assessment.NextOperation);
+        Assert.IsEmpty(assessment.Surfaces);
+        Assert.HasCount(1, assessment.HumanValidationItems);
+        var completed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("passed", completed.Status);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_SynchronizationSeparatesReachabilityFromDiagnosticParity()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var reachable = Uwmig014();
+        reachable.Id = "REACHABLE";
+        reachable.Guidance!.CompletionChecks.Single().Id = "reachable-only";
+        reachable.Guidance.CompletionChecks.Single().AssertionIds = [SurfaceCheckIds.TargetReachable];
+        report.Todos.Add(reachable);
+        report.Todos.Add(Uwmig014());
+        await fixture.SaveReportAsync(report);
+        var probe = await CaptureClosureProbeAsync(fixture, new EnforcementProcessResult(
+            0, ClosureTree.Replace("Ready", "Changed", StringComparison.Ordinal), ""));
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        var assessments = await TodoExecutionService.AssessAsync(
+            fixture.Root, windowOwnerResolver: TestWindowOwnerResolver.Shared);
+        Assert.AreEqual("verified", assessments.Single(item => item.Todo.Id == reachable.Id).VerificationStatus);
+        Assert.AreEqual("human-validation-required", assessments.Single(item => item.Todo.Id == "UWMIG014").VerificationStatus);
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        var synchronized = await fixture.LoadReportAsync();
+        Assert.AreEqual("verified", synchronized.Todos.Single(todo => todo.Id == reachable.Id).Status);
+        Assert.AreEqual("pending", synchronized.Todos.Single(todo => todo.Id == "UWMIG014").Status);
+        Assert.AreEqual("passed", snapshot.Gates.Single(gate => gate.Id == "state-closure").Status);
+
+        var status = await UwpEnforcementRunner.StatusAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual(snapshot.TargetFingerprint, status.Closure.TargetFingerprint);
+        Assert.AreEqual(1, status.Todos.Todos.Verified);
+        Assert.AreEqual(0, status.Todos.Todos.Failed);
+        Assert.AreEqual(1, status.Todos.Todos.HumanValidationRequired);
+        Assert.IsEmpty(status.Todos.FrontierStateIds);
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        await File.AppendAllTextAsync(fixture.Path(plan.States.Single().Target.TreeEvidence!), "modified");
+        var current = await UwpEnforcementRunner.StatusAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual(0, current.Todos.Todos.Verified);
+        Assert.AreEqual(2, current.Todos.Todos.PendingVerification);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_StoppedStatusRejectsChangedTargetProof()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = Uwmig014();
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var probe = await CaptureClosureProbeAsync(fixture,
+            new EnforcementProcessResult(0, ClosureTree, ""));
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+        await UwpEnforcementRunner.StopAsync(fixture.Root, "external-blocker");
+        var before = await UwpEnforcementRunner.StatusAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreEqual(1, before.Todos.Todos.Verified);
+
+        await File.WriteAllTextAsync(fixture.Path("ChangedAfterStop.cs"),
+            "internal sealed class ChangedAfterStop { }");
+        var direct = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+        Assert.AreEqual("pending", direct.VerificationStatus);
+
+        var combined = await UwpEnforcementRunner.StatusAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared);
+        Assert.AreNotEqual(before.Closure.TargetFingerprint, combined.Closure.TargetFingerprint);
+        Assert.AreEqual(0, combined.Todos.Todos.Verified);
+        Assert.AreEqual(1, combined.Todos.Todos.PendingVerification);
     }
 
     [TestMethod]

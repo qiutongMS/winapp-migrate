@@ -19,7 +19,7 @@ public sealed record WorkflowCompletion(
         List<string> toolBlocked = [], inputReview = [], actionable = [];
         foreach (var state in snapshot.StateVerifications)
         {
-            if (state.Result is SurfaceVerificationResult.Verified or "excluded")
+            if (state.IsReachable || state.Result == "excluded")
                 continue;
             if (IsToolBlocked(state)) toolBlocked.Add(state.Id);
             else if (RequiresInputReview(state)) inputReview.Add(state.Id);
@@ -42,7 +42,7 @@ public sealed record WorkflowCompletion(
     {
         var diagnostics = state.ComparisonDiagnostics?
             .Where(item => !item.IsNormalization).ToArray();
-        return state.Level == StateVerificationLevel.SurfaceReachable &&
+        return !state.IsReachable && state.Result == SurfaceVerificationResult.HumanValidationRequired &&
             diagnostics is { Length: > 0 } && diagnostics.All(item => item.RepairOwner == "tool");
     }
 
@@ -50,7 +50,7 @@ public sealed record WorkflowCompletion(
     {
         var diagnostics = state.ComparisonDiagnostics?
             .Where(item => !item.IsNormalization).ToArray();
-        return state.Level == StateVerificationLevel.SurfaceReachable &&
+        return !state.IsReachable && state.Result == SurfaceVerificationResult.HumanValidationRequired &&
             diagnostics is { Length: > 0 } &&
             diagnostics.Any(item => item.RepairOwner == "capture") &&
             diagnostics.All(item => item.RepairOwner is "capture" or "tool");

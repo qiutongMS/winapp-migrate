@@ -124,13 +124,9 @@ public static class EnforcementEvaluator
         var slices = planValid ? AssessSlices(input, evidenceReplay, stateVerifications) : [];
         var activeSlice = SemanticSlicePlanner.Select(slices) ??
             slices.FirstOrDefault(slice => !slice.Complete);
-        var sourceReason = "A valid surface plan is required for source-oracle capture.";
-        var sourceReady = planValid &&
-            SemanticSlicePlanner.SourceReady(input.TargetRoot, input.StatePlan!, out sourceReason);
-        AddGate(gates, "source-oracle", sourceReady, sourceReason);
         var statesReady = planValid && replayFresh && slices.All(slice => slice.Complete);
         var stateReason = statesReady
-            ? $"All {input.StatePlan!.States.Count} planned surface(s) are verified with fresh target evidence."
+            ? $"All required planned surfaces are reachable with fresh authenticated target evidence; UIA comparison is diagnostic only."
             : activeSlice?.Reason ?? slices.FirstOrDefault(slice => !slice.Complete)?.Reason ??
                 "Surface closure requires a valid plan and fresh canonical replay.";
         var stateFrontier = activeSlice is null ? null : new EnforcementFrontier
@@ -141,25 +137,6 @@ public static class EnforcementEvaluator
             StateIds = activeSlice.States.Select(state => state.Id).ToList(),
             Reason = activeSlice.Reason
         };
-        if (stateFrontier is not null)
-        {
-            var diagnosed = stateVerifications.FirstOrDefault(state =>
-                stateFrontier.StateIds.Contains(state.Id, StringComparer.Ordinal) &&
-                state.Result is not (SurfaceVerificationResult.Verified or "excluded") &&
-                state.ComparisonDiagnostics?.Any(item => !item.IsNormalization) == true);
-            var diagnostic = diagnosed?.ComparisonDiagnostics?.FirstOrDefault(item =>
-                !item.IsNormalization && item.RepairOwner == "application") ??
-                diagnosed?.ComparisonDiagnostics?.FirstOrDefault(item => !item.IsNormalization);
-            if (diagnostic is not null)
-            {
-                stateFrontier.Id = diagnosed!.Id;
-                stateFrontier.Reason = $"{diagnosed.Reason} {diagnostic.SuggestedAction}";
-                stateFrontier.RepairOwner = diagnostic.RepairOwner;
-                stateFrontier.SuggestedAction = diagnostic.SuggestedAction;
-                stateFrontier.ComparisonDiagnostics = diagnosed.ComparisonDiagnostics;
-                stateReason = stateFrontier.Reason;
-            }
-        }
         AddGate(
             gates,
             "state-closure",
@@ -221,8 +198,8 @@ public static class EnforcementEvaluator
             Stage = stage,
             ActiveSlice = activeSlice?.Id,
             ActiveStateIds = activeSlice?.States.Where(state => stage == WorkflowStage.Closure ||
-                stateVerifications.First(verification => verification.Id == state.Id).Result !=
-                    SurfaceVerificationResult.Verified).Select(state => state.Id).ToList() ?? [],
+                !stateVerifications.First(verification => verification.Id == state.Id).IsReachable)
+                .Select(state => state.Id).ToList() ?? [],
             Telemetry = workflow?.Telemetry,
             Workflow = workflow?.Progress,
             Status = complete ? "passed" : "blocked",
@@ -252,6 +229,7 @@ public static class EnforcementEvaluator
         snapshot.HumanValidationItems = input.HumanValidationItems.Concat(findings).Concat(
             snapshot.StateVerifications.Where(state =>
                 state.Result == SurfaceVerificationResult.HumanValidationRequired ||
+                state.Result == SurfaceVerificationResult.Mismatch ||
                 WorkflowCompletion.RequiresInputReview(state) ||
                 state.ComparisonDiagnostics?.Any(item => item.Kind == "platform-control-review") == true)
                 .Select(state =>
@@ -262,12 +240,12 @@ public static class EnforcementEvaluator
                         CheckId = $"{state.Id}-surface-comparison",
                         StateId = state.Id,
                         Behavior = $"Compare required UI surface '{state.Id}'.",
-                        AssertionIds = SurfaceCheckIds.All.ToList(),
+                        AssertionIds = [SurfaceCheckIds.StructureMatch],
                         Actions = (state.ComparisonDiagnostics?.Where(item => !item.IsNormalization)
                             .Select(item => item.SuggestedAction) ?? [])
                             .Concat(planned?.Verification?.RequiredActions.Select(action => string.Join(" ", action.Command)) ?? [])
                             .Distinct(StringComparer.Ordinal).ToList(),
-                        ExpectedOutcome = "The target is reachable and its complete semantic UIA tree matches the source.",
+                        ExpectedOutcome = "Review the reported UIA differences or capture limitations against the source. Tree equality is not a machine acceptance condition or proof of business equivalence.",
                         Reason = state.Reason,
                         Evidence = (planned?.Source.Evidence ?? []).Concat(planned?.Target.Evidence ?? []).Distinct(StringComparer.Ordinal).ToList()
                     };
@@ -394,12 +372,9 @@ public static class EnforcementEvaluator
         var source = ExpectedSourceStatus(plan);
         var target = ExpectedTargetStatus(plan);
         var parity = ExpectedParityStatus(plan);
-        var reason =
-            source == "captured" &&
-            target == "passed" &&
-            parity == "verified"
-                ? "UI Surface Parity is verified."
-                : $"UI Surface Parity remains source={source}, target={target}, parity={parity}.";
+        var reason = target == "passed"
+            ? $"UI Surface Reachability is observed; diagnostic source={source}, parity={parity}. Current authenticated evidence is required for closure."
+            : $"UI Surface Reachability remains target={target}; diagnostic source={source}, parity={parity}.";
         return new PipelineValidationSummary(
             source,
             stateIds,

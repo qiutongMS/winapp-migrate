@@ -39,8 +39,7 @@ public static class WorkflowController
         progress.ActiveSliceId = progress.Stage is WorkflowStage.SemanticConvergence or WorkflowStage.Closure
             ? active?.Id : null;
         var activeStates = active?.States.Where(state => progress.Stage == WorkflowStage.Closure ||
-            verifications.First(verification => verification.Id == state.Id).Result !=
-                SurfaceVerificationResult.Verified).ToArray() ?? [];
+            !verifications.First(verification => verification.Id == state.Id).IsReachable).ToArray() ?? [];
         progress.ActiveStateId = progress.ActiveSliceId is not null && activeStates.Length == 1 ? activeStates[0].Id : null;
         var telemetry = WorkflowTelemetry.Measure(progress, input.GeneratedAt);
         return new WorkflowAssessment(progress, active, telemetry);

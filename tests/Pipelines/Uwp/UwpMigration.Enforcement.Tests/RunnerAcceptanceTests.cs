@@ -52,7 +52,9 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("state-1", mapped.Target);
         CollectionAssert.AreEqual(new[] { SurfaceCheckIds.StructureMatch }, mapped.AssertionIds);
         CollectionAssert.Contains(imported.Discovery!.Evidence, "old-untrusted-proof.json");
-        Assert.AreEqual(imported.Id, before.HumanValidationItems.Single().TodoId);
+        Assert.HasCount(2, before.HumanValidationItems);
+        Assert.IsTrue(before.HumanValidationItems.All(item => item.TodoId == imported.Id));
+        Assert.IsTrue(before.HumanValidationItems.Any(item => item.CheckId == mapped.Id));
 
         await new UwpEnforcementRunner(SuccessfulLaunch()).RunAsync(fixture.Root, new UwpEnforcementOptions());
         await fixture.VerifyStateAsync();
@@ -370,8 +372,8 @@ public sealed partial class RunnerAcceptanceTests
 
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
-        Assert.AreEqual("passed",
-            snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.IsFalse(snapshot.Gates.Any(gate => gate.Id == "source-oracle"));
+        Assert.AreEqual("captured", (await fixture.LoadAsync<StatePlanDocument>(ClosurePlan)).States[0].Source.Status);
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
         Assert.IsEmpty(snapshot.Workflow!.Operations);
     }
@@ -1325,7 +1327,7 @@ public sealed partial class RunnerAcceptanceTests
                 await EnforcementStore.WriteTextAtomicAsync(
                     root,
                     ".migration-evidence/states/state-1/source-ui.json",
-                    """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
+                    """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false}]}]}""");
             }
             await File.WriteAllTextAsync(
                 System.IO.Path.Combine(root.FullName, "migration-report.json"),
@@ -1344,6 +1346,7 @@ public sealed partial class RunnerAcceptanceTests
                             Id = "state-1",
                             Kind = "page",
                             SourceDefinitions = ["MainPage.xaml"],
+                            TargetIdentity = [new() { Type = "Window", AutomationId = "main" }],
                             Verification = new StateVerificationContract
                             {
                                 TreeProbeIndex = 0
@@ -1430,7 +1433,7 @@ public sealed partial class RunnerAcceptanceTests
                 """{"success":true,"message":"The action completed."}""");
             await File.WriteAllTextAsync(
                 Path(".migration-evidence/states/state-1/stdout.log"),
-                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}]}""");
+                """{"windows":[{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false}]}]}""");
         }
 
         internal async Task<MigrationReport> LoadReportAsync() =>

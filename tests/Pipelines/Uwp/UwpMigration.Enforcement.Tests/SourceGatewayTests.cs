@@ -21,7 +21,7 @@ public sealed partial class SourceGatewayTests
         var initial = await UwpEnforcementRunner.AssessAsync(
             fixture.Target, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, initial.Stage);
-        Assert.AreEqual("blocked", initial.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.IsFalse(initial.Gates.Any(gate => gate.Id == "source-oracle"));
         var process = new FakeProcessRunner(
             Windows((10, 100, "Existing")),
             new EnforcementProcessResult(
@@ -395,7 +395,7 @@ public sealed partial class SourceGatewayTests
         await fixture.CompleteSourceStateAsync();
         var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Target, TestWindowOwnerResolver.Shared);
         Assert.AreEqual(WorkflowStage.MechanicalStabilization, snapshot.Stage);
-        Assert.AreEqual("passed", snapshot.Gates.Single(gate => gate.Id == "source-oracle").Status);
+        Assert.IsFalse(snapshot.Gates.Any(gate => gate.Id == "source-oracle"));
         var process = LaunchedProcess();
         var run = await CreateGateway(process, fixture).RunAsync(
             fixture.Target, TestOptions());
@@ -701,6 +701,7 @@ public sealed partial class SourceGatewayTests
                     new()
                     {
                         Id = "source-state", Kind = "window", SourceDefinitions = ["MainPage.xaml"],
+                        TargetIdentity = [new() { Type = "Window", Name = "Ready" }],
                         Verification = new StateVerificationContract { TreeProbeIndex = 0 },
                         Source = new StateObservation { Status = "not-run" },
                         Target = new StateObservation { Status = "not-run" },
@@ -722,6 +723,7 @@ public sealed partial class SourceGatewayTests
                     {
                         Id = "store",
                         SourceDefinitions = ["StorePage.xaml"],
+                        TargetIdentity = [new() { Type = "Window", Name = "Store" }],
                         Source = new StateObservation { Status = "not-run" },
                         Target = new StateObservation { Status = "not-run" },
                         Comparison = new StateComparison { Status = "not-run" }

@@ -1,5 +1,7 @@
-using System.ComponentModel;
-using System.Diagnostics;
+// Copyright (c) Microsoft Corporation and Contributors. All rights reserved.
+// Licensed under the MIT License.
+
+using WinAppMigration.Shared;
 
 namespace UwpMigration.Mechanical;
 
@@ -17,83 +19,17 @@ public sealed class ProcessRunner : IProcessRunner
 {
     private readonly string _executableName;
 
-    public ProcessRunner()
-        : this("dotnet")
-    {
-    }
+    public ProcessRunner() : this("dotnet") { }
 
-    internal ProcessRunner(string executableName)
-    {
-        _executableName = executableName;
-    }
+    internal ProcessRunner(string executableName) => _executableName = executableName;
 
     public async Task<ProcessResult> RunDotNetAsync(
         DirectoryInfo workingDirectory,
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken = default)
     {
-        var startInfo = new ProcessStartInfo(_executableName)
-        {
-            WorkingDirectory = workingDirectory.FullName,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        Task<string>? output = null;
-        Task<string>? error = null;
-        try
-        {
-            process.Start();
-            output = process.StandardOutput.ReadToEndAsync(
-                CancellationToken.None);
-            error = process.StandardError.ReadToEndAsync(
-                CancellationToken.None);
-            await process.WaitForExitAsync(cancellationToken);
-            return new ProcessResult(
-                process.ExitCode,
-                await output,
-                await error);
-        }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException) when (process.HasExited)
-            {
-            }
-            catch (Win32Exception) when (process.HasExited)
-            {
-            }
-
-            await process.WaitForExitAsync(CancellationToken.None);
-            try
-            {
-                await Task.WhenAll(new[] { output, error }.OfType<Task<string>>());
-            }
-            catch (Exception)
-            {
-            }
-            throw;
-        }
-        catch (Exception exception) when (
-            exception is Win32Exception
-            or InvalidOperationException
-            or IOException)
-        {
-            return new ProcessResult(-1, string.Empty, exception.Message);
-        }
+        var result = await ProcessExecution.RunAsync(
+            _executableName, workingDirectory, arguments, cancellationToken);
+        return new(result.ExitCode, result.Output, result.Error);
     }
 }

@@ -226,7 +226,7 @@ public sealed class UwpSourceGateway
         CancellationToken cancellationToken = default)
     {
         ValidateOptions(options);
-        await using var workspace = await LoadWorkspaceAsync(
+        await using var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken);
         var id = CreateId("source-run");
@@ -380,7 +380,7 @@ public sealed class UwpSourceGateway
         CancellationToken cancellationToken = default)
     {
         ValidateOptions(options);
-        await using var workspace = await LoadWorkspaceAsync(
+        await using var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken);
         var id = CreateId("source-diagnostic");
@@ -486,7 +486,7 @@ public sealed class UwpSourceGateway
                 nameof(arguments));
         }
 
-        await using var workspace = await LoadWorkspaceAsync(
+        await using var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken);
         var commandName = arguments[0];
@@ -664,7 +664,7 @@ public sealed class UwpSourceGateway
         return result;
     }
 
-    private static async Task<SourceWorkspace> LoadWorkspaceAsync(
+    private static async Task<SourceWorkspace> PrepareWorkspaceAsync(
         DirectoryInfo requestedTarget,
         CancellationToken cancellationToken)
     {
@@ -714,20 +714,11 @@ public sealed class UwpSourceGateway
                         "Source operations are not permitted after a terminal closure disposition.");
             }
 
-            var reportPath = Path.Combine(targetRoot, "migration-report.json");
-            var report = await MigrationReportStore.LoadAsync(
-                reportPath,
-                cancellationToken);
-            if (report.SchemaVersion != MigrationReport.CurrentSchemaVersion)
-            {
-                throw new InvalidDataException(
-                    $"Unsupported migration-report schema {report.SchemaVersion}; expected {MigrationReport.CurrentSchemaVersion}.");
-            }
-            var (plan, planError) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                target, report.Validation.StatePlan, cancellationToken);
-            if (plan is null || planError is not null)
-                throw new InvalidDataException(planError ?? "Seal the immutable surface inventory before source discovery.");
-            RequiredStateContracts.Freeze(target, plan);
+            var files = await UwpWorkspaceStore.LoadAsync(target, cancellationToken);
+            var report = files.Report;
+            if (files.StatePlan is null || files.StatePlanError is not null)
+                throw new InvalidDataException(files.StatePlanError ?? "Seal the immutable surface inventory before source discovery.");
+            UwpEnforcementWorkspacePreparation.FreezeContract(files);
 
             var sourceRootValue = Path.IsPathFullyQualified(report.Source.Root)
                 ? report.Source.Root

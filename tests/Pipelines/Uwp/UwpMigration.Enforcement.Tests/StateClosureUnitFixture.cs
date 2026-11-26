@@ -13,7 +13,7 @@ public sealed partial class EnforcementEvaluatorTests
         state ??= input.StatePlan!.States[0];
         var root = input.TargetRoot;
         const string sourceTree = ".migration-evidence/unit-source-ui.json";
-        const string tree = """{"elements":[{"type":"Window","automationId":"main","name":"Ready"}]}""";
+        const string tree = """{"elements":[{"type":"Window","automationId":"main","name":"Ready","isOffscreen":false}]}""";
         EnforcementStore.WriteTextAtomicAsync(root, sourceTree, tree).GetAwaiter().GetResult();
         if (!state.Source.Evidence.Contains(sourceTree, StringComparer.Ordinal))
             state.Source.Evidence.Add(sourceTree);

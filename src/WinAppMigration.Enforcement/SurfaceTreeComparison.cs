@@ -36,7 +36,7 @@ internal sealed record SurfaceTreeComparisonResult(
 internal static class SurfaceTreeComparison
 {
     // Bump when parsing, normalization, or comparison semantics change.
-    internal const string RulesIdentity = "semantic-uia:1";
+    internal const string RulesIdentity = "semantic-uia:2";
 
     private const int MaximumDifferences = 8;
     private const int MaximumValueCharacters = 256;
@@ -60,7 +60,8 @@ internal static class SurfaceTreeComparison
     internal static SurfaceTreeComparisonResult Compare(
         DirectoryInfo root,
         string sourcePath,
-        string targetPath)
+        string targetPath,
+        bool requireComplete = true)
     {
         try
         {
@@ -70,8 +71,8 @@ internal static class SurfaceTreeComparison
             using var target = JsonDocument.Parse(
                 File.ReadAllText(Resolve(root, targetPath)),
                 DocumentOptions);
-            var sourceWindows = ReadWindows(source.RootElement);
-            var targetWindows = ReadWindows(target.RootElement);
+            var sourceWindows = ReadWindows(source.RootElement, requireComplete);
+            var targetWindows = ReadWindows(target.RootElement, requireComplete);
             var diagnostics = new List<SurfaceComparisonDiagnostic>();
             var normalization = NormalizeWindows(sourceWindows, targetWindows, diagnostics);
             if (normalization is not null)
@@ -85,7 +86,8 @@ internal static class SurfaceTreeComparison
                 ? Result(
                     comparable,
                     comparable,
-                    "The complete app-owned semantic UIA trees match.",
+                    requireComplete ? "The complete app-owned semantic UIA trees match." :
+                        "The observed target UI state matches the recorded navigation start.",
                     diagnostics)
                 : Result(
                     comparable,
@@ -122,14 +124,15 @@ internal static class SurfaceTreeComparison
     internal static bool IsTree(
         DirectoryInfo root,
         string path,
-        out string reason)
+        out string reason,
+        bool requireComplete = true)
     {
         try
         {
             using var document = JsonDocument.Parse(
                 File.ReadAllText(Resolve(root, path)),
                 DocumentOptions);
-            _ = ReadWindows(document.RootElement);
+            _ = ReadWindows(document.RootElement, requireComplete);
             reason = "The evidence contains a supported semantic UIA tree.";
             return true;
         }
@@ -144,7 +147,65 @@ internal static class SurfaceTreeComparison
         }
     }
 
-    private static List<SemanticWindow> ReadWindows(JsonElement root)
+    internal static bool MatchesIdentity(
+        DirectoryInfo root,
+        string path,
+        IReadOnlyList<SurfaceIdentityElement> identity,
+        out string reason)
+    {
+        try
+        {
+            if (identity.Count == 0)
+                throw new InvalidDataException("No target surface identity landmarks were declared.");
+            using var document = JsonDocument.Parse(
+                File.ReadAllText(Resolve(root, path)), DocumentOptions);
+            var nodes = ReadWindows(document.RootElement, requireComplete: false)
+                .SelectMany(window => window.Roots)
+                .SelectMany(VisibleNodes)
+                .ToArray();
+            foreach (var landmark in identity)
+            {
+                var matches = nodes.Count(node =>
+                    Matches(node, "type", landmark.Type) &&
+                    (landmark.AutomationId is null || Matches(node, "automationId", landmark.AutomationId)) &&
+                    (landmark.Name is null || Matches(node, "name", landmark.Name)) &&
+                    MatchesState(node, "isEnabled", landmark.IsEnabled) &&
+                    MatchesState(node, "isSelected", landmark.IsSelected) &&
+                    MatchesState(node, "hasKeyboardFocus", landmark.HasKeyboardFocus));
+                if (matches != 1)
+                {
+                    reason = $"Target identity landmark '{landmark.Type}:{landmark.AutomationId ?? landmark.Name}' has {matches} visible matches for its declared properties; exactly one is required.";
+                    return false;
+                }
+            }
+            reason = "The declared target surface identity landmarks are uniquely visible.";
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            reason = $"Target surface identity could not be verified: {exception.Message}";
+            return false;
+        }
+
+        static bool Matches(SemanticNode node, string property, string expected) =>
+            node.Properties.TryGetValue(property, out var actual) &&
+            string.Equals(actual, expected, StringComparison.Ordinal);
+
+        static bool MatchesState(SemanticNode node, string property, bool? expected) =>
+            expected is null || Matches(node, property, expected.Value ? "true" : "false");
+
+        static IEnumerable<SemanticNode> VisibleNodes(SemanticNode node)
+        {
+            if (Matches(node, "isOffscreen", "false"))
+                yield return node;
+            foreach (var child in node.Children)
+                foreach (var descendant in VisibleNodes(child))
+                    yield return descendant;
+        }
+    }
+
+    private static List<SemanticWindow> ReadWindows(JsonElement root, bool requireComplete = true)
     {
         if (root.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException(
@@ -157,7 +218,7 @@ internal static class SurfaceTreeComparison
         }
         foreach (var filter in new[] { "interactive", "hideDisabled", "hideOffscreen" })
         {
-            if (root.TryGetProperty(filter, out var enabled) && enabled.ValueKind != JsonValueKind.False)
+            if (requireComplete && root.TryGetProperty(filter, out var enabled) && enabled.ValueKind != JsonValueKind.False)
                 throw new InvalidDataException($"UIA tree uses the {filter} filter; capture unfiltered inspect --json output.");
         }
         if (root.TryGetProperty("windows", out var windows))
@@ -174,7 +235,7 @@ internal static class SurfaceTreeComparison
                     new SemanticWindow(
                         ReadContainer(
                             window,
-                            $"window[{index}]")))
+                            $"window[{index}]", requireComplete)))
                 .ToList();
         }
         if (root.TryGetProperty("elements", out var elements))
@@ -182,7 +243,7 @@ internal static class SurfaceTreeComparison
             return
             [
                 new SemanticWindow(
-                    ReadElements(elements, "surface"))
+                    ReadElements(elements, "surface", requireComplete))
             ];
         }
         throw new InvalidDataException(
@@ -191,7 +252,8 @@ internal static class SurfaceTreeComparison
 
     private static List<SemanticNode> ReadContainer(
         JsonElement container,
-        string path)
+        string path,
+        bool requireComplete)
     {
         if (container.ValueKind != JsonValueKind.Object ||
             !container.TryGetProperty("elements", out var elements))
@@ -199,12 +261,13 @@ internal static class SurfaceTreeComparison
             throw new InvalidDataException(
                 $"{path} must contain an elements array.");
         }
-        return ReadElements(elements, path);
+        return ReadElements(elements, path, requireComplete);
     }
 
     private static List<SemanticNode> ReadElements(
         JsonElement elements,
-        string path)
+        string path,
+        bool requireComplete)
     {
         if (elements.ValueKind != JsonValueKind.Array ||
             elements.GetArrayLength() == 0)
@@ -215,18 +278,19 @@ internal static class SurfaceTreeComparison
         return elements
             .EnumerateArray()
             .Select((element, index) =>
-                ReadNode(element, $"{path}/element[{index}]"))
+                ReadNode(element, $"{path}/element[{index}]", requireComplete))
             .ToList();
     }
 
     private static SemanticNode ReadNode(
         JsonElement element,
-        string path)
+        string path,
+        bool requireComplete)
     {
         if (element.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException(
                 $"{path} must be an object.");
-        if (element.TryGetProperty("hasMoreChildren", out var truncated) &&
+        if (requireComplete && element.TryGetProperty("hasMoreChildren", out var truncated) &&
             truncated.ValueKind != JsonValueKind.False)
             throw new InvalidDataException(
                 $"{path} has uncaptured descendants; increase inspect --depth and recapture the complete tree.");
@@ -257,7 +321,7 @@ internal static class SurfaceTreeComparison
                     .Select((child, index) =>
                         ReadNode(
                             child,
-                            $"{path}/children[{index}]")));
+                            $"{path}/children[{index}]", requireComplete)));
         }
         string? className = null;
         if (element.TryGetProperty("className", out var nativeClass))

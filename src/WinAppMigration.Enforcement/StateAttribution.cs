@@ -52,17 +52,22 @@ public static class StateAttribution
             new StateSliceBinding(candidates.Length == 1 ? candidates[0].Id : null, selected.Id);
     }
 
-    internal static void ValidateFailures(EnforcementEvaluationInput input)
+    internal static void ValidateFailures(EnforcementEvaluationInput input) =>
+        ValidateFailures(input.TargetRoot, input.StatePlan, input.Build, input.Replay, input.Diagnostic, input.Attempts);
+
+    internal static void ValidateFailures(
+        DirectoryInfo target, StatePlanDocument? plan, BuildAttestation? build,
+        ReplayAttestation? replay, DiagnosticRunAttestation? diagnostic, AttemptLedger attempts)
     {
-        if (input.Replay is { } replay) Validate(input.StatePlan, new StateSliceBinding(replay.StateId, replay.SliceId));
-        if (input.Diagnostic is { } diagnostic) Validate(input.StatePlan, new StateSliceBinding(diagnostic.StateId, diagnostic.SliceId));
-        if (input.Build is { } build) Validate(input.StatePlan, new StateSliceBinding(build.StateId, build.SliceId));
-        foreach (var attempt in input.Attempts.Attempts)
+        if (replay is not null) Validate(plan, new StateSliceBinding(replay.StateId, replay.SliceId));
+        if (diagnostic is not null) Validate(plan, new StateSliceBinding(diagnostic.StateId, diagnostic.SliceId));
+        if (build is not null) Validate(plan, new StateSliceBinding(build.StateId, build.SliceId));
+        foreach (var attempt in attempts.Attempts)
         {
-            Validate(input.StatePlan, new StateSliceBinding(attempt.StateId, attempt.SliceId));
+            Validate(plan, new StateSliceBinding(attempt.StateId, attempt.SliceId));
             if (attempt.OperationId is not null)
             {
-                var operation = AuthenticatedOperation(input.TargetRoot, attempt.OperationId);
+                var operation = AuthenticatedOperation(target, attempt.OperationId);
                 if (operation.StateId != attempt.StateId || operation.IntendedSliceId != attempt.SliceId)
                     throw new InvalidDataException("Failure tuple differs from its authenticated operation intent.");
             }

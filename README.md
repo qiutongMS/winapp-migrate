@@ -36,9 +36,11 @@ winapp-migrate CLI
   UWP pipeline.
 
 Product validation and application acceptance are separate. A tested tool can
-still report an app's migration as incomplete because code repairs, comparable
-inputs, tool support, or human validation are needed. A build, launch,
-screenshot, or implementation receipt alone does not establish UI parity.
+still report an app's migration as incomplete when current project/launch,
+source inventory/mapping, or required target reachability evidence is missing.
+UIA mismatch or source-capture limitations alone do not block this bounded
+machine acceptance. Diagnostic/human work remains explicit and unverified;
+passing does not establish full visual or business equivalence.
 
 Acceptance supports migration in three ways: feed current diagnoses back to
 existing TODOs (discover genuinely new obligations as TODOs), derive the final
@@ -156,7 +158,7 @@ desktop; it is not part of the default test suite.
   retry/disposition semantics, trust, schemas, diagnostics, and durable proof.
 - [UWP Skill](plugins/winapp-migrate/skills/uwp-to-winapp/SKILL.md): the agent's
   end-to-end migration procedure.
-- [UI Surface Parity](plugins/winapp-migrate/skills/uwp-to-winapp/references/ui-surface-parity.md):
+- [UI Surface Reachability and UIA diagnostics](plugins/winapp-migrate/skills/uwp-to-winapp/references/ui-surface-parity.md):
   surface inventory, observed routes, capture, comparison, and fixed checks.
 - [Surface-plan schema](plugins/winapp-migrate/skills/uwp-to-winapp/references/surface-plan-v3.schema.json):
   machine-readable surface plan shape.

@@ -8,7 +8,12 @@ public static class RuntimeFailureRecovery
     // Preserve failure history if attestation and ledger writes were interrupted.
     public static bool Recover(
         AttemptLedger attempts, ReplayAttestation? replay, DiagnosticRunAttestation? diagnostic,
-        EnforcementEvaluationInput input)
+        EnforcementEvaluationInput input) =>
+        Recover(attempts, replay, diagnostic, input.TargetRoot, input.StatePlan);
+
+    public static bool Recover(
+        AttemptLedger attempts, ReplayAttestation? replay, DiagnosticRunAttestation? diagnostic,
+        DirectoryInfo target, StatePlanDocument? plan)
     {
         var changed = false;
         void Add(
@@ -16,15 +21,15 @@ public static class RuntimeFailureRecovery
             DateTimeOffset at, string stdout, string stderr, string fallbackSignature)
         {
             var supplied = new StateSliceBinding(stateId, sliceId);
-            StateAttribution.Validate(input.StatePlan, supplied);
+            StateAttribution.Validate(plan, supplied);
             signature ??= DiagnosticGrouper.CreateSignature("runtime", [], fallbackSignature);
             if (string.IsNullOrWhiteSpace(operationId))
                 throw new InvalidDataException("Runtime recovery requires an authenticated operation ID; attribution cannot be inferred.");
             var existing = attempts.Attempts.FirstOrDefault(attempt => attempt.Kind == "runtime" &&
                 attempt.TargetFingerprint == fingerprint && attempt.OperationId == operationId);
-            var operation = StateAttribution.AuthenticatedOperation(input.TargetRoot, operationId);
+            var operation = StateAttribution.AuthenticatedOperation(target, operationId);
             var binding = new StateSliceBinding(operation.StateId, operation.IntendedSliceId);
-            StateAttribution.Validate(input.StatePlan, binding);
+            StateAttribution.Validate(plan, binding);
             if (binding != supplied || operation.TargetFingerprint != fingerprint)
                 throw new InvalidDataException("Failure attestation differs from its authenticated operation-start tuple.");
             if (existing is not null)
@@ -43,7 +48,7 @@ public static class RuntimeFailureRecovery
         }
         if (replay is { Success: false, ExitCode: not 0 })
         {
-            if (!CanonicalAttestationTrust.VerifyFailure(input.TargetRoot, replay))
+            if (!CanonicalAttestationTrust.VerifyFailure(target, replay))
                 throw new InvalidDataException("Runtime recovery requires the trusted replay operation/attestation chain.");
             Add(replay.TargetFingerprint, replay.Signature, replay.StateId, replay.SliceId,
                 replay.OperationId,
@@ -51,7 +56,7 @@ public static class RuntimeFailureRecovery
         }
         if (diagnostic is { ExitCode: not 0 })
         {
-            if (!CanonicalAttestationTrust.Verify(input.TargetRoot, diagnostic))
+            if (!CanonicalAttestationTrust.Verify(target, diagnostic))
                 throw new InvalidDataException("Runtime recovery requires the trusted diagnostic operation/attestation chain.");
             Add(diagnostic.TargetFingerprint, diagnostic.Signature, diagnostic.StateId, diagnostic.SliceId,
                 diagnostic.OperationId,

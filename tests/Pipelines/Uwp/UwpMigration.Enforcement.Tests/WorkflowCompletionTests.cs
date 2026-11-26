@@ -11,7 +11,7 @@ public sealed class WorkflowCompletionTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public void Completion_InputReviewDoesNotAuthorizeUnchangedBuildOrReplay(bool applicationDifference)
+    public void Completion_ReachableComparisonDiagnosticsDoNotRequestFurtherWork(bool applicationDifference)
     {
         var diagnostics = new List<SurfaceComparisonDiagnostic>
         {
@@ -22,9 +22,9 @@ public sealed class WorkflowCompletionTests
         var snapshot = new EnforcementSnapshot
         {
             Phase = "semantic-convergence",
-            Status = "blocked",
+            Status = "passed",
             TargetFingerprint = "target",
-            Gates = [new() { Id = "state-closure", Status = "blocked", Reason = "incomplete" }],
+            Gates = [new() { Id = "state-closure", Status = "passed", Reason = "reachable" }],
             Workflow = new WorkflowProgress { },
             StateVerifications =
             [
@@ -38,16 +38,14 @@ public sealed class WorkflowCompletionTests
         WorkflowDispositions.Update(snapshot, DateTimeOffset.UtcNow);
         var completion = WorkflowCompletion.Assess(snapshot);
 
-        Assert.AreEqual("needs-work", completion.Outcome);
-        Assert.AreEqual(applicationDifference ? "continue" : "input-review-required", snapshot.Disposition!.Kind);
-        Assert.AreEqual(applicationDifference, snapshot.Disposition.Retryable);
-        Assert.AreEqual(applicationDifference ? 1 : 0, completion.ActionableSurfaceIds.Count);
-        Assert.AreEqual(applicationDifference ? 0 : 1, completion.InputReviewSurfaceIds.Count);
+        Assert.AreEqual("complete", completion.Outcome);
+        Assert.AreEqual("complete", snapshot.Disposition!.Kind);
+        Assert.IsFalse(snapshot.Disposition.Retryable);
+        Assert.HasCount(0, completion.ActionableSurfaceIds);
+        Assert.HasCount(0, completion.InputReviewSurfaceIds);
         Assert.HasCount(0, completion.ToolBlockedSurfaceIds);
         Assert.IsNull(WorkflowValidation.DispositionError(snapshot.Disposition));
-        Assert.AreEqual(applicationDifference, snapshot.Disposition.AllowedOperations.Contains(WorkflowOperation.Build));
-        Assert.AreEqual(applicationDifference, snapshot.Disposition.AllowedOperations.Contains(WorkflowOperation.Replay));
-        Assert.Contains(WorkflowOperation.UiAction, snapshot.Disposition.AllowedOperations);
+        Assert.IsEmpty(snapshot.Disposition.AllowedOperations);
     }
 
     [TestMethod]
@@ -74,11 +72,10 @@ public sealed class WorkflowCompletionTests
         Assert.AreEqual("continue", snapshot.Disposition!.Kind);
         var completion = WorkflowCompletion.Assess(snapshot);
         CollectionAssert.AreEqual(new[] { "store" }, completion.ActionableSurfaceIds.ToArray());
-        CollectionAssert.AreEqual(new[] { "adaptive" }, completion.InputReviewSurfaceIds.ToArray());
+        Assert.IsEmpty(completion.InputReviewSurfaceIds);
         var slices = new[]
         {
-            new SemanticSlice("adaptive", StateCriticality.Required, [], [], false, false, "input review")
-                { InputReviewRequired = true },
+            new SemanticSlice("adaptive", StateCriticality.Required, [], [], true, false, "reachable"),
             new SemanticSlice("store", StateCriticality.Required, [], [], false, false, "capture next")
         };
         Assert.AreEqual("store", SemanticSlicePlanner.Select(slices)!.Id);
@@ -101,7 +98,7 @@ public sealed class WorkflowCompletionTests
         diagnostics.Add(new("app-property-mismatch", "application", "Restore the menu label."));
         Assert.IsFalse(WorkflowCompletion.IsToolBlocked(state));
         diagnostics[^1] = new("platform-control-review", "tool", "Unknown nested provider shape.");
-        Assert.IsTrue(WorkflowCompletion.IsToolBlocked(state));
+        Assert.IsFalse(WorkflowCompletion.IsToolBlocked(state));
     }
 
     [TestMethod]
@@ -126,9 +123,9 @@ public sealed class WorkflowCompletionTests
         var needsWork = WorkflowCompletion.Assess(snapshot);
         Assert.AreEqual("needs-work", needsWork.Outcome);
         CollectionAssert.AreEqual(new[] { "purchase" }, needsWork.ActionableSurfaceIds.ToArray());
-        CollectionAssert.AreEqual(new[] { "startup" }, needsWork.ToolBlockedSurfaceIds.ToArray());
+        Assert.IsEmpty(needsWork.ToolBlockedSurfaceIds);
         snapshot.StateVerifications.RemoveAt(1);
-        Assert.AreEqual("tool-blocked", WorkflowCompletion.Assess(snapshot).Outcome);
+        Assert.AreEqual("needs-work", WorkflowCompletion.Assess(snapshot).Outcome);
         snapshot.Gates.Add(new() { Id = "report-sync", Status = "blocked", Reason = "sync honest partial report" });
         Assert.AreEqual("needs-work", WorkflowCompletion.Assess(snapshot).Outcome);
     }

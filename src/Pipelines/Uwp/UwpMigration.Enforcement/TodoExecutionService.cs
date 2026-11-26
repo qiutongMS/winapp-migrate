@@ -40,8 +40,9 @@ public static class TodoExecutionService
 
         var fingerprint = await TargetFingerprint.ComputeAsync(target, cancellationToken);
         using var verification = StateClosureSeal.BeginVerification();
-        return todos.Select(todo => Assess(
-            target, context, todo, fingerprint, windowOwnerResolver)).ToArray();
+        var session = new TodoAssessmentSession(target, context, fingerprint,
+            windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance, DateTimeOffset.UtcNow);
+        return todos.Select(todo => Assess(session, todo)).ToArray();
     }
 
     public static async Task<TodoStatusSummary> StatusAsync(
@@ -54,13 +55,18 @@ public static class TodoExecutionService
         await using var enforcementLock =
             await EnforcementStore.AcquireLockAsync(target, cancellationToken);
         var context = await TodoExecutionProgressStore.LoadAsync(target, cancellationToken);
-        windowOwnerResolver ??= WindowsWindowOwnerResolver.Instance;
         using var verification = StateClosureSeal.BeginVerification();
+        return Status(new TodoAssessmentSession(target, context, targetFingerprint,
+            windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance, DateTimeOffset.UtcNow));
+    }
+
+    internal static TodoStatusSummary Status(TodoAssessmentSession session)
+    {
+        var context = session.Context;
         var assessments = context.Report.Todos.Select(todo =>
-            Assess(target, context, todo, targetFingerprint, windowOwnerResolver)).ToArray();
-        var surfaces = context.Plan?.States.Select(state => AssessSurface(
-            target, state, SurfaceCheckIds.All, context.Replay,
-            targetFingerprint, windowOwnerResolver)).ToArray() ?? [];
+            Assess(session, todo)).ToArray();
+        var surfaces = context.Plan?.States.Select(state =>
+            session.AssessSurface(state, [SurfaceCheckIds.TargetReachable])).ToArray() ?? [];
         return TodoStatusService.Build(
             context.Report, context.Plan, assessments, context.Progress, surfaces);
     }
@@ -90,8 +96,10 @@ public static class TodoExecutionService
             outcome == "implemented" ? "passed" : "failed", summary,
             failureSignature, retryCondition, normalizedEvidence);
         await TodoExecutionProgressStore.SaveAsync(target, context.Progress, cancellationToken);
-        return Assess(target, context, todo,
-            await TargetFingerprint.ComputeAsync(target, cancellationToken));
+        using var verification = StateClosureSeal.BeginVerification();
+        return Assess(new TodoAssessmentSession(target, context,
+            await TargetFingerprint.ComputeAsync(target, cancellationToken),
+            WindowsWindowOwnerResolver.Instance, DateTimeOffset.UtcNow), todo);
     }
 
     public static async Task<MigrationTodo> BindStateAsync(
@@ -235,14 +243,12 @@ public static class TodoExecutionService
         return todo;
     }
 
-    private static TodoExecutionAssessment Assess(
-        DirectoryInfo target,
-        TodoExecutionContext context,
-        MigrationTodo todo,
-        string targetFingerprint,
-        IWindowOwnerResolver? windowOwnerResolver = null)
+    internal static TodoExecutionAssessment Assess(
+        TodoAssessmentSession session,
+        MigrationTodo todo)
     {
-        windowOwnerResolver ??= WindowsWindowOwnerResolver.Instance;
+        var target = session.Target;
+        var context = session.Context;
         var progress = context.Progress.Todos.SingleOrDefault(item => item.TodoId == todo.Id);
         var latestResult = progress?.Events
             .Where(item => item.Kind is Implementation or ApproachRejected)
@@ -261,16 +267,10 @@ public static class TodoExecutionService
                     StateId = id, Status = "pending", AssertionIds = checks,
                     Reason = $"Surface '{id}' needs an exact supported completion mapping."
                 }
-                : AssessSurface(target, state, checks, context.Replay, targetFingerprint, windowOwnerResolver);
+                : session.AssessSurface(state, checks);
         }).ToList();
-        var projectChecksPass = TodoCompletionContract.ProjectClosureChecksPass(
-            target, todo, context.Report, context.Build, targetFingerprint);
+        var projectChecksPass = session.ProjectChecksPass(todo);
         var pendingBindings = TodoCompletionContract.PendingBindings(todo, context.Plan);
-        var diagnostics = surfaces.Where(surface => surface.Status != "verified")
-            .SelectMany(surface => surface.ComparisonDiagnostics)
-            .Where(item => !item.IsNormalization).ToList();
-        var repair = diagnostics.FirstOrDefault(item => item.RepairOwner == "application") ??
-            diagnostics.FirstOrDefault();
         var handoffs = BuildHumanValidationItems(todo, context.Plan, surfaces);
         var verificationStatus = surfaces.Any(surface => surface.Status == "failed")
             ? "failed"
@@ -281,8 +281,8 @@ public static class TodoExecutionService
                     : "verified";
         var next = pendingBindings.Count > 0
             ? ("bind-surface", $"Bind completion check '{pendingBindings[0].Id}' to the actual required surface in the inventory; preserve its exact surface checks.")
-            : repair is { RepairOwner: "capture" or "tool" }
-            ? (repair.RepairOwner == "capture" ? "review-inputs" : "repair-tool", repair.SuggestedAction)
+            : verificationStatus == "human-validation-required"
+            ? ("human-validation", "Hand off diagnostic UIA and out-of-scope obligations; do not retry tree matching as a machine gate.")
             : implementationStatus == "pending"
             ? ("record-implementation", $"Implement TODO '{todo.Id}' and record its implementation result; surface evidence does not prove business behavior.")
             : verificationStatus switch
@@ -304,44 +304,6 @@ public static class TodoExecutionService
         };
     }
 
-    internal static TodoSurfaceAssessment AssessSurface(
-        DirectoryInfo target,
-        MigrationState state,
-        IReadOnlyList<string> checkIds,
-        ReplayAttestation? replay,
-        string targetFingerprint,
-        IWindowOwnerResolver windowOwnerResolver)
-    {
-        var result = new TodoSurfaceAssessment
-        {
-            StateId = state.Id, Status = "pending", AssertionIds = checkIds.ToList(),
-            TargetFingerprint = targetFingerprint
-        };
-        if (state.Disposition == "excluded")
-        {
-            result.Status = "excluded";
-            result.Reason = state.ExclusionReason;
-            return result;
-        }
-        var reason = $"Surface '{state.Id}' needs current product evidence and a fresh canonical replay.";
-        if (replay is not { Success: true } || replay.TargetFingerprint != targetFingerprint ||
-            !StateClosureProtocol.VerifyRecordedLevel(target, state, replay, DateTimeOffset.UtcNow,
-                out var proof, out reason, windowOwnerResolver))
-        {
-            result.Reason = reason;
-            return result;
-        }
-        result.Status = checkIds.All(check => proof.CheckIds.Contains(check, StringComparer.Ordinal))
-            ? "verified"
-            : proof.Result == SurfaceVerificationResult.HumanValidationRequired
-                ? "human-validation-required"
-                : "failed";
-        result.Reason = string.Join(" ", proof.Issues);
-        result.Evidence = [StateClosureProtocol.AttestationPath(state.Id)];
-        result.ComparisonDiagnostics = proof.ComparisonDiagnostics ?? [];
-        return result;
-    }
-
     internal static List<HumanValidationItem> OutOfScopeHandoffs(MigrationTodo todo)
     {
         var checks = todo.Guidance?.CompletionChecks ?? [];
@@ -355,7 +317,7 @@ public static class TodoExecutionService
                 ExpectedOutcome = check.VerificationKind is "todo-resolution-evidence" or "report-collection-status" or "report-field"
                     ? string.Join(" ", todo.Guidance?.CompletionConditions ?? [todo.Reason])
                     : check.Expected,
-                Reason = "This implementation/behavior obligation is outside machine-verifiable project and UI Surface Parity checks."
+                Reason = "This implementation/behavior or UIA diagnostic obligation is outside machine-verifiable project and UI Surface Reachability checks."
             }).ToList();
         if (checks.Count == 0)
             handoffs.Add(new HumanValidationItem
@@ -398,7 +360,7 @@ public static class TodoExecutionService
                 StateId = state.Id, AssertionIds = surface.AssertionIds,
                 Behavior = $"Compare surface '{state.Id}'.",
                 Actions = state.Verification!.RequiredActions.Select(action => string.Join(" ", action.Command)).ToList(),
-                ExpectedOutcome = "The target is reachable and its semantic UIA tree matches the source.",
+                ExpectedOutcome = "Review the reported UIA differences or capture limitations against the source; tree equality is not a machine acceptance condition.",
                 Reason = surface.Reason ?? "The attempted product capture did not produce comparable trees.",
                 Evidence = surface.Evidence
             });

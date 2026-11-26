@@ -59,6 +59,9 @@ public sealed class MigrationState
     [JsonPropertyName("navigation")]
     public StateVerificationContract? Verification { get; set; }
 
+    [JsonPropertyName("targetIdentity")]
+    public List<SurfaceIdentityElement> TargetIdentity { get; set; } = [];
+
     [JsonPropertyName("source")]
     public required StateObservation Source { get; set; }
 
@@ -169,6 +172,28 @@ public sealed class StateVerificationContract
 
     [JsonPropertyName("treeProbeIndex")]
     public int TreeProbeIndex { get; set; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record SurfaceIdentityElement
+{
+    [JsonPropertyName("type")]
+    public required string Type { get; init; }
+
+    [JsonPropertyName("automationId")]
+    public string? AutomationId { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("isEnabled")]
+    public bool? IsEnabled { get; init; }
+
+    [JsonPropertyName("isSelected")]
+    public bool? IsSelected { get; init; }
+
+    [JsonPropertyName("hasKeyboardFocus")]
+    public bool? HasKeyboardFocus { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -586,7 +611,7 @@ public sealed class EnforcementSnapshot
     public WorkflowCompletion? Completion { get; set; }
 
     [JsonPropertyName("verificationScope")]
-    public string VerificationScope { get; init; } = "ui-surface-parity";
+    public string VerificationScope { get; init; } = "ui-surface-reachability";
 
     [JsonPropertyName("humanValidationItems")]
     public List<HumanValidationItem> HumanValidationItems { get; set; } = [];
@@ -690,7 +715,14 @@ public sealed class EnforcementFrontier
 public sealed record PipelineValidationState(string Id, string? Status, string? Reason);
 public sealed record StateVerificationSummary(string Id, string Level, string Reason)
 {
+    [JsonIgnore]
+    public bool IsReachable => Level is StateVerificationLevel.SurfaceReachable or
+        StateVerificationLevel.SurfaceParityVerified;
     public string Result { get; init; } = SurfaceVerificationResult.Pending;
+    [JsonIgnore]
+    public IReadOnlyList<string> CheckIds { get; init; } = [];
+    [JsonIgnore]
+    public IReadOnlyList<string> Evidence { get; init; } = [];
     [JsonPropertyName("comparisonDiagnostics")]
     public List<SurfaceComparisonDiagnostic>? ComparisonDiagnostics { get; init; }
 }
