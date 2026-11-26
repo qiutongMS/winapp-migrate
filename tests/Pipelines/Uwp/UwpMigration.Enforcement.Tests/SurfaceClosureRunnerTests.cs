@@ -16,7 +16,7 @@ public sealed partial class RunnerAcceptanceTests
         ".migration-evidence/state-plan.json";
 
     [TestMethod]
-    public async Task SurfaceClosure_CliDerivesAndFinalizesCanonicalTrees()
+    public async Task SurfaceClosure_CliFinalizesOriginalEvidenceWithoutMirrors()
     {
         using var fixture = await RunnerFixture.CreateAsync();
         var process = new FakeProcessRunner(
@@ -65,11 +65,8 @@ public sealed partial class RunnerAcceptanceTests
                 TestWindowOwnerResolver.Shared);
         Assert.AreEqual("complete", completed.Disposition?.Kind,
             JsonSerializer.Serialize(completed.Gates, EnforcementStore.JsonOptions));
-        Assert.AreEqual(
-            ClosureTree,
-            await File.ReadAllTextAsync(
-                fixture.Path(
-                    ".migration-evidence/target/state-1-ui.json")));
+        Assert.AreEqual(ClosureTree, await File.ReadAllTextAsync(fixture.Path(probe.StandardOutputPath)));
+        Assert.IsFalse(File.Exists(fixture.Path(".migration-evidence/target/state-1-ui.json")));
         Assert.IsFalse(
             File.Exists(
                 fixture.Path(
@@ -101,7 +98,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(unsupportedHost ? "tool-blocked" : "continue", synchronized.Disposition?.Kind);
         Assert.AreEqual("passed", synchronized.Gates.Single(gate => gate.Id == "report-sync").Status);
         Assert.AreEqual("blocked", synchronized.Gates.Single(gate => gate.Id == "state-closure").Status);
-        Assert.AreEqual("blocked", synchronized.Gates.Single(gate => gate.Id == "report-closure").Status);
+        Assert.AreEqual("passed", synchronized.Gates.Single(gate => gate.Id == "report-closure").Status);
         Assert.AreEqual(
             unsupportedHost ? SurfaceVerificationResult.HumanValidationRequired : SurfaceVerificationResult.Mismatch,
             synchronized.StateVerifications.Single().Result);
@@ -109,7 +106,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("captured", report.Validation.SourceBaseline.Status);
         Assert.AreEqual("passed", report.Validation.TargetReplay.Status);
         Assert.AreEqual(unsupportedHost ? "unverified" : "failed", report.Validation.ParityStatus);
-        Assert.AreEqual(tree, await File.ReadAllTextAsync(fixture.Path(".migration-evidence/target/state-1-ui.json")));
+        Assert.AreEqual(tree, await File.ReadAllTextAsync(fixture.Path(probe.StandardOutputPath)));
 
         var strict = new UwpEnforceCommand(new FakeProcessRunner(), TestWindowOwnerResolver.Shared)
             .Parse(["finalize", fixture.Root.FullName, "--strict"]);
@@ -136,12 +133,7 @@ public sealed partial class RunnerAcceptanceTests
             relaunched.StateVerifications.Single(item => item.Id == "state-1").Result);
         var second = await CaptureCampaignSurfaceAsync(fixture, "state-2", ClosureTree, resolver);
         Assert.IsTrue(second.StateVerifications.All(item => item.Result == SurfaceVerificationResult.Verified));
-        Assert.IsTrue(second.Telemetry!.CoverageProgress);
-        Assert.IsTrue(second.Telemetry.ParityProgress);
-        Assert.IsTrue(second.Telemetry.ActivityObserved);
         var observedAgain = await UwpEnforcementRunner.AssessAsync(fixture.Root, resolver);
-        Assert.IsFalse(observedAgain.Telemetry!.MeasuredProgress);
-        Assert.IsFalse(observedAgain.Telemetry.ActivityObserved);
         var completed = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, resolver);
         Assert.AreEqual("complete", completed.Disposition?.Kind,
             JsonSerializer.Serialize(completed.Gates, EnforcementStore.JsonOptions));

@@ -21,6 +21,8 @@ internal static class RequiredActionProtocol
     {
         var navigation = surface.Verification!;
         var result = new List<StateStepReceipt>();
+        var binding = navigation.RequiredActions.Count == 0
+            ? null : SelectorBindingAmendments.Read(root, surface);
         foreach (var action in navigation.RequiredActions)
         {
             if (action.ProbeIndex >= probes.Count)
@@ -31,8 +33,8 @@ internal static class RequiredActionProtocol
             }
             var command =
                 SelectorBindingAmendments.ResolveCommand(
-                    root,
-                    surface,
+                    binding,
+                    surface.Id,
                     action);
             if (!Normalize(probes[action.ProbeIndex].Command.Skip(2).ToArray())
                     .SequenceEqual(

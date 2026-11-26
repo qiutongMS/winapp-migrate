@@ -13,12 +13,11 @@ internal sealed class UwpTodoCommand : Command
     public UwpTodoCommand(IWindowOwnerResolver? windowOwnerResolver = null)
         : base(
             "todo",
-            "Assess implementation progress, preserve failed approach knowledge, and record discovered migration work.")
+            "Assess implementation progress, preserve failure/evidence history, and record discovered migration work.")
     {
         windowOwnerResolver ??= WindowsWindowOwnerResolver.Instance;
         Subcommands.Add(new AssessCommand(windowOwnerResolver));
         Subcommands.Add(new StatusCommand(windowOwnerResolver));
-        Subcommands.Add(new SelectApproachCommand());
         Subcommands.Add(new RecordCommand());
         Subcommands.Add(new BindSurfaceCommand());
         Subcommands.Add(new DiscoverCommand());
@@ -138,52 +137,12 @@ internal sealed class UwpTodoCommand : Command
         }
     }
 
-    private sealed class SelectApproachCommand : Command
-    {
-        internal SelectApproachCommand()
-            : base(
-                "select-approach",
-                "Optionally record an implementation approach and preserve retry notes; this is not an acceptance prerequisite.")
-        {
-            var target = TargetArgument();
-            var todoId = TodoIdArgument();
-            var approachKey = new Argument<string>("approach-key")
-            {
-                Description = "Declared candidate strategy ID or stable custom approach key."
-            };
-            var reason = RequiredStringOption(
-                "--reason",
-                "Why this approach preserves the source behavior and satisfies completion conditions.");
-            var retryEvidence = RepeatedOption(
-                "--retry-evidence",
-                "Evidence that a previously recorded retry condition changed.");
-            Arguments.Add(target);
-            Arguments.Add(todoId);
-            Arguments.Add(approachKey);
-            Options.Add(reason);
-            Options.Add(retryEvidence);
-            SetAction((result, token) => InvokeGuardedAsync(async () =>
-            {
-                var assessment =
-                    await TodoExecutionService.SelectApproachAsync(
-                        result.GetValue(target)!,
-                        result.GetValue(todoId)!,
-                        result.GetValue(approachKey)!,
-                        result.GetValue(reason)!,
-                        result.GetValue(retryEvidence) ?? [],
-                        token);
-                Write(assessment);
-                return 0;
-            }));
-        }
-    }
-
     private sealed class RecordCommand : Command
     {
         internal RecordCommand()
             : base(
                 "record",
-                "Record an implemented TODO or reject the selected approach with durable failure evidence.")
+                "Record a TODO implementation result with concise failure/evidence history.")
         {
             var target = TargetArgument();
             var todoId = TodoIdArgument();
@@ -192,14 +151,14 @@ internal sealed class UwpTodoCommand : Command
                 "Outcome: implemented or failed.");
             var summary = RequiredStringOption(
                 "--summary",
-                "Concise description of the implementation or failed approach.");
+                "Concise description of the implementation or failure.");
             var failureSignature = new Option<string?>("--failure-signature")
             {
-                Description = "Stable signature required when outcome=failed."
+                Description = "Optional stable failure signature."
             };
             var retryCondition = new Option<string?>("--retry-condition")
             {
-                Description = "Concrete condition that must change before the failed approach may be retried."
+                Description = "Optional repair or retry note; not an authorization prerequisite."
             };
             var evidence = RepeatedOption(
                 "--evidence",
@@ -355,12 +314,13 @@ internal sealed class UwpTodoCommand : Command
             exception is ArgumentException
             or InvalidDataException
             or IOException
-            or UnauthorizedAccessException)
+            or UnauthorizedAccessException
+            or EnforcementLockTimeoutException)
         {
             Write(new
             {
                 schemaVersion = "1.0",
-                status = "error",
+                status = exception is EnforcementLockTimeoutException ? "enforcement-busy" : "error",
                 error = exception.Message
             });
             return 1;

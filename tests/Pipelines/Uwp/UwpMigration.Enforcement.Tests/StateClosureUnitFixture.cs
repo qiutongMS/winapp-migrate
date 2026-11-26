@@ -58,7 +58,6 @@ public sealed partial class EnforcementEvaluatorTests
             ? JsonSerializer.Deserialize<WorkflowProgress>(File.ReadAllText(progressPath), EnforcementStore.JsonOptions)!
             : new WorkflowProgress
             {
-                LastTargetFingerprint = replay.TargetFingerprint,
                 LastObservedAt = input.GeneratedAt
             };
         progress.Operations.Add(new WorkflowOperationRecord
@@ -116,7 +115,6 @@ public sealed partial class EnforcementEvaluatorTests
         var (progress, _) = EnforcementStore.TryLoadAsync<WorkflowProgress>(root, EnforcementStore.ProgressPath).GetAwaiter().GetResult();
         progress ??= new WorkflowProgress
         {
-            LastTargetFingerprint = input.TargetFingerprint,
             LastObservedAt = input.GeneratedAt
         };
         foreach (var item in new[]

@@ -8,8 +8,7 @@ A contract declares:
 
 - how to recognize its active workspace from a marker and JSON requirements;
 - shell executable and verb combinations that must be denied;
-- opaque or dynamic process launchers that cannot be inspected safely;
-- optional file-write rules for contracts that need a protected workspace.
+- opaque or dynamic process launchers that cannot be inspected safely.
 
 The UWP policy is
 `skills/uwp-to-winapp/skill-execution-contract.json`. Plugin `hooks.json`

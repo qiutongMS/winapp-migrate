@@ -63,7 +63,6 @@ internal static class TodoExecutionProgressStore
         }
         progress ??= new TodoExecutionProgressDocument();
         Validate(progress);
-        ValidateReferences(progress, report);
         return new TodoExecutionContext(
             report,
             plan,
@@ -121,9 +120,7 @@ internal static class TodoExecutionProgressStore
                     string.IsNullOrWhiteSpace(item.Summary) ||
                     item.RecordedAt == default ||
                     item.Kind == TodoExecutionService.Implementation &&
-                        item.Outcome is not ("passed" or "failed") ||
-                    item.Kind == TodoExecutionService.ApproachRejected &&
-                        string.IsNullOrWhiteSpace(item.ApproachKey)))
+                        item.Outcome is not ("passed" or "failed")))
             {
                 throw new InvalidDataException(
                     $"todo-progress.json contains invalid event history for TODO '{progress.TodoId}'.");
@@ -131,21 +128,6 @@ internal static class TodoExecutionProgressStore
         }
     }
 
-    internal static void ValidateReferences(
-        TodoExecutionProgressDocument document,
-        MigrationReport report)
-    {
-        var todoIds = report.Todos.Select(todo => todo.Id)
-            .ToHashSet(StringComparer.Ordinal);
-        var unknown = document.Todos
-            .Select(item => item.TodoId)
-            .FirstOrDefault(id => !todoIds.Contains(id));
-        if (unknown is not null)
-        {
-            throw new InvalidDataException(
-                $"todo-progress.json references unknown TODO '{unknown}'.");
-        }
-    }
 }
 
 internal sealed record TodoExecutionContext(

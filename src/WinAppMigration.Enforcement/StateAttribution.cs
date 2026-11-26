@@ -37,13 +37,17 @@ public static class StateAttribution
                 throw new InvalidDataException($"Unknown planned surface: {requestedState}.");
             return new StateSliceBinding(state.Id, SemanticSlicePlanner.SliceId(state));
         }
-        var slices = EnforcementEvaluator.AssessSlices(input, EnforcementEvaluator.EvidenceReplay(input));
+        var replay = EnforcementEvaluator.EvidenceReplay(input);
+        var verifications = plan.States.Select(state => StateClosureProtocol.AssessLevel(
+            input.TargetRoot, state, replay, input.GeneratedAt, input.WindowOwnerResolver)).ToList();
+        var slices = EnforcementEvaluator.AssessSlices(input, replay, verifications);
         var selected = SemanticSlicePlanner.Select(slices);
         var revalidate = selected is null && slices.All(slice => slice.Resolved);
         if (revalidate)
             selected = slices.FirstOrDefault(slice => slice.Resolved && !slice.Complete);
         var candidates = selected?.States.Where(state => revalidate ||
-            EnforcementEvaluator.StateRequiresWork(input, state)).ToArray() ?? [];
+            verifications.First(verification => verification.Id == state.Id).Result !=
+                SurfaceVerificationResult.Verified).ToArray() ?? [];
         return selected is null ? StateSliceBinding.Unbound :
             new StateSliceBinding(candidates.Length == 1 ? candidates[0].Id : null, selected.Id);
     }
@@ -53,14 +57,9 @@ public static class StateAttribution
         if (input.Replay is { } replay) Validate(input.StatePlan, new StateSliceBinding(replay.StateId, replay.SliceId));
         if (input.Diagnostic is { } diagnostic) Validate(input.StatePlan, new StateSliceBinding(diagnostic.StateId, diagnostic.SliceId));
         if (input.Build is { } build) Validate(input.StatePlan, new StateSliceBinding(build.StateId, build.SliceId));
-        if (input.Progress is { } progress)
-            Validate(input.StatePlan, new StateSliceBinding(progress.ActiveStateId, progress.ActiveSliceId));
         foreach (var attempt in input.Attempts.Attempts)
         {
             Validate(input.StatePlan, new StateSliceBinding(attempt.StateId, attempt.SliceId));
-            if (attempt.Diagnosis is { } diagnosis &&
-                (diagnosis.StateId != attempt.StateId || diagnosis.SliceId != attempt.SliceId))
-                throw new InvalidDataException("Diagnosis attribution must exactly preserve its recorded failure tuple.");
             if (attempt.OperationId is not null)
             {
                 var operation = AuthenticatedOperation(input.TargetRoot, attempt.OperationId);

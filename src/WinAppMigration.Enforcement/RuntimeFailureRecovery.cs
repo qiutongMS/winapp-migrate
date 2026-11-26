@@ -41,7 +41,7 @@ public static class RuntimeFailureRecovery
             });
             changed = true;
         }
-        if (replay is { Success: false })
+        if (replay is { Success: false, ExitCode: not 0 })
         {
             if (!CanonicalAttestationTrust.VerifyFailure(input.TargetRoot, replay))
                 throw new InvalidDataException("Runtime recovery requires the trusted replay operation/attestation chain.");

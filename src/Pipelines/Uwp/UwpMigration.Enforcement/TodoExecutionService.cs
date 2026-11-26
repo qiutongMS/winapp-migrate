@@ -65,36 +65,6 @@ public static class TodoExecutionService
             context.Report, context.Plan, assessments, context.Progress, surfaces);
     }
 
-    public static async Task<TodoExecutionAssessment> SelectApproachAsync(
-        DirectoryInfo target,
-        string todoId,
-        string approachKey,
-        string rationale,
-        IReadOnlyList<string>? retryEvidence = null,
-        CancellationToken cancellationToken = default)
-    {
-        RequireText(todoId, nameof(todoId));
-        RequireText(approachKey, nameof(approachKey));
-        RequireText(rationale, nameof(rationale));
-        var normalizedEvidence = NormalizeValues(retryEvidence ?? []);
-        await using var enforcementLock =
-            await EnforcementStore.AcquireLockAsync(target, cancellationToken);
-        var context = await TodoExecutionProgressStore.LoadAsync(target, cancellationToken);
-        var todo = FindTodo(context.Report, todoId);
-        var progress = FindOrCreateProgress(context.Progress, todoId);
-        if (progress.CurrentApproachKey != approachKey)
-        {
-            progress.Attempt++;
-            progress.CurrentApproachKey = approachKey;
-            progress.CurrentApproachRationale = rationale;
-            AddEvent(progress, ApproachSelected, "selected", rationale,
-                approachKey, evidence: normalizedEvidence);
-            await TodoExecutionProgressStore.SaveAsync(target, context.Progress, cancellationToken);
-        }
-        return Assess(target, context, todo,
-            await TargetFingerprint.ComputeAsync(target, cancellationToken));
-    }
-
     public static async Task<TodoExecutionAssessment> RecordImplementationAsync(
         DirectoryInfo target,
         string todoId,
@@ -115,17 +85,10 @@ public static class TodoExecutionService
         var context = await TodoExecutionProgressStore.LoadAsync(target, cancellationToken);
         var todo = FindTodo(context.Report, todoId);
         var progress = FindOrCreateProgress(context.Progress, todoId);
-        if (progress.CurrentApproachKey is null)
-            progress.Attempt++;
-        var rejected = outcome == "failed" && progress.CurrentApproachKey is not null;
-        AddEvent(progress, rejected ? ApproachRejected : Implementation,
+        progress.Attempt++;
+        AddEvent(progress, Implementation,
             outcome == "implemented" ? "passed" : "failed", summary,
-            progress.CurrentApproachKey, failureSignature, retryCondition, normalizedEvidence);
-        if (outcome == "failed")
-        {
-            progress.CurrentApproachKey = null;
-            progress.CurrentApproachRationale = null;
-        }
+            failureSignature, retryCondition, normalizedEvidence);
         await TodoExecutionProgressStore.SaveAsync(target, context.Progress, cancellationToken);
         return Assess(target, context, todo,
             await TargetFingerprint.ComputeAsync(target, cancellationToken));
@@ -302,6 +265,11 @@ public static class TodoExecutionService
         var projectChecksPass = TodoCompletionContract.ProjectClosureChecksPass(
             target, todo, context.Report, context.Build, targetFingerprint);
         var pendingBindings = TodoCompletionContract.PendingBindings(todo, context.Plan);
+        var diagnostics = surfaces.Where(surface => surface.Status != "verified")
+            .SelectMany(surface => surface.ComparisonDiagnostics)
+            .Where(item => !item.IsNormalization).ToList();
+        var repair = diagnostics.FirstOrDefault(item => item.RepairOwner == "application") ??
+            diagnostics.FirstOrDefault();
         var handoffs = BuildHumanValidationItems(todo, context.Plan, surfaces);
         var verificationStatus = surfaces.Any(surface => surface.Status == "failed")
             ? "failed"
@@ -312,6 +280,8 @@ public static class TodoExecutionService
                     : "verified";
         var next = pendingBindings.Count > 0
             ? ("bind-surface", $"Bind completion check '{pendingBindings[0].Id}' to the actual required surface in the inventory; preserve its exact surface checks.")
+            : repair is { RepairOwner: "capture" or "tool" }
+            ? (repair.RepairOwner == "capture" ? "review-inputs" : "repair-tool", repair.SuggestedAction)
             : implementationStatus == "pending"
             ? ("record-implementation", $"Implement TODO '{todo.Id}' and record its implementation result; surface evidence does not prove business behavior.")
             : verificationStatus switch
@@ -326,18 +296,9 @@ public static class TodoExecutionService
         {
             Todo = todo, ImplementationStatus = implementationStatus,
             VerificationStatus = verificationStatus, Surfaces = surfaces,
-            CurrentApproachKey = progress?.CurrentApproachKey,
-            CurrentApproachRationale = progress?.CurrentApproachRationale,
-            AcceptedApproachKey = latestResult is { Kind: Implementation, Outcome: "passed" } ? latestResult.ApproachKey : null,
             Attempt = progress?.Attempt ?? 0,
-            RejectedApproaches = progress?.Events.Where(item => item.Kind == ApproachRejected).Select(item =>
-                new RejectedApproach
-                {
-                    ApproachKey = item.ApproachKey!, Summary = item.Summary,
-                    FailureSignature = item.FailureSignature ?? "unspecified",
-                    RetryCondition = item.RetryCondition ?? "Review the recorded failure before retrying.",
-                    Evidence = item.Evidence, RejectedAt = item.RecordedAt
-                }).ToList() ?? [],
+            History = progress?.Events.Where(item => item.Kind is Implementation or ApproachRejected)
+                .OrderBy(item => item.Sequence).ToList() ?? [],
             HumanValidationItems = handoffs, NextOperation = next.Item1, NextCommand = next.Item2
         };
     }
@@ -376,6 +337,7 @@ public static class TodoExecutionService
                 : "failed";
         result.Reason = string.Join(" ", proof.Issues);
         result.Evidence = [StateClosureProtocol.AttestationPath(state.Id)];
+        result.ComparisonDiagnostics = proof.ComparisonDiagnostics ?? [];
         return result;
     }
 
@@ -443,13 +405,13 @@ public static class TodoExecutionService
 
     private static void AddEvent(
         TodoExecutionProgress progress, string kind, string outcome, string summary,
-        string? approachKey = null, string? failureSignature = null,
+        string? failureSignature = null,
         string? retryCondition = null, IReadOnlyList<string>? evidence = null) =>
         progress.Events.Add(new TodoExecutionEvent
         {
             Sequence = progress.Events.Count == 0 ? 1 : progress.Events.Max(item => item.Sequence) + 1,
             Attempt = progress.Attempt, Kind = kind, Outcome = outcome, Summary = summary,
-            ApproachKey = approachKey, FailureSignature = failureSignature, RetryCondition = retryCondition,
+            FailureSignature = failureSignature, RetryCondition = retryCondition,
             Evidence = NormalizeValues(evidence ?? []), RecordedAt = DateTimeOffset.UtcNow
         });
 

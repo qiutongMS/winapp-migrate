@@ -328,6 +328,7 @@ public static class StateClosureProtocol
         }
 
         var fingerprint = ContractFingerprint(root, state);
+        var selectorBindingHash = SelectorBindingAmendments.StateHash(root, state);
         var progress =
             Read<WorkflowProgress>(root, EnforcementStore.ProgressPath);
         if (progress.SchemaVersion != WorkflowProgress.CurrentSchemaVersion ||
@@ -392,8 +393,7 @@ public static class StateClosureProtocol
                 throw new InvalidDataException(
                     $"Probe does not match the current planned surface identity/contract: {state.Id}.");
             }
-            if (probe.SelectorBindingHash !=
-                SelectorBindingAmendments.StateHash(root, state))
+            if (probe.SelectorBindingHash != selectorBindingHash)
             {
                 throw new InvalidDataException(
                     $"Probe selector binding does not match the current audited binding generation for surface {state.Id}.");

@@ -27,8 +27,25 @@ internal sealed class UwpEnforceCommand : Command
         Subcommands.Add(new UiCommand(processRunner, windowOwnerResolver));
         Subcommands.Add(new RecordSurfaceCommand(windowOwnerResolver));
         Subcommands.Add(new SynchronizeCommand(windowOwnerResolver));
-        Subcommands.Add(new RecordFailureCommand(windowOwnerResolver));
-        Subcommands.Add(new RecordDiagnosisCommand(windowOwnerResolver));
+        Subcommands.Add(new StopCommand());
+    }
+
+    private sealed class StopCommand : Command
+    {
+        internal StopCommand() : base("stop", "Persist a host-requested stop without declaring migration success.")
+        {
+            var target = TargetArgument();
+            var reason = new Option<string>("--reason")
+            {
+                Required = true,
+                Description = "budget-exhausted, no-progress, or external-blocker."
+            };
+            Arguments.Add(target);
+            Options.Add(reason);
+            SetAction((result, token) => InvokeGuardedAsync(async () =>
+                WriteSnapshot(await UwpEnforcementRunner.StopAsync(
+                    result.GetValue(target)!, result.GetValue(reason)!, token), false, true)));
+        }
     }
 
     private sealed class BindSourceCommand : Command
@@ -224,7 +241,6 @@ internal sealed class UwpEnforceCommand : Command
             {
                 Description = "Request another canonical replay after a current successful analyzer build. Existing process-bound surface evidence becomes stale."
             };
-            var discriminatingEvidence = DiscriminatingEvidenceOption();
             var full = FullOutputOption();
             Arguments.Add(target);
             Options.Add(winApp);
@@ -234,7 +250,6 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(framework);
             Options.Add(properties);
             Options.Add(forceReplay);
-            Options.Add(discriminatingEvidence);
             Options.Add(full);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
@@ -249,8 +264,7 @@ internal sealed class UwpEnforceCommand : Command
                         Runtime = parseResult.GetValue(runtime),
                         Framework = parseResult.GetValue(framework),
                         Properties = parseResult.GetValue(properties) ?? [],
-                        ForceReplay = parseResult.GetValue(forceReplay),
-                        DiscriminatingEvidence = parseResult.GetValue(discriminatingEvidence) ?? []
+                        ForceReplay = parseResult.GetValue(forceReplay)
                     };
                     var runner = new UwpEnforcementRunner(processRunner, windowOwnerResolver: windowOwnerResolver);
                     using var trace = EnforcementTrace.Start(parseResult.GetValue(target)!);
@@ -290,7 +304,6 @@ internal sealed class UwpEnforceCommand : Command
                 Arity = ArgumentArity.ZeroOrMore,
                 AllowMultipleArgumentsPerToken = false
             };
-            var discriminatingEvidence = DiscriminatingEvidenceOption();
             Arguments.Add(target);
             Options.Add(winApp);
             Options.Add(configuration);
@@ -298,7 +311,6 @@ internal sealed class UwpEnforceCommand : Command
             Options.Add(runtime);
             Options.Add(framework);
             Options.Add(properties);
-            Options.Add(discriminatingEvidence);
             SetAction((parseResult, cancellationToken) =>
                 InvokeGuardedAsync(async () =>
                 {
@@ -316,8 +328,7 @@ internal sealed class UwpEnforceCommand : Command
                             Runtime = parseResult.GetValue(runtime),
                             Framework = parseResult.GetValue(framework),
                             Properties =
-                                parseResult.GetValue(properties) ?? [],
-                            DiscriminatingEvidence = parseResult.GetValue(discriminatingEvidence) ?? []
+                                parseResult.GetValue(properties) ?? []
                         },
                         cancellationToken);
                     Console.Out.WriteLine(JsonSerializer.Serialize(
@@ -337,7 +348,6 @@ internal sealed class UwpEnforceCommand : Command
         {
             var target = TargetArgument();
             var winApp = WinAppOption();
-            var discriminatingEvidence = DiscriminatingEvidenceOption();
             var state = new Option<string?>("--surface")
             {
                 Description = "Bind this probe to a required UI surface and an explicit replay-owned HWND or trusted owner-bound PickerHost HWND."
@@ -354,7 +364,6 @@ internal sealed class UwpEnforceCommand : Command
             Arguments.Add(target);
             Arguments.Add(arguments);
             Options.Add(winApp);
-            Options.Add(discriminatingEvidence);
             Options.Add(state);
             Options.Add(rawOutput);
             SetAction((parseResult, cancellationToken) =>
@@ -363,7 +372,6 @@ internal sealed class UwpEnforceCommand : Command
                     windowOwnerResolver,
                     target,
                     winApp,
-                    discriminatingEvidence,
                     state,
                     rawOutput,
                     arguments).InvokeAsync(
@@ -445,147 +453,6 @@ internal sealed class UwpEnforceCommand : Command
         }
     }
 
-    private sealed class RecordFailureCommand : Command
-    {
-        internal RecordFailureCommand(IWindowOwnerResolver windowOwnerResolver)
-            : base(
-                "record-failure",
-                "Record an observed build or runtime failure signature against the current target fingerprint.")
-        {
-            var target = TargetArgument();
-            var kind = new Argument<string>("kind")
-            {
-                Description = "Failure kind: build or runtime.",
-                Arity = ArgumentArity.ExactlyOne
-            };
-            var signature = new Argument<string>("signature")
-            {
-                Description = "Stable diagnostic or crash signature.",
-                Arity = ArgumentArity.ExactlyOne
-            };
-            var state = new Option<string?>("--surface")
-            {
-                Description = "Optional surface ID affected by the failure."
-            };
-            var evidence = new Option<string[]>("--evidence")
-            {
-                Description = "Target-relative evidence path. Repeat for multiple files.",
-                Arity = ArgumentArity.OneOrMore,
-                Required = true,
-                AllowMultipleArgumentsPerToken = false
-            };
-            var full = FullOutputOption();
-            Arguments.Add(target);
-            Arguments.Add(kind);
-            Arguments.Add(signature);
-            Options.Add(state);
-            Options.Add(evidence);
-            Options.Add(full);
-            SetAction((parseResult, cancellationToken) =>
-                InvokeGuardedAsync(async () =>
-                {
-                    var snapshot =
-                        await UwpEnforcementRunner.RecordFailureAsync(
-                            parseResult.GetValue(target)!,
-                            windowOwnerResolver,
-                            parseResult.GetValue(kind)!,
-                            parseResult.GetValue(signature)!,
-                            parseResult.GetValue(state),
-                            parseResult.GetValue(evidence) ?? [],
-                            cancellationToken);
-                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
-                }));
-        }
-    }
-
-    private sealed class RecordDiagnosisCommand : Command
-    {
-        internal RecordDiagnosisCommand(IWindowOwnerResolver windowOwnerResolver)
-            : base(
-                "record-diagnosis",
-                "Record source-first semantic diagnosis for a previously recorded runtime failure.")
-        {
-            var target = TargetArgument();
-            var signature = new Argument<string>("signature")
-            {
-                Description = "Stable runtime failure signature used by record-failure.",
-                Arity = ArgumentArity.ExactlyOne
-            };
-            var state = new Option<string?>("--surface")
-            {
-                Description = "Optional surface ID associated with the failure."
-            };
-            var sourceLocations = new Option<string[]>(
-                "--source-location")
-            {
-                Description = "Source location inspected during diagnosis. Repeat for multiple locations.",
-                Arity = ArgumentArity.OneOrMore,
-                Required = true,
-                AllowMultipleArgumentsPerToken = false
-            };
-            var targetLocations = new Option<string[]>(
-                "--target-location")
-            {
-                Description = "Target location inspected during diagnosis. Repeat for multiple locations.",
-                Arity = ArgumentArity.OneOrMore,
-                Required = true,
-                AllowMultipleArgumentsPerToken = false
-            };
-            var sourceInvariant = new Option<string>(
-                "--source-invariant")
-            {
-                Description = "Source behavior or workaround that the target must preserve.",
-                Required = true
-            };
-            var hypothesis = new Option<string>("--hypothesis")
-            {
-                Description = "Single falsifiable explanation of the target failure.",
-                Required = true
-            };
-            var test = new Option<string>("--test")
-            {
-                Description = "One discriminating test for the hypothesis.",
-                Required = true
-            };
-            var evidence = new Option<string[]>("--evidence")
-            {
-                Description = "Fresh target-relative diagnosis evidence path. Repeat for multiple files.",
-                Arity = ArgumentArity.OneOrMore,
-                Required = true,
-                AllowMultipleArgumentsPerToken = false
-            };
-            var full = FullOutputOption();
-            Arguments.Add(target);
-            Arguments.Add(signature);
-            Options.Add(state);
-            Options.Add(sourceLocations);
-            Options.Add(targetLocations);
-            Options.Add(sourceInvariant);
-            Options.Add(hypothesis);
-            Options.Add(test);
-            Options.Add(evidence);
-            Options.Add(full);
-            SetAction((parseResult, cancellationToken) =>
-                InvokeGuardedAsync(async () =>
-                {
-                    var snapshot =
-                        await UwpEnforcementRunner.RecordDiagnosisAsync(
-                            parseResult.GetValue(target)!,
-                            windowOwnerResolver,
-                            parseResult.GetValue(signature)!,
-                            parseResult.GetValue(state),
-                            parseResult.GetValue(sourceLocations) ?? [],
-                            parseResult.GetValue(targetLocations) ?? [],
-                            parseResult.GetValue(sourceInvariant)!,
-                            parseResult.GetValue(hypothesis)!,
-                            parseResult.GetValue(test)!,
-                            parseResult.GetValue(evidence) ?? [],
-                            cancellationToken);
-                    return WriteSnapshot(snapshot, parseResult.GetValue(full));
-                }));
-        }
-    }
-
     private static Argument<DirectoryInfo> TargetArgument()
     {
         var target = new Argument<DirectoryInfo>("target")
@@ -596,14 +463,6 @@ internal sealed class UwpEnforceCommand : Command
         target.AcceptExistingOnly();
         return target;
     }
-
-    private static Option<string[]> DiscriminatingEvidenceOption() =>
-        new("--discriminating-evidence")
-        {
-            Description = "Optional target-relative diagnostic notes retained with the operation. Notes do not authorize builds, replay, or UI verification.",
-            Arity = ArgumentArity.ZeroOrMore,
-            AllowMultipleArgumentsPerToken = false
-        };
 
     private static Option<bool> FullOutputOption() =>
         new("--full")
@@ -636,7 +495,6 @@ internal sealed class UwpEnforceCommand : Command
         IWindowOwnerResolver? windowOwnerResolver,
         Argument<DirectoryInfo> target,
         Option<string?> winApp,
-        Option<string[]> discriminatingEvidence,
         Option<string?> state,
         Option<bool> rawOutput,
         Argument<string[]> arguments)
@@ -654,7 +512,7 @@ internal sealed class UwpEnforceCommand : Command
                     targetRoot,
                     ResolveWinAppExecutable(parseResult.GetValue(winApp)),
                     parseResult.GetValue(arguments) ?? [],
-                    parseResult.GetValue(discriminatingEvidence) ?? [],
+                    [],
                     parseResult.GetValue(state),
                     cancellationToken);
                 if (parseResult.GetValue(rawOutput))

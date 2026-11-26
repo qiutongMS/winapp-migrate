@@ -21,14 +21,13 @@ public sealed partial class EnforcementEvaluatorTests
         input.StatePlan!.States.Add(next);
         var progress = fallback == "none" ? null : new WorkflowProgress
         {
-            LastTargetFingerprint = input.TargetFingerprint,
             ActiveStateId = fallback == "verified-prior" ? "state-1" : "category-selection",
             ActiveSliceId = fallback == "verified-prior" ? "state-1" : "category-slice"
         };
         var failed = new ReplayAttestation
         {
             Id = "legacy-failure", RunId = "legacy-run", BuildAttestationId = "build-1",
-            TargetFingerprint = input.TargetFingerprint, Success = false, CompletedAt = input.GeneratedAt,
+            TargetFingerprint = input.TargetFingerprint, Success = false, ExitCode = 1, CompletedAt = input.GeneratedAt,
             StandardOutputPath = "replay-stdout.json", StandardErrorPath = "replay-stderr.log"
         };
         var attempts = new AttemptLedger();
@@ -58,24 +57,12 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    [DataRow("finding")]
-    [DataRow("failure")]
-    public void Attribution_FrontierAdvisesWithoutRejectingAnotherDeclaredState(string cause)
+    public void Attribution_FrontierAdvisesWithoutRejectingAnotherDeclaredState()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput();
         input.StatePlan!.States.Add(State("later-state"));
-        if (cause == "finding")
-            input = input with { FindingLedger = new SemanticFindingLedger
-            {
-                Findings = [new SemanticFinding
-                {
-                    Id = "regression", Category = "behavior", Status = "open", StateIds = ["state-1"],
-                    SourceInvariant = "Preserve the established observation.", CompletionCondition = "Reprove its contract."
-                }]
-            } };
-        else
-            input.Attempts.Attempts.Add(new EnforcementAttempt
+        input.Attempts.Attempts.Add(new EnforcementAttempt
             {
                 Kind = "runtime", Signature = "mapped-regression", TargetFingerprint = input.TargetFingerprint,
                 StateId = "state-1", SliceId = "state-1", RecordedAt = input.GeneratedAt, Evidence = ["evidence.txt"]
@@ -89,55 +76,6 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual("state-1", binding.SliceId);
         Assert.AreEqual("state-1", binding.StateId);
         Assert.AreEqual(new StateSliceBinding("later-state", "later-state"), laterBinding);
-    }
-
-    [TestMethod]
-    public void Attribution_MultiStateFindingSkipsAlreadySatisfiedMappedState()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        input.StatePlan!.States.Add(State("later-state"));
-        AttestState(input);
-        input = input with
-        {
-            FindingLedger = new SemanticFindingLedger
-            {
-                Findings =
-                [
-                    new SemanticFinding
-                    {
-                        Id = "multi-state", Category = "behavior", Status = "open",
-                        StateIds = ["state-1", "later-state"],
-                        SourceInvariant = "Preserve both observations.",
-                        CompletionCondition = "Verify both mapped state assertions.",
-                        CompletionAssertions =
-                        [
-                            new FindingCompletionAssertion
-                            {
-                                StateId = "state-1",
-                                AssertionId =
-                                    SurfaceCheckIds.StructureMatch
-                            },
-                            new FindingCompletionAssertion
-                            {
-                                StateId = "later-state",
-                                AssertionId =
-                                    SurfaceCheckIds.StructureMatch
-                            }
-                        ]
-                    }
-                ]
-            }
-        };
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        var binding = StateAttribution.Authorize(input, "later-state");
-
-        Assert.AreEqual("later-state", snapshot.ActiveSlice);
-        Assert.AreEqual("later-state", binding.StateId);
-        Assert.AreEqual("later-state", binding.SliceId);
-        Assert.AreEqual(new StateSliceBinding("state-1", "state-1"),
-            StateAttribution.Authorize(input, "state-1"));
     }
 
     [TestMethod]
@@ -167,7 +105,6 @@ public sealed partial class EnforcementEvaluatorTests
         if (malformed == "unknown-dependency") state.Dependencies.Add("unknown");
         input = input with { Progress = new WorkflowProgress
         {
-            LastTargetFingerprint = input.TargetFingerprint,
             ActiveStateId = state.Id, ActiveSliceId = state.Id
         } };
 
@@ -215,7 +152,6 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.IsTrue(RuntimeFailureRecovery.Recover(input.Attempts, null, diagnostic, input));
         Assert.IsFalse(RuntimeFailureRecovery.Recover(input.Attempts, null, diagnostic, input));
         Assert.HasCount(2, input.Attempts.Attempts);
-        Assert.HasCount(2, FailureProtocol.ActiveRuntimeFailures(input).ToArray());
         Assert.AreEqual("later-state", input.Attempts.Attempts[1].StateId);
         Assert.AreEqual(diagnostic.OperationId, input.Attempts.Attempts[1].OperationId);
     }
@@ -230,13 +166,8 @@ public sealed partial class RunnerAcceptanceTests
         const string evidence = ".migration-evidence/corrective-replay.txt";
         await File.WriteAllTextAsync(fixture.Path(evidence), "A controlled replay of the current selection.");
         var failed = await new UwpEnforcementRunner(new FakeProcessRunner(new EnforcementProcessResult(1, "", "selection launch failed")))
-            .RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true, DiscriminatingEvidence = [evidence] });
+            .RunAsync(fixture.Root, new UwpEnforcementOptions { ForceReplay = true });
         var attempt = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts.Single();
-        const string diagnosis = ".migration-evidence/corrective-diagnosis.txt";
-        await File.WriteAllTextAsync(fixture.Path(diagnosis), "A source/target comparison isolates the selection callback.");
-        await UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, TestWindowOwnerResolver.Shared, attempt.Signature,
-            attempt.StateId, ["Source.cs:1"], ["Target.cs:1"], "Preserve selection", "The callback is missing",
-            "Restore that callback and replay", [diagnosis]);
         await File.AppendAllTextAsync(fixture.ProjectPath, Environment.NewLine);
         var process = SuccessfulLaunch();
 
@@ -247,10 +178,9 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreNotEqual(failed.Replay!.BuildAttestationId, corrected.Replay.BuildAttestationId);
         Assert.AreEqual("category-selection", corrected.Replay.StateId);
         Assert.AreEqual("passed", corrected.Gates.Single(gate => gate.Id == "enforcement-artifacts").Status);
-        Assert.IsTrue(corrected.Workflow!.Slices.Single(slice => slice.SliceId == "initial-slice").Resolved);
-        var preserved = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts.Single();
-        Assert.AreEqual(attempt.OperationId, preserved.OperationId);
-        Assert.AreEqual("category-selection", preserved.Diagnosis!.StateId);
+        var history = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts;
+        Assert.AreEqual(JsonSerializer.Serialize(attempt, EnforcementStore.JsonOptions),
+            JsonSerializer.Serialize(history.Single(), EnforcementStore.JsonOptions));
     }
 
     [TestMethod]
@@ -265,7 +195,7 @@ public sealed partial class RunnerAcceptanceTests
         var runner = new UwpEnforcementRunner(new FakeProcessRunner(result));
 
         var replayed = await runner.RunAsync(fixture.Root, new UwpEnforcementOptions
-        { ForceReplay = true, DiscriminatingEvidence = [evidence] });
+        { ForceReplay = true });
 
         Assert.AreEqual("category-selection", replayed.Replay!.StateId);
         Assert.AreEqual("category-slice", replayed.Replay.SliceId);
@@ -273,7 +203,6 @@ public sealed partial class RunnerAcceptanceTests
         var operation = history.Operations.Single(item => item.Id == replayed.Replay.OperationId);
         Assert.AreEqual(replayed.Replay.StateId, operation.StateId);
         Assert.AreEqual(replayed.Replay.SliceId, operation.IntendedSliceId);
-        Assert.IsTrue(history.Slices.Single(item => item.SliceId == "initial-slice").Resolved);
         if (failure)
         {
             Assert.AreEqual("replay", replayed.Frontier!.Kind);
@@ -315,22 +244,8 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual(diagnostic.OperationId, failure.OperationId);
         Assert.AreEqual("category-selection", recovered.Frontier!.Id);
         Assert.AreEqual("category-slice", recovered.Frontier.SliceId);
-        Assert.IsTrue(recovered.Workflow!.Slices.Single(item => item.SliceId == "initial-slice").Resolved);
         var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
         Assert.IsTrue(StateClosureProtocol.HasHistoricalParity(fixture.Root, plan.States[0]));
-        const string note = ".migration-evidence/category-diagnosis.txt";
-        await File.WriteAllTextAsync(fixture.Path(note), "A source/target comparison of the current selection handler.");
-
-        var diagnosed = await UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root, TestWindowOwnerResolver.Shared,
-            failure.Signature, "category-selection", ["Source.xaml.cs:10"], ["Target.xaml.cs:10"],
-            "Preserve the selected category.", "The current category callback fails.", "Replay only that category transition.", [note]);
-
-        var persisted = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts.Single();
-        Assert.AreEqual(persisted.StateId, persisted.Diagnosis!.StateId);
-        Assert.AreEqual(persisted.SliceId, persisted.Diagnosis.SliceId);
-        Assert.AreEqual("category-selection", diagnosed.Frontier!.Id);
-        Assert.AreEqual("category-slice", diagnosed.Frontier.SliceId);
-        Assert.IsTrue(diagnosed.Workflow!.Slices.Single(item => item.SliceId == "initial-slice").Resolved);
     }
 
     [TestMethod]
@@ -344,61 +259,6 @@ public sealed partial class RunnerAcceptanceTests
         await runner.InvokeUiAsync(fixture.Root,
             "winapp", ["inspect", "-w", "42", "--json"], [], "initial-state");
         Assert.AreEqual(1, process.CallCount);
-        const string evidence = ".migration-evidence/observed-category.txt";
-        await File.WriteAllTextAsync(fixture.Path(evidence), "A later unresolved selection failure.");
-        await UwpEnforcementRunner.RecordFailureAsync(
-            fixture.Root, TestWindowOwnerResolver.Shared, "runtime", "later-selection", "initial-state", [evidence]);
-
-        var attempt = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath))
-            .Attempts.Single(item => item.Evidence.Contains(evidence, StringComparer.Ordinal));
-        Assert.AreEqual("initial-state", attempt.StateId);
-        Assert.AreEqual("initial-slice", attempt.SliceId);
-    }
-
-    [TestMethod]
-    public async Task Attribution_ProbeEvidenceTupleCannotBeReboundByCallerState()
-    {
-        using var fixture = await AttributionFixtureAsync();
-        var probe = await new UwpEnforcementRunner(new FakeProcessRunner(new EnforcementProcessResult(1, "", "selection failure")),
-            windowOwnerResolver: TestWindowOwnerResolver.Shared).InvokeUiAsync(fixture.Root,
-                "winapp", ["inspect", "-w", "42", "--json"], [], "category-selection");
-        Assert.AreEqual("category-slice", probe.SliceId);
-
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => UwpEnforcementRunner.RecordFailureAsync(fixture.Root,
-            TestWindowOwnerResolver.Shared, "runtime", "selection-failure", "initial-state", [probe.StandardErrorPath]));
-
-        var recorded = await UwpEnforcementRunner.RecordFailureAsync(fixture.Root, TestWindowOwnerResolver.Shared,
-            "runtime", "selection-failure", "category-selection", [probe.StandardErrorPath]);
-        Assert.AreEqual("category-selection", recorded.Frontier!.Id);
-        Assert.AreEqual("category-slice", recorded.Frontier.SliceId);
-        var failure = (await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts.Single();
-        Assert.AreEqual(probe.OperationId, failure.OperationId);
-    }
-
-    [TestMethod]
-    [DataRow("unknown")]
-    [DataRow("inconsistent")]
-    public async Task Attribution_InvalidBoundFailureCannotBeRepairedByDiagnosis(string malformed)
-    {
-        using var fixture = await AttributionFixtureAsync();
-        const string evidence = ".migration-evidence/invalid-failure.txt";
-        await File.WriteAllTextAsync(fixture.Path(evidence), "An invalid tuple is not a diagnosis input.");
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.AttemptLedgerPath, new AttemptLedger
-        {
-            Attempts = [new EnforcementAttempt
-            {
-                Kind = "runtime", Signature = "invalid", TargetFingerprint = await TargetFingerprint.ComputeAsync(fixture.Root),
-                StateId = malformed == "unknown" ? "unknown-state" : "category-selection",
-                SliceId = "initial-slice", RecordedAt = DateTimeOffset.UtcNow, Evidence = [evidence]
-            }]
-        });
-
-        var snapshot = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        Assert.AreEqual("blocked", snapshot.Gates.Single(item => item.Id == "enforcement-artifacts").Status);
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => UwpEnforcementRunner.RecordDiagnosisAsync(fixture.Root,
-            TestWindowOwnerResolver.Shared, "invalid", "category-selection", ["Source:1"], ["Target:1"],
-            "Invariant", "Hypothesis", "Test", [evidence]));
-        Assert.IsNull((await fixture.LoadAsync<AttemptLedger>(EnforcementStore.AttemptLedgerPath)).Attempts.Single().Diagnosis);
     }
 
     private static async Task<RunnerFixture> AttributionFixtureAsync()
@@ -443,12 +303,10 @@ public sealed partial class RunnerAcceptanceTests
 
     private static async Task SetStaleActiveTupleAsync(RunnerFixture fixture)
     {
-        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        var now = DateTimeOffset.UtcNow;
-        WorkflowController.CloseActiveEpochs(progress, now, "fixture-active-change");
-        progress.ActiveSliceId = "initial-slice"; progress.ActiveStateId = "initial-state";
-        WorkflowController.Activate(progress, WorkflowController.CurrentUnit(progress, "initial-slice"), now, progress.LastTargetFingerprint);
-        progress.LastObservedAt = now;
+        var progress = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(
+            Path.Combine(fixture.Root.FullName, EnforcementStore.ProgressPath)))!;
+        progress["activeSliceId"] = "initial-slice";
+        progress["activeStateId"] = "initial-state";
         await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
     }
 

@@ -35,8 +35,8 @@ internal sealed record SurfaceTreeComparisonResult(
 
 internal static class SurfaceTreeComparison
 {
-    internal static string RulesIdentity { get; } =
-        "semantic-uia:" + typeof(SurfaceTreeComparison).Assembly.ManifestModule.ModuleVersionId.ToString("N");
+    // Bump when parsing, normalization, or comparison semantics change.
+    internal const string RulesIdentity = "semantic-uia:1";
 
     private const int MaximumDifferences = 8;
     private const int MaximumValueCharacters = 256;

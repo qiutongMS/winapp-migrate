@@ -8,20 +8,6 @@ namespace WinAppMigration.Enforcement;
 
 public static class WorkflowOperations
 {
-    public static bool TryObserveEvidence(
-        EnforcementEvaluationInput input, EnforcementSnapshot snapshot,
-        IReadOnlyList<string> evidence, out string reason)
-    {
-        if (WorkflowDispositions.RejectTerminal(snapshot, out reason)) return false;
-        reason = "Valid workflow artifacts are required before recording discriminating progress.";
-        if (snapshot.Workflow is null) return false;
-        if (!TryEvidenceFingerprint(input.TargetRoot, evidence, out var fingerprint, out reason))
-            return false;
-        WorkflowController.AddEvent(snapshot.Workflow,
-            WorkflowController.CurrentUnit(snapshot.Workflow, snapshot.ActiveSlice),
-            "discriminating-evidence", fingerprint!, input.GeneratedAt);
-        return true;
-    }
 
     public static bool TryBegin(
         EnforcementEvaluationInput input, EnforcementSnapshot snapshot, WorkflowOperation operation,
@@ -39,7 +25,7 @@ public static class WorkflowOperations
             reason = prerequisite.Reason;
             return false;
         }
-        if (!Enum.IsDefined(operation))
+        if (!Enum.IsDefined(operation) || operation == WorkflowOperation.Hypothesis)
         {
             reason = $"Unsupported workflow operation: {operation}.";
             return false;
@@ -54,10 +40,7 @@ public static class WorkflowOperations
         }
         var binding = intended ?? StateAttribution.Authorize(input);
         StateAttribution.Validate(input.StatePlan, binding);
-        var failureIntent = operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
-            FailureProtocol.ActiveRuntimeFailures(input).Any(attempt =>
-                attempt.StateId == binding.StateId && attempt.SliceId == binding.SliceId);
-        if (intended is not null && !failureIntent)
+        if (intended is not null && binding.StateId is not null)
         {
             var authorized = StateAttribution.Authorize(input, binding.StateId);
             if (authorized != binding)
@@ -65,33 +48,20 @@ public static class WorkflowOperations
         }
         var progress = snapshot.Workflow;
         var now = input.GeneratedAt;
-        var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
-        if (operation is WorkflowOperation.DiagnosticRun or WorkflowOperation.Hypothesis &&
-            progress.Operations.Any(item => item.Kind == operation &&
-                item.TargetFingerprint == input.TargetFingerprint && item.Signature == signature &&
-                item.StateId == binding.StateId && item.IntendedSliceId == binding.SliceId))
-        {
-            reason = "This failure tuple already has this diagnostic/hypothesis receipt.";
-            return false;
-        }
         string? evidenceFingerprint = null;
         if (evidence.Count > 0)
         {
             if (!TryEvidenceFingerprint(input.TargetRoot, evidence, out evidenceFingerprint, out reason))
                 return false;
         }
-        if (evidenceFingerprint is not null)
-            WorkflowController.AddEvent(progress, unit, "discriminating-evidence", evidenceFingerprint, now);
         progress.StartedAt ??= now;
-        progress.OperationsStartedAt ??= now;
-        WorkflowController.Activate(progress, unit, now, input.TargetFingerprint);
-        unit.Operations.Increment(operation);
         progress.Operations.Add(new WorkflowOperationRecord
         {
             RequiredContractHash = input.RequiredContractHash,
             StateId = binding.StateId, IntendedSliceId = binding.SliceId,
             Id = Guid.NewGuid().ToString("N"),
-            Kind = operation, Stage = unit.Stage, SliceId = unit.SliceId,
+            Kind = operation, Stage = progress.Stage,
+            SliceId = progress.Stage == WorkflowStage.SemanticConvergence ? snapshot.ActiveSlice : null,
             TargetFingerprint = input.TargetFingerprint, RecordedAt = now,
             ReplayAttestationId = operation == WorkflowOperation.UiAction
                 ? input.Replay?.Id
@@ -101,7 +71,7 @@ public static class WorkflowOperations
         WorkflowOperationAuthentication.Seal(progress.Operations[^1],
             progress.Operations.Count > 1 ? progress.Operations[^2] : null, progress.Operations.Count);
         progress.LastObservedAt = now;
-        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, unit, now, activityObserved: true);
+        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, now);
         WorkflowDispositions.Update(snapshot, now);
         return true;
     }

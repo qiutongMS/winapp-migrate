@@ -85,7 +85,7 @@ public sealed partial class RunnerAcceptanceTests
         var process = new FakeProcessRunner(new EnforcementProcessResult(0, ClosureTree, ""))
         {
             SaveComparisonScreenshots = screenshot != "missing",
-            ComparisonScreenshotContent = screenshot == "invalid" ? [1, 2, 3] : null
+            ComparisonScreenshotContent = screenshot == "invalid" ? [] : null
         };
         var probe = await new UwpEnforcementRunner(process, windowOwnerResolver: TestWindowOwnerResolver.Shared)
             .InvokeUiAsync(fixture.Root, "winapp", ["inspect", "--json", "-w", "42"], [], "state-1");
@@ -123,9 +123,61 @@ public sealed partial class RunnerAcceptanceTests
             await File.AppendAllTextAsync(process.ScreenshotCalls.Single()[^1], "tampered");
             var current = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
             Assert.AreEqual("passed", current.Status);
+            await SurfaceComparisonArtifacts.WriteIndexAsync(fixture.Root, current, CancellationToken.None);
             html = await File.ReadAllTextAsync(fixture.Path(".migration-evidence/comparison/index.html"));
         }
         StringAssert.Contains(html, "Screenshot unavailable or stale");
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_RetiredTodoKeepsHistoryWithoutBlockingCurrentTasks()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var retired = ProjectTodo();
+        report.Todos.Add(retired);
+        await fixture.SaveReportAsync(report);
+        await TodoExecutionService.RecordImplementationAsync(
+            fixture.Root, retired.Id, "implemented", "Project obligation repaired.");
+        report.Todos.Clear();
+        var current = ProjectTodo();
+        current.Id += "-CURRENT";
+        report.Todos.Add(current);
+        await fixture.SaveReportAsync(report);
+
+        var assessments = await TodoExecutionService.AssessAsync(
+            fixture.Root, windowOwnerResolver: TestWindowOwnerResolver.Shared);
+
+        Assert.HasCount(1, assessments);
+        Assert.AreEqual(current.Id, assessments.Single().Todo.Id);
+        var history = await fixture.LoadAsync<TodoExecutionProgressDocument>(EnforcementStore.TodoProgressPath);
+        Assert.AreEqual(retired.Id, history.Todos.Single().TodoId);
+    }
+
+    [TestMethod]
+    public async Task TodoExecution_InputMismatchPreservesCaptureRepairFeedback()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        await File.WriteAllTextAsync(fixture.Path(plan.States.Single().Source.TreeEvidence!),
+            ClosureTree.Replace("Ready", "2026-11-25T10:00:00Z", StringComparison.Ordinal));
+        var report = await fixture.LoadReportAsync();
+        var todo = Uwmig014();
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        await TodoExecutionService.RecordImplementationAsync(fixture.Root, todo.Id, "implemented", "UI migrated.");
+        var probe = await CaptureClosureProbeAsync(fixture, new EnforcementProcessResult(
+            0, ClosureTree.Replace("Ready", "2026-11-25T10:01:00Z", StringComparison.Ordinal), ""));
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todo.Id, TestWindowOwnerResolver.Shared)).Single();
+
+        Assert.AreEqual("failed", assessment.VerificationStatus);
+        Assert.AreEqual("review-inputs", assessment.NextOperation);
+        Assert.IsTrue(assessment.Surfaces.Single().ComparisonDiagnostics.Any(item =>
+            item.RepairOwner == "capture" && !item.IsNormalization));
     }
 
     [TestMethod]
@@ -661,24 +713,22 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task TodoExecution_FailureNotesDoNotAuthorizeOrPreventAnotherImplementation(bool selected)
+    public async Task TodoExecution_FailureHistoryDoesNotAuthorizeOrPreventAnotherImplementation()
     {
         using var fixture = await TodoFixtureAsync();
-        if (selected)
-            await TodoExecutionService.SelectApproachAsync(
-                fixture.Root, "UWMIG014", "preserve-native-items", "Preserve native item presentation.");
         var failed = await TodoExecutionService.RecordImplementationAsync(
             fixture.Root, "UWMIG014", "failed", "The source selection contract remains incomplete.",
             "selection-missing", "Preserve explicit selection handling.", ["selection-diagnostic.json"]);
         Assert.AreEqual("pending", failed.ImplementationStatus);
-        Assert.AreEqual(selected ? 1 : 0, failed.RejectedApproaches.Count);
+        Assert.AreEqual("selection-missing", failed.History.Single().FailureSignature);
+        Assert.AreEqual("Preserve explicit selection handling.", failed.History.Single().RetryCondition);
+        CollectionAssert.AreEqual(new[] { "selection-diagnostic.json" }, failed.History.Single().Evidence);
         var repaired = await TodoExecutionService.RecordImplementationAsync(
             fixture.Root, "UWMIG014", "implemented", "Preserved the selection contract.");
         Assert.AreEqual("implemented", repaired.ImplementationStatus);
         Assert.AreEqual("pending", repaired.VerificationStatus);
-        Assert.AreEqual(selected ? 1 : 0, repaired.RejectedApproaches.Count);
+        Assert.AreEqual("selection-missing", repaired.History[0].FailureSignature);
+        Assert.AreEqual("passed", repaired.History[1].Outcome);
     }
 
     [TestMethod]

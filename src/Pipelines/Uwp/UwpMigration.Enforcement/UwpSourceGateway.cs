@@ -668,13 +668,6 @@ public sealed class UwpSourceGateway
         DirectoryInfo requestedTarget,
         CancellationToken cancellationToken)
     {
-        var snapshot = await UwpEnforcementRunner.AssessAsync(
-            requestedTarget,
-            cancellationToken: cancellationToken);
-        if (snapshot.Disposition?.Terminal == true)
-            throw new InvalidDataException("Source operations are not permitted after a terminal closure disposition.");
-        if (snapshot.Gates.SingleOrDefault(gate => gate.Id == "required-contract")?.Status != "passed")
-            throw new InvalidDataException("Seal the immutable surface inventory before source discovery.");
         if (!MigrationPathResolver.TryCanonicalizeRoot(
                 requestedTarget.FullName,
                 out var targetRoot,
@@ -695,11 +688,31 @@ public sealed class UwpSourceGateway
                     cancellationToken);
             if (persistedError is not null)
                 throw new InvalidDataException(persistedError);
-            if (persisted?.Disposition?.Terminal == true)
-                throw new InvalidDataException(
-                    "Source operations are not permitted after a terminal closure disposition.");
-            if (persisted?.Gates.SingleOrDefault(gate => gate.Id == "required-contract")?.Status != "passed")
-                throw new InvalidDataException("Seal the immutable surface inventory before source discovery.");
+            var (progress, progressError) =
+                await WorkflowPersistence.LoadAsync(
+                    target, false, DateTimeOffset.UtcNow, cancellationToken);
+            if (progressError is not null)
+                throw new InvalidDataException(progressError);
+            if (!WorkflowOperationAuthentication.VerifyAnchored(target, progress?.Operations ?? []))
+                throw new InvalidDataException("Workflow operation provenance is missing or invalid.");
+            var dispositions = new[] { persisted?.Disposition, progress?.Disposition };
+            foreach (var disposition in dispositions)
+            {
+                var dispositionError = WorkflowValidation.DispositionError(disposition);
+                if (dispositionError is not null)
+                    throw new InvalidDataException(dispositionError);
+            }
+            var terminal = dispositions.FirstOrDefault(item => item is { Terminal: true } && item.Kind != "complete") ??
+                dispositions.FirstOrDefault(item => item is { Terminal: true });
+            if (terminal is not null)
+            {
+                var previousFingerprint = persisted?.TargetFingerprint ??
+                    progress?.Operations.LastOrDefault()?.TargetFingerprint;
+                if (terminal.Kind != "complete" || previousFingerprint is null ||
+                    previousFingerprint == await TargetFingerprint.ComputeAsync(target, cancellationToken))
+                    throw new InvalidDataException(
+                        "Source operations are not permitted after a terminal closure disposition.");
+            }
 
             var reportPath = Path.Combine(targetRoot, "migration-report.json");
             var report = await MigrationReportStore.LoadAsync(
@@ -710,6 +723,11 @@ public sealed class UwpSourceGateway
                 throw new InvalidDataException(
                     $"Unsupported migration-report schema {report.SchemaVersion}; expected {MigrationReport.CurrentSchemaVersion}.");
             }
+            var (plan, planError) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(
+                target, report.Validation.StatePlan, cancellationToken);
+            if (plan is null || planError is not null)
+                throw new InvalidDataException(planError ?? "Seal the immutable surface inventory before source discovery.");
+            RequiredStateContracts.Freeze(target, plan);
 
             var sourceRootValue = Path.IsPathFullyQualified(report.Source.Root)
                 ? report.Source.Root

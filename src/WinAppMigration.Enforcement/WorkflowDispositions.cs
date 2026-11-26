@@ -46,8 +46,8 @@ public static class WorkflowDispositions
         var allowed = terminal || snapshot.Workflow is null
             ? [] : kind is "tool-blocked" or "input-review-required"
                 ? new List<WorkflowOperation>
-                    { WorkflowOperation.DiagnosticRun, WorkflowOperation.Hypothesis, WorkflowOperation.UiAction }
-                : Enum.GetValues<WorkflowOperation>().ToList();
+                    { WorkflowOperation.DiagnosticRun, WorkflowOperation.UiAction }
+                : Enum.GetValues<WorkflowOperation>().Where(operation => operation != WorkflowOperation.Hypothesis).ToList();
         snapshot.Disposition = new RunDisposition
         {
             Kind = kind, ReasonCode = code, Terminal = terminal, Retryable = retryable,
@@ -56,8 +56,6 @@ public static class WorkflowDispositions
         if (snapshot.Workflow is not null)
         {
             snapshot.Workflow.Disposition = snapshot.Disposition;
-            if (terminal)
-                WorkflowController.CloseActiveEpochs(snapshot.Workflow, now, $"terminal:{kind}");
         }
     }
 }

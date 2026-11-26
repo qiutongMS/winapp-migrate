@@ -41,6 +41,31 @@ public static class EnforcementStore
     public const string FindingLedgerPath =
         ".migration-evidence/semantic-findings.json";
 
+    internal static string? LegacyFindingError(SemanticFindingLedger? ledger, string? loadError)
+    {
+        if (!string.IsNullOrWhiteSpace(loadError))
+            return loadError;
+        if (ledger is null)
+            return null;
+        if (ledger.SchemaVersion != SemanticFindingLedger.CurrentSchemaVersion)
+            return $"Unsupported legacy semantic-finding schema {ledger.SchemaVersion}; preserve the original file for review.";
+        if (ledger.Findings is null || ledger.Findings.Any(finding => finding is null ||
+            string.IsNullOrWhiteSpace(finding.Id) || string.IsNullOrWhiteSpace(finding.SourceInvariant) ||
+            string.IsNullOrWhiteSpace(finding.CompletionCondition) ||
+            finding.Status is not ("open" or "resolved" or "blocked" or "unverified" or "failed") ||
+            finding.StateIds is null || finding.TodoIds is null || finding.FeaturePaths is null ||
+            finding.AppOwnedLocations is null || finding.NextActions is null || finding.Evidence is null ||
+            finding.ValidationEvidence is null || finding.CompletionAssertions is null ||
+            finding.StateIds.Concat(finding.TodoIds).Concat(finding.FeaturePaths).Concat(finding.AppOwnedLocations)
+                .Concat(finding.NextActions).Concat(finding.Evidence).Concat(finding.ValidationEvidence).Any(string.IsNullOrWhiteSpace) ||
+            finding.CompletionAssertions.Any(check => check is null ||
+                string.IsNullOrWhiteSpace(check.StateId) || string.IsNullOrWhiteSpace(check.AssertionId))))
+            return "Legacy semantic findings contain invalid or missing obligation metadata; preserve the original file for review.";
+        if (ledger.Findings.Select(finding => finding.Id).Distinct(StringComparer.Ordinal).Count() != ledger.Findings.Count)
+            return "Legacy semantic-finding IDs are not unique; preserve the original file for review.";
+        return null;
+    }
+
     public static JsonSerializerOptions JsonOptions { get; } = new()
     {
         AllowTrailingCommas = false,

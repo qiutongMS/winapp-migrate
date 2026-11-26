@@ -208,6 +208,12 @@ public sealed partial class RunnerAcceptanceTests
             "Initial selector repair.");
         File.Delete(fixture.Path(SelectorBindingAmendments.Path));
 
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            SelectorBindingAmendments.StateHash(fixture.Root, plan.States[0]));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            SelectorBindingAmendments.ResolveCommand(
+                fixture.Root, plan.States[0], plan.States[0].Verification!.RequiredActions[0]));
+
         var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(
             () => UwpEnforcementRunner.RebindSelectorAsync(
                 fixture.Root,

@@ -72,27 +72,6 @@ public sealed class TodoExecutionEvent
     public DateTimeOffset RecordedAt { get; set; }
 }
 
-public sealed class RejectedApproach
-{
-    [JsonPropertyName("approachKey")]
-    public required string ApproachKey { get; set; }
-
-    [JsonPropertyName("summary")]
-    public required string Summary { get; set; }
-
-    [JsonPropertyName("failureSignature")]
-    public required string FailureSignature { get; set; }
-
-    [JsonPropertyName("retryCondition")]
-    public required string RetryCondition { get; set; }
-
-    [JsonPropertyName("evidence")]
-    public List<string> Evidence { get; set; } = [];
-
-    [JsonPropertyName("rejectedAt")]
-    public DateTimeOffset RejectedAt { get; set; }
-}
-
 public sealed class TodoExecutionAssessment
 {
     [JsonPropertyName("schemaVersion")]
@@ -114,20 +93,11 @@ public sealed class TodoExecutionAssessment
     [JsonPropertyName("surfaces")]
     public List<TodoSurfaceAssessment> Surfaces { get; set; } = [];
 
-    [JsonPropertyName("currentApproachKey")]
-    public string? CurrentApproachKey { get; set; }
-
-    [JsonPropertyName("currentApproachRationale")]
-    public string? CurrentApproachRationale { get; set; }
-
-    [JsonPropertyName("acceptedApproachKey")]
-    public string? AcceptedApproachKey { get; set; }
-
     [JsonPropertyName("attempt")]
     public int Attempt { get; set; }
 
-    [JsonPropertyName("rejectedApproaches")]
-    public List<RejectedApproach> RejectedApproaches { get; set; } = [];
+    [JsonPropertyName("history")]
+    public List<TodoExecutionEvent> History { get; set; } = [];
 
     [JsonPropertyName("humanValidationItems")]
     public List<HumanValidationItem> HumanValidationItems { get; set; } = [];
@@ -161,6 +131,9 @@ public sealed class TodoSurfaceAssessment
 
     [JsonPropertyName("evidence")]
     public List<string> Evidence { get; set; } = [];
+
+    [JsonPropertyName("comparisonDiagnostics")]
+    public List<SurfaceComparisonDiagnostic> ComparisonDiagnostics { get; set; } = [];
 }
 
 public sealed class TodoStatusSummary

@@ -249,7 +249,8 @@ internal sealed class UwpSourceCommand : Command
         exception is ArgumentException
             or InvalidDataException
             or IOException
-            or UnauthorizedAccessException;
+            or UnauthorizedAccessException
+            or EnforcementLockTimeoutException;
 
     private static void WriteJson<T>(T value) =>
         Console.Out.WriteLine(JsonSerializer.Serialize(
@@ -260,7 +261,7 @@ internal sealed class UwpSourceCommand : Command
         WriteJson(new
         {
             schemaVersion = "1.0",
-            status = "error",
+            status = exception is EnforcementLockTimeoutException ? "enforcement-busy" : "error",
             error = exception.Message
         });
 

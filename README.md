@@ -40,6 +40,14 @@ still report an app's migration as incomplete because code repairs, comparable
 inputs, tool support, or human validation are needed. A build, launch,
 screenshot, or implementation receipt alone does not establish UI parity.
 
+Acceptance supports migration in three ways: feed current diagnoses back to
+existing TODOs (discover genuinely new obligations as TODOs), derive the final
+criteria from original evidence, and return an honest completion/blocker.
+There is no second live finding ledger or auxiliary telemetry gate. Budgets
+and no-progress stopping belong to the calling host; stopping is not passing.
+The host records its decision with `uwp closure stop --reason <reason>`;
+the terminal incomplete result retains the outstanding gates.
+
 ## Code map
 
 | Area | Start reading here | Responsibility |

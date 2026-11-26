@@ -128,7 +128,7 @@ public static class SemanticSlicePlanner
 
     public static IReadOnlyList<SemanticSlice> Assess(
         DirectoryInfo root, StatePlanDocument plan, ReplayAttestation? freshReplay,
-        IReadOnlyList<StateVerificationSummary> stateVerifications, WorkflowProgress? progress = null)
+        IReadOnlyList<StateVerificationSummary> stateVerifications)
     {
         var assessments = stateVerifications.ToDictionary(state => state.Id, StringComparer.Ordinal);
         return plan.States.Where(state => state.Disposition == "required")
@@ -153,10 +153,7 @@ public static class SemanticSlicePlanner
                         verifications.All(verification => WorkflowCompletion.RequiresInputReview(verification) ||
                             WorkflowCompletion.IsToolBlocked(verification) || verification.Result == SurfaceVerificationResult.Verified),
                     Resolved = reasons.All(reason => reason is null) ||
-                        states.All(state => StateClosureProtocol.HasHistoricalParity(root, state)) ||
-                        progress?.Slices.Any(slice => slice.SliceId == group.Key && slice.Resolved) == true &&
-                        !states.Any(state => state.Target.Status is "failed" or "blocked" ||
-                            state.Comparison.Status is "failed" or "blocked")
+                        states.All(state => StateClosureProtocol.HasHistoricalParity(root, state))
                 };
             }).ToArray();
     }

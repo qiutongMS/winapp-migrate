@@ -171,60 +171,6 @@ public sealed class PluginHookTests
         StringAssert.Contains(result.Error, "not valid JSON");
     }
 
-    [TestMethod]
-    [DataRow("string", true)]
-    [DataRow("patch", true)]
-    [DataRow("input", true)]
-    [DataRow("string", false)]
-    [DataRow("patch", false)]
-    [DataRow("input", false)]
-    public async Task Guard_PatchPayloadsResolveMoveDestinations(string shape, bool moveIntoWorkspace)
-    {
-        using var fixture = await HookFixture.CreateAsync();
-        var contract = JsonNode.Parse(await File.ReadAllTextAsync(ContractPath()))!;
-        contract["protectedWrites"] = JsonSerializer.SerializeToNode(new
-        {
-            toolNames = new[] { "apply_patch" },
-            activationFile = ".write-protection",
-            pathProperties = new[] { "file_path" },
-            patchProperties = new[] { "patch", "input" },
-            unknownPathReason = "Patch paths were not resolved.",
-            reason = "Test workspace writes are protected."
-        });
-        var contractPath = Path.Combine(fixture.Outside.FullName, "test-contract.json");
-        await File.WriteAllTextAsync(contractPath, contract.ToJsonString());
-        await File.WriteAllTextAsync(Path.Combine(fixture.Target.FullName, ".write-protection"), "");
-        var source = Path.Combine(fixture.Outside.FullName, "source.cs");
-        var destination = Path.Combine(moveIntoWorkspace ? fixture.Target.FullName : fixture.Outside.FullName, "destination.cs");
-        var patch = $"*** Begin Patch\n*** Update File: {source}\n*** Move to: {destination}\n*** End Patch";
-        object toolArgs = shape switch
-        {
-            "patch" => new { patch, file_path = source },
-            "input" => new { input = patch, file_path = source },
-            _ => patch
-        };
-
-        var result = await fixture.InvokeRawAsync(JsonSerializer.Serialize(new
-        {
-            sessionId = "patch-session",
-            cwd = fixture.Target.FullName,
-            toolName = "apply_patch",
-            toolArgs
-        }), contractPath);
-
-        Assert.AreEqual(0, result.ExitCode, result.Error);
-        var output = JsonNode.Parse(result.Output)!;
-        if (moveIntoWorkspace)
-        {
-            Assert.AreEqual("deny", output["permissionDecision"]!.GetValue<string>());
-            Assert.AreEqual("Test workspace writes are protected.", output["permissionDecisionReason"]!.GetValue<string>());
-        }
-        else
-        {
-            Assert.AreEqual("{}", result.Output.Trim());
-        }
-    }
-
     private static string HookPath(
         [CallerFilePath] string testFile = "") =>
         Path.GetFullPath(Path.Combine(

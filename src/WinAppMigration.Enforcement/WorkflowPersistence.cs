@@ -16,8 +16,6 @@ public static class WorkflowPersistence
         if (progress is null &&
             (operationsStarted || WorkflowOperationAuthentication.ReadHead(target) is not null))
             return (null, "Workflow progress is missing for an already-started operation history. Preserve the artifacts; provenance cannot be reconstructed or reset.");
-        if (File.Exists(Path.Combine(target.FullName, EnforcementStore.EnforcementDirectory, "policy.json")))
-            return (progress, "Retired enforcement policy artifacts are unsupported by the current protocol. Preserve the workspace artifacts.");
         return (progress, null);
     }
 }

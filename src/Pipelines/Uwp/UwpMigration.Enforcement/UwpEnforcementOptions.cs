@@ -5,7 +5,6 @@ namespace UwpMigration.Enforcement;
 
 public sealed class UwpEnforcementOptions
 {
-    public IReadOnlyList<string> DiscriminatingEvidence { get; init; } = [];
     public string WinAppExecutable { get; init; } = "winapp";
     public string? Configuration { get; init; }
     public string? Architecture { get; init; }

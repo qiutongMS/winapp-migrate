@@ -25,7 +25,7 @@ public sealed class WorkflowCompletionTests
             Status = "blocked",
             TargetFingerprint = "target",
             Gates = [new() { Id = "state-closure", Status = "blocked", Reason = "incomplete" }],
-            Workflow = new WorkflowProgress { LastTargetFingerprint = "target" },
+            Workflow = new WorkflowProgress { },
             StateVerifications =
             [
                 new("adaptive", StateVerificationLevel.SurfaceReachable, "timestamp mismatch")

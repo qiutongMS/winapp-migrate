@@ -48,8 +48,8 @@ internal static class SurfaceComparisonArtifacts
                 throw new IOException("The optional screenshot command did not succeed.");
             if (!resolver.TryGetOwnerIdentity(window, out var after) || owner != after)
                 throw new InvalidDataException("The capture window process changed during the screenshot.");
-            if (!File.Exists(output) || !PngEvidence.IsValid(output, timeout.Token))
-                throw new InvalidDataException("The optional screenshot did not produce a valid fresh PNG.");
+            if (!File.Exists(output) || new FileInfo(output).Length == 0)
+                throw new InvalidDataException("The optional screenshot did not produce a fresh image file.");
             receipt.ScreenshotPath = relative;
             receipt.ScreenshotSha256 = StateClosureProtocol.FileHash(target, relative);
             receipt.Status = "saved";

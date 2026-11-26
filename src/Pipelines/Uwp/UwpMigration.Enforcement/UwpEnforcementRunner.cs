@@ -117,6 +117,33 @@ public sealed partial class UwpEnforcementRunner
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
     }
 
+    public static async Task<EnforcementSnapshot> StopAsync(
+        DirectoryInfo target, string reason, CancellationToken cancellationToken = default)
+    {
+        if (reason is not ("budget-exhausted" or "no-progress" or "external-blocker"))
+            throw new ArgumentException("Stop reason must be budget-exhausted, no-progress, or external-blocker.", nameof(reason));
+        await using var enforcementLock = await EnforcementStore.AcquireLockAsync(
+            ResolveLockTarget(target), cancellationToken);
+        var workspace = await LoadWorkspaceAsync(target, cancellationToken);
+        var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
+        if (WorkflowDispositions.RejectTerminal(snapshot, out _))
+            return snapshot;
+        snapshot.Disposition = new RunDisposition
+        {
+            Kind = "stopped", ReasonCode = reason, Terminal = true,
+            Retryable = false, Finalization = "incomplete"
+        };
+        if (snapshot.Workflow is not null)
+            snapshot.Workflow.Disposition = snapshot.Disposition;
+        snapshot.Status = "blocked";
+        snapshot.Frontier = new EnforcementFrontier
+        {
+            Kind = "run-stopped", Reason = $"Host stopped migration: {reason}. Unverified criteria remain incomplete."
+        };
+        await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
+        return snapshot;
+    }
+
     private static async Task<EnforcementSnapshot> AssessCoreAsync(
         DirectoryInfo target,
         TimeProvider timeProvider,
@@ -168,23 +195,10 @@ public sealed partial class UwpEnforcementRunner
             await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
             return snapshot;
         }
-        if (options.DiscriminatingEvidence.Count > 0 && snapshot.Workflow is not null)
-        {
-            if (!WorkflowOperations.TryObserveEvidence(workspace.Input, snapshot,
-                    options.DiscriminatingEvidence, out var evidenceError))
-            {
-                snapshot.Status = "blocked";
-                snapshot.Frontier = new EnforcementFrontier { Kind = "evidence-required", Reason = evidenceError };
-                await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
-                return snapshot;
-            }
-            workspace = workspace with { Input = workspace.Input with { Progress = snapshot.Workflow } };
-            snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
-        }
         if (snapshot.Frontier?.Kind == "build")
         {
             if (!await BeginOperationAsync(workspace, snapshot, WorkflowOperation.Build,
-                    options.DiscriminatingEvidence, null, cancellationToken))
+                    [], null, cancellationToken))
             {
                 await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
                 return snapshot;
@@ -199,14 +213,14 @@ public sealed partial class UwpEnforcementRunner
         var shouldReplay =
             snapshot.Frontier?.Kind == "replay" ||
             options.ForceReplay &&
-            snapshot.Frontier?.Kind is null or "state" or "finding" or "report-sync" or "report-closure" &&
+            snapshot.Frontier?.Kind is null or "state" or "report-sync" or "report-closure" &&
             snapshot.Gates.Any(gate =>
                 gate.Id == "fresh-build" &&
                 gate.Status == "passed");
         if (shouldReplay)
         {
             if (!await BeginOperationAsync(workspace, snapshot, WorkflowOperation.Replay,
-                    options.DiscriminatingEvidence, null, cancellationToken))
+                    [], null, cancellationToken))
             {
                 await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
                 return snapshot;
@@ -219,285 +233,6 @@ public sealed partial class UwpEnforcementRunner
         }
 
         await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
-        return snapshot;
-    }
-
-    public static Task<EnforcementSnapshot> RecordFailureAsync(
-        DirectoryInfo target,
-        string kind,
-        string signature,
-        string? stateId,
-        IReadOnlyList<string> evidence,
-        CancellationToken cancellationToken = default) =>
-        RecordFailureAsync(target, WindowsWindowOwnerResolver.Instance, kind, signature, stateId, evidence,
-            cancellationToken);
-
-    public static async Task<EnforcementSnapshot> RecordFailureAsync(
-        DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver, string kind, string signature,
-        string? stateId, IReadOnlyList<string> evidence,
-        CancellationToken cancellationToken = default)
-    {
-        if (kind is not ("build" or "runtime"))
-        {
-            throw new ArgumentException(
-                "Failure kind must be build or runtime.",
-                nameof(kind));
-        }
-        if (string.IsNullOrWhiteSpace(signature))
-        {
-            throw new ArgumentException(
-                "Failure signature must not be empty.",
-                nameof(signature));
-        }
-        if (evidence.Count == 0)
-        {
-            throw new ArgumentException(
-                "At least one target-relative failure evidence path is required.",
-                nameof(evidence));
-        }
-
-        var lockTarget = ResolveLockTarget(target);
-        await using var enforcementLock =
-            await EnforcementStore.AcquireLockAsync(
-                lockTarget,
-                cancellationToken);
-        var workspace = await LoadWorkspaceAsync(
-            target,
-            cancellationToken, windowOwnerResolver: windowOwnerResolver);
-        if (!string.IsNullOrWhiteSpace(workspace.Input.ArtifactError))
-        {
-            throw new InvalidDataException(workspace.Input.ArtifactError);
-        }
-        if (!string.IsNullOrWhiteSpace(stateId) &&
-            (workspace.Input.StatePlan is null ||
-             !workspace.Input.StatePlan.States.Any(state =>
-                 state.Id.Equals(stateId, StringComparison.Ordinal))))
-        {
-            throw new InvalidDataException(
-                $"Failure surface ID is not present in the surface plan: {stateId}");
-        }
-        foreach (var relativePath in evidence)
-        {
-            if (!EnforcementStore.TryResolveContainedPath(
-                    workspace.Target,
-                    relativePath,
-                    out var path,
-                    out var pathError))
-            {
-                throw new InvalidDataException(pathError);
-            }
-            if (!File.Exists(path))
-            {
-                throw new FileNotFoundException(
-                    $"Failure evidence does not exist: {relativePath}",
-                    path);
-            }
-        }
-
-        var current = EnforcementEvaluator.Evaluate(workspace.Input);
-        await RequireNonterminalAsync(workspace.Target, current, cancellationToken);
-        if (current.Workflow is null)
-            throw new InvalidDataException("Valid workflow policy and progress are required.");
-        var binding = ResolveObservedFailureIntent(workspace, current, evidence, stateId);
-        stateId = binding.Binding.StateId;
-        var sliceId = binding.Binding.SliceId;
-        var normalizedSignature = NormalizeSignature(kind, signature);
-        if (workspace.Attempts.Attempts.Any(attempt =>
-            attempt.Kind == kind && attempt.TargetFingerprint == workspace.Fingerprint &&
-            attempt.Signature == normalizedSignature && attempt.OperationId == binding.OperationId &&
-            attempt.StateId == stateId && attempt.SliceId == sliceId &&
-            (kind == "runtime" || attempt.Diagnosis is not null)))
-            throw new InvalidDataException("A runtime failure tuple cannot be re-recorded or rebound; complete its source-first diagnosis and change the target.");
-        current.Workflow.StartedAt ??= workspace.Input.GeneratedAt;
-        current.Workflow.OperationsStartedAt ??= workspace.Input.GeneratedAt;
-        await WriteSnapshotAsync(workspace.Target, current, cancellationToken);
-        workspace.Attempts.Attempts.Add(new EnforcementAttempt
-        {
-            Kind = kind,
-            TargetFingerprint = workspace.Fingerprint,
-            Signature = normalizedSignature,
-            RecordedAt = workspace.Input.GeneratedAt,
-            StateId = stateId,
-            SliceId = sliceId,
-            OperationId = binding.OperationId,
-            Evidence = [.. evidence]
-        });
-        await EnforcementStore.WriteAtomicAsync(
-            workspace.Target,
-            EnforcementStore.AttemptLedgerPath,
-            workspace.Attempts,
-            cancellationToken);
-        var updated = await LoadWorkspaceAsync(
-            target,
-            cancellationToken, windowOwnerResolver: windowOwnerResolver);
-        var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
-        await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
-        return snapshot;
-    }
-
-    private static (StateSliceBinding Binding, string? OperationId) ResolveObservedFailureIntent(
-        Workspace workspace, EnforcementSnapshot snapshot, IReadOnlyList<string> evidence, string? requestedState)
-    {
-        foreach (var operation in snapshot.Workflow!.Operations.Where(item => item.TargetFingerprint == workspace.Fingerprint).Reverse())
-        {
-            var matches = false;
-            if (operation.ProbeId is { } probeId)
-            {
-                var (probe, error) = EnforcementStore.TryLoadAsync<UiDevelopmentProbe>(workspace.Target,
-                    $"{EnforcementStore.EnforcementDirectory}/probes/{probeId}/probe.json").GetAwaiter().GetResult();
-                if (error is not null) throw new InvalidDataException(error);
-                matches = probe is not null && operation.ProbeSha256 == StateClosureProtocol.FileHash(workspace.Target, probe.ArtifactPath) &&
-                    evidence.Any(path => path == probe.ArtifactPath || path == probe.StandardOutputPath || path == probe.StandardErrorPath ||
-                        path == probe.ScreenshotPath);
-            }
-            if (workspace.Input.Replay is { } replay && replay.OperationId == operation.Id)
-                matches |= evidence.Any(path => path == replay.StandardOutputPath || path == replay.StandardErrorPath);
-            if (workspace.Input.Diagnostic is { } diagnostic && diagnostic.OperationId == operation.Id)
-                matches |= evidence.Any(path => path == diagnostic.StandardOutputPath || path == diagnostic.StandardErrorPath);
-            if (!matches) continue;
-            var binding = new StateSliceBinding(operation.StateId, operation.IntendedSliceId);
-            StateAttribution.Validate(workspace.Input.StatePlan, binding);
-            if (requestedState is not null && requestedState != binding.StateId)
-                throw new InvalidDataException("Caller --surface differs from the evidence operation's immutable start intent.");
-            return (binding, operation.Id);
-        }
-        return (StateAttribution.Authorize(workspace.Input, requestedState), null);
-    }
-
-    public static Task<EnforcementSnapshot> RecordDiagnosisAsync(
-        DirectoryInfo target,
-        string signature,
-        string? stateId,
-        IReadOnlyList<string> sourceLocations,
-        IReadOnlyList<string> targetLocations,
-        string sourceInvariant,
-        string hypothesis,
-        string discriminatingTest,
-        IReadOnlyList<string> evidence,
-        CancellationToken cancellationToken = default) =>
-        RecordDiagnosisAsync(target, WindowsWindowOwnerResolver.Instance, signature, stateId, sourceLocations,
-            targetLocations, sourceInvariant, hypothesis, discriminatingTest, evidence, cancellationToken);
-
-    public static async Task<EnforcementSnapshot> RecordDiagnosisAsync(
-        DirectoryInfo target, IWindowOwnerResolver windowOwnerResolver, string signature, string? stateId,
-        IReadOnlyList<string> sourceLocations, IReadOnlyList<string> targetLocations, string sourceInvariant,
-        string hypothesis, string discriminatingTest, IReadOnlyList<string> evidence,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(signature))
-        {
-            throw new ArgumentException(
-                "Failure signature must not be empty.",
-                nameof(signature));
-        }
-        if (sourceLocations.Count == 0 || targetLocations.Count == 0 ||
-            sourceLocations.Any(string.IsNullOrWhiteSpace) || targetLocations.Any(string.IsNullOrWhiteSpace))
-        {
-            throw new ArgumentException(
-                "At least one source location and one target location are required.");
-        }
-        if (string.IsNullOrWhiteSpace(sourceInvariant) ||
-            string.IsNullOrWhiteSpace(hypothesis) ||
-            string.IsNullOrWhiteSpace(discriminatingTest))
-        {
-            throw new ArgumentException(
-                "Source invariant, hypothesis, and discriminating test are required.");
-        }
-        if (evidence.Count == 0)
-        {
-            throw new ArgumentException(
-                "At least one target-relative diagnosis evidence path is required.",
-                nameof(evidence));
-        }
-
-        var lockTarget = ResolveLockTarget(target);
-        await using var enforcementLock =
-            await EnforcementStore.AcquireLockAsync(
-                lockTarget,
-                cancellationToken);
-        var workspace = await LoadWorkspaceAsync(
-            target,
-            cancellationToken, windowOwnerResolver: windowOwnerResolver);
-        await RequireNonterminalAsync(workspace.Target, EnforcementEvaluator.Evaluate(workspace.Input), cancellationToken);
-        if (!string.IsNullOrWhiteSpace(workspace.Input.ArtifactError))
-        {
-            throw new InvalidDataException(workspace.Input.ArtifactError);
-        }
-
-        var normalizedSignature = NormalizeSignature("runtime", signature);
-        var attempt = workspace.Attempts.Attempts
-            .Where(candidate =>
-                candidate.Kind.Equals("runtime", StringComparison.Ordinal) &&
-                candidate.Signature.Equals(
-                    normalizedSignature,
-                    StringComparison.Ordinal) &&
-                candidate.TargetFingerprint == workspace.Fingerprint &&
-                (string.IsNullOrWhiteSpace(stateId) ||
-                 candidate.StateId?.Equals(
-                     stateId,
-                     StringComparison.Ordinal) == true))
-            .OrderByDescending(candidate => candidate.RecordedAt)
-            .FirstOrDefault()
-            ?? throw new InvalidDataException(
-                $"No recorded runtime failure matches signature {normalizedSignature}" +
-                (string.IsNullOrWhiteSpace(stateId)
-                    ? "."
-                    : $" and surface {stateId}."));
-        if (attempt.Diagnosis is not null)
-            throw new InvalidDataException("A completed diagnosis for this failure tuple cannot be overwritten or recorded again.");
-
-        foreach (var relativePath in evidence)
-        {
-            if (!EnforcementStore.TryResolveContainedPath(
-                    workspace.Target,
-                    relativePath,
-                    out var path,
-                    out var pathError))
-            {
-                throw new InvalidDataException(pathError);
-            }
-            if (!File.Exists(path))
-            {
-                throw new FileNotFoundException(
-                    $"Diagnosis evidence does not exist: {relativePath}",
-                    path);
-            }
-            if (File.GetLastWriteTimeUtc(path) < attempt.RecordedAt.UtcDateTime)
-            {
-                throw new InvalidDataException(
-                    $"Diagnosis evidence predates the recorded failure: {relativePath}");
-            }
-        }
-
-        var current = EnforcementEvaluator.Evaluate(workspace.Input);
-        StateAttribution.Validate(workspace.Input.StatePlan, new StateSliceBinding(attempt.StateId, attempt.SliceId));
-        if (!await BeginOperationAsync(workspace, current, WorkflowOperation.Hypothesis,
-                evidence, normalizedSignature, new StateSliceBinding(attempt.StateId, attempt.SliceId), cancellationToken))
-            throw new InvalidDataException(current.Frontier!.Reason);
-        attempt.Diagnosis = new FailureDiagnosis
-        {
-            TargetFingerprint = attempt.TargetFingerprint,
-            Signature = attempt.Signature,
-            StateId = attempt.StateId,
-            SliceId = attempt.SliceId,
-            RecordedAt = DateTimeOffset.UtcNow,
-            SourceLocations = [.. sourceLocations],
-            TargetLocations = [.. targetLocations],
-            SourceInvariant = sourceInvariant.Trim(),
-            Hypothesis = hypothesis.Trim(),
-            DiscriminatingTest = discriminatingTest.Trim(),
-            Evidence = [.. evidence]
-        };
-        await EnforcementStore.WriteAtomicAsync(
-            workspace.Target,
-            EnforcementStore.AttemptLedgerPath,
-            workspace.Attempts,
-            cancellationToken);
-        var updated = await LoadWorkspaceAsync(
-            target,
-            cancellationToken, windowOwnerResolver: windowOwnerResolver);
-        var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
-        await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
         return snapshot;
     }
 
@@ -533,7 +268,7 @@ public sealed partial class UwpEnforcementRunner
             new StateSliceBinding(failure.StateId, failure.SliceId);
         StateAttribution.Validate(workspace.Input.StatePlan, diagnosisIntent);
         if (!await BeginOperationAsync(workspace, snapshot, WorkflowOperation.DiagnosticRun,
-                options.DiscriminatingEvidence, failure?.Signature, diagnosisIntent, cancellationToken))
+                [], failure?.Signature, diagnosisIntent, cancellationToken))
             throw new InvalidDataException(snapshot.Frontier!.Reason);
 
         var intended = snapshot.Workflow!.Operations[^1];
@@ -574,6 +309,11 @@ public sealed partial class UwpEnforcementRunner
             StandardErrorPath = stderr
         };
         StateClosureSeal.Sign(attestation);
+        await EnforcementStore.WriteAtomicAsync(
+            workspace.Target,
+            $"{directory}/attestation.json",
+            attestation,
+            cancellationToken);
         await EnforcementStore.WriteAtomicAsync(
             workspace.Target,
             EnforcementStore.DiagnosticAttestationPath,
@@ -786,8 +526,8 @@ public sealed partial class UwpEnforcementRunner
                 previousScreenshotHash == StateClosureProtocol.FileHash(workspace.Target,
                     Path.GetRelativePath(workspace.Target.FullName, screenshotOutput)))
                 throw new InvalidDataException("Screenshot output must exist and be freshly generated by this capture.");
-            if (!PngEvidence.IsValid(screenshotOutput, cancellationToken))
-                throw new InvalidDataException("Successful screenshot output must contain a valid PNG.");
+            if (new FileInfo(screenshotOutput).Length == 0)
+                throw new InvalidDataException("Successful screenshot output must not be empty.");
             var screenshot = $"{directory}/screenshot.png";
             var destination = Path.Combine(workspace.Target.FullName, screenshot.Replace('/', Path.DirectorySeparatorChar));
             if (!screenshotOutput.Equals(destination, StringComparison.OrdinalIgnoreCase))
@@ -896,23 +636,10 @@ public sealed partial class UwpEnforcementRunner
             windowOwnerResolver, cancellationToken);
         var report = await MigrationReportStore.LoadAsync(workspace.ReportPath, cancellationToken);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, report.Validation.StatePlan, plan, cancellationToken);
-        if (workspace.Input.FindingLedger is
-            { SchemaVersion: SemanticFindingLedger.CurrentSchemaVersion, Findings: not null } findings &&
-            findings.Findings.All(finding => finding is not null) &&
-            workspace.Input.FindingLedgerError is null)
-        {
-            foreach (var finding in findings.Findings.Where(finding =>
-                StateClosureProtocol.FindingSatisfied(workspace.Target, finding, plan, snapshot.Replay, workspace.Input.GeneratedAt, windowOwnerResolver)))
-            {
-                finding.Status = "resolved";
-                finding.NextActions = [];
-                finding.ValidationEvidence = finding.StateIds.Select(StateClosureProtocol.AttestationPath).ToList();
-            }
-            await EnforcementStore.WriteAtomicAsync(workspace.Target, EnforcementStore.FindingLedgerPath, findings, cancellationToken);
-        }
         var updated = await LoadWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var recorded = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, recorded, cancellationToken);
+        await SurfaceComparisonArtifacts.WriteIndexAsync(updated.Target, recorded, cancellationToken);
         return recorded;
     }
 
@@ -959,14 +686,6 @@ public sealed partial class UwpEnforcementRunner
             workspace.ReportPath,
             cancellationToken);
         SynchronizeRequiredTodos(report, plan, workspace);
-        await MaterializeCanonicalEvidenceAsync(
-            workspace.Target,
-            report,
-            plan,
-            workspace.Input.Replay,
-            workspace.Input.GeneratedAt,
-            windowOwnerResolver,
-            cancellationToken);
         report.Validation.SourceBaseline.Status = summary.SourceStatus;
         report.Validation.SourceBaseline.States = plan.States.Select(state =>
             new MigrationValidationState
@@ -998,6 +717,7 @@ public sealed partial class UwpEnforcementRunner
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, snapshot, cancellationToken);
+        await SurfaceComparisonArtifacts.WriteIndexAsync(updated.Target, snapshot, cancellationToken);
         return snapshot;
     }
 
@@ -1053,142 +773,13 @@ public sealed partial class UwpEnforcementRunner
         }
     }
 
-    private static async Task MaterializeCanonicalEvidenceAsync(
-        DirectoryInfo target,
-        MigrationReport report,
-        StatePlanDocument plan,
-        ReplayAttestation? replay,
-        DateTimeOffset now,
-        IWindowOwnerResolver windowOwnerResolver,
-        CancellationToken cancellationToken)
-    {
-        var sourceRoot = ResolveCanonicalRoot(
-            target,
-            report.Validation.SourceBaseline.EvidenceRoot,
-            "source");
-        var targetRoot = ResolveCanonicalRoot(
-            target,
-            report.Validation.TargetReplay.EvidenceRoot,
-            "target");
-        ValidateCanonicalLayout(sourceRoot, targetRoot, plan);
-        var copies = new List<CanonicalEvidenceCopy>();
-        var removals = new List<CanonicalEvidenceDestination>();
-        var proofs = new Dictionary<string, StateClosureAttestation?>(StringComparer.Ordinal);
-
-        foreach (var state in plan.States)
-        {
-            if (state.Disposition == "excluded")
-            {
-                proofs.Add(state.Id, null);
-                continue;
-            }
-            ValidateCanonicalStateId(state.Id);
-            if (state.Source.Status == "captured")
-                ValidateDeclaredEvidencePaths(target, state.Id, "source", state.Source.Evidence);
-            if (state.Target.Status == "passed")
-                ValidateDeclaredEvidencePaths(target, state.Id, "target", state.Target.Evidence);
-            StateClosureAttestation? proof = null;
-            if (!string.IsNullOrWhiteSpace(state.Target.Attestation) &&
-                !StateClosureProtocol.VerifyRecordedLevel(
-                    target, state, replay, now, out proof, out var reason, windowOwnerResolver))
-                throw new InvalidDataException(reason);
-            proofs.Add(state.Id, proof);
-        }
-
-        foreach (var state in plan.States)
-        {
-            if (state.Disposition == "excluded")
-                continue;
-            var proof = proofs[state.Id];
-            if (state.Source.Status == "captured")
-            {
-                if (string.IsNullOrWhiteSpace(state.Source.TreeEvidence))
-                    throw new InvalidDataException(
-                        $"Surface {state.Id} source observation does not identify its UIA tree.");
-                copies.Add(new CanonicalEvidenceCopy(
-                    ResolveDeclaredEvidence(target, state.Id, "source", state.Source.TreeEvidence),
-                    ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json"),
-                    ExpectedEvidenceHash(target, proof?.SourceEvidenceHashes, state.Source.TreeEvidence)));
-            }
-            else
-            {
-                removals.Add(ResolveCanonicalDestination(target, sourceRoot, state.Id, "-ui.json"));
-            }
-
-            if (state.Target.Status == "passed")
-            {
-                if (string.IsNullOrWhiteSpace(state.Target.TreeEvidence))
-                    throw new InvalidDataException(
-                        $"Surface {state.Id} target observation does not identify its UIA tree.");
-                copies.Add(new CanonicalEvidenceCopy(
-                    ResolveDeclaredEvidence(target, state.Id, "target", state.Target.TreeEvidence),
-                    ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"),
-                    ExpectedEvidenceHash(target, proof?.TargetEvidenceHashes, state.Target.TreeEvidence)));
-            }
-            else
-            {
-                removals.Add(ResolveCanonicalDestination(target, targetRoot, state.Id, "-ui.json"));
-            }
-        }
-
-        foreach (var copy in copies)
-        {
-            await WriteCanonicalEvidenceAsync(target, copy, cancellationToken);
-        }
-        foreach (var removal in removals)
-        {
-            if (!EnforcementStore.TryResolveContainedPath(target, removal.RelativePath, out var path, out var error))
-                throw new InvalidDataException(error);
-            if (File.Exists(path))
-                File.Delete(path);
-        }
-    }
-
-    private static string ResolveDeclaredEvidence(
-        DirectoryInfo target,
-        string stateId,
-        string side,
-        string relativePath)
-    {
-        if (!EnforcementStore.TryResolveContainedPath(
-                target,
-                relativePath,
-                out var fullPath,
-                out var error))
-        {
-            throw new InvalidDataException(
-                $"Surface {stateId} {side} evidence path '{relativePath}' is invalid: {error}");
-        }
-        if (!File.Exists(fullPath))
-            throw new InvalidDataException(
-                $"Surface {stateId} {side} evidence does not exist: {relativePath}");
-        return fullPath;
-    }
-
-    private static void ValidateDeclaredEvidencePaths(
-        DirectoryInfo target, string stateId, string side, IReadOnlyList<string> evidence)
-    {
-        foreach (var relativePath in evidence)
-        {
-            if (!EnforcementStore.TryResolveContainedPath(target, relativePath, out var path, out var error))
-                throw new InvalidDataException(error);
-            if (!File.Exists(path))
-                throw new InvalidDataException(
-                    $"Surface {stateId} {side} evidence does not exist: {relativePath}");
-        }
-    }
-
-    private static async Task<(bool Ready, string Reason)> AssessReportClosureAsync(
+    private static (bool Ready, string Reason) AssessReportClosure(
         DirectoryInfo target,
         MigrationReport report,
         StatePlanDocument? plan,
         string? statePlanError,
         BuildAttestation? build,
-        string targetFingerprint,
-        ReplayAttestation? replay,
-        DateTimeOffset now,
-        IWindowOwnerResolver windowOwnerResolver,
-        CancellationToken cancellationToken)
+        string targetFingerprint)
     {
         if (plan is null || !string.IsNullOrWhiteSpace(statePlanError))
         {
@@ -1216,231 +807,9 @@ public sealed partial class UwpEnforcementRunner
                     $"Required TODO {todo.Id} must map to declared required surfaces with supported exact surface check IDs.");
         }
 
-        try
-        {
-            var sourceRoot = ResolveCanonicalRoot(
-                target,
-                report.Validation.SourceBaseline.EvidenceRoot,
-                "source");
-            var targetRoot = ResolveCanonicalRoot(
-                target,
-                report.Validation.TargetReplay.EvidenceRoot,
-                "target");
-            ValidateCanonicalLayout(sourceRoot, targetRoot, plan);
-            foreach (var state in plan.States)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (state.Disposition == "excluded")
-                    continue;
-                ValidateCanonicalStateId(state.Id);
-                var sourceTree = ResolveCanonicalDestination(
-                    target, sourceRoot, state.Id, "-ui.json");
-                var targetTree = ResolveCanonicalDestination(
-                    target, targetRoot, state.Id, "-ui.json");
-                if (!StateClosureProtocol.VerifyEvidence(target, state, replay, now, out var proof, out var closureReason, windowOwnerResolver))
-                    return (false, closureReason);
-                var selectedSource = ResolveDeclaredEvidence(
-                    target, state.Id, "source", state.Source.TreeEvidence!);
-                var selectedTarget = ResolveDeclaredEvidence(
-                    target, state.Id, "target", state.Target.TreeEvidence!);
-                if (!CanonicalMatches(target, sourceTree, selectedSource, proof.SourceEvidenceHashes) ||
-                    !CanonicalMatches(target, targetTree, selectedTarget, proof.TargetEvidenceHashes))
-                    return (false, $"Canonical UIA tree evidence for surface {state.Id} does not match the derived source/target evidence hashes.");
-                if (!SurfaceTreeComparison.IsTree(target, sourceTree.RelativePath, out var sourceReason))
-                {
-                    return (false,
-                        $"Canonical source UIA tree is missing or invalid for surface {state.Id}: {sourceReason}");
-                }
-                if (!SurfaceTreeComparison.IsTree(target, targetTree.RelativePath, out var targetReason))
-                {
-                    return (false,
-                        $"Canonical target UIA tree is missing or invalid for surface {state.Id}: {targetReason}");
-                }
-            }
-        }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
-        {
-            return (false, exception.Message);
-        }
-
         return (true,
-            $"All required UI surfaces have canonical source and target trees, and all required TODOs are terminal.");
+            "Required TODO project checks and surface mappings are satisfied; original surface evidence is assessed by the surface gate.");
     }
-
-    private static string ExpectedEvidenceHash(DirectoryInfo target, IReadOnlyList<StateEvidenceHash>? manifest, string sourcePath)
-    {
-        var relativePath = Path.IsPathRooted(sourcePath)
-            ? Path.GetRelativePath(target.FullName, sourcePath)
-            : sourcePath;
-        if (manifest is null)
-            return StateClosureProtocol.FileHash(target, relativePath);
-        if (!EnforcementStore.TryResolveContainedPath(
-                target,
-                relativePath,
-                out var selectedPath,
-                out var error))
-        {
-            throw new InvalidDataException(error);
-        }
-        foreach (var entry in manifest)
-        {
-            if (EnforcementStore.TryResolveContainedPath(target, entry.Path, out var path, out _) &&
-                path.Equals(selectedPath, StringComparison.OrdinalIgnoreCase))
-                return entry.Sha256;
-        }
-        throw new InvalidDataException("Selected canonical evidence is absent from the re-derived surface evidence manifest.");
-    }
-
-    private static bool CanonicalMatches(DirectoryInfo target, CanonicalEvidenceDestination destination,
-        string? selectedPath, IReadOnlyList<StateEvidenceHash> manifest) =>
-        selectedPath is null ? !Path.Exists(destination.FullPath) :
-            File.Exists(destination.FullPath) &&
-            StateClosureProtocol.FileHash(target, destination.RelativePath) == ExpectedEvidenceHash(target, manifest, selectedPath);
-
-    private static CanonicalEvidenceRoot ResolveCanonicalRoot(
-        DirectoryInfo target,
-        string relativePath,
-        string side)
-    {
-        if (!EnforcementStore.TryResolveContainedPath(
-                target,
-                relativePath,
-                out var fullPath,
-                out var error))
-        {
-            throw new InvalidDataException(
-                $"The declared {side} evidence root is invalid: {error}");
-        }
-        if (File.Exists(fullPath))
-        {
-            throw new InvalidDataException(
-                $"The declared {side} evidence root is a file: {relativePath}");
-        }
-
-        return new CanonicalEvidenceRoot(relativePath, fullPath);
-    }
-
-    private static void ValidateCanonicalLayout(
-        CanonicalEvidenceRoot sourceRoot,
-        CanonicalEvidenceRoot targetRoot,
-        StatePlanDocument plan)
-    {
-        if (sourceRoot.FullPath.Equals(
-                targetRoot.FullPath,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException(
-                "The declared source and target evidence roots must be distinct.");
-        }
-        var duplicate = plan.States
-            .GroupBy(state => state.Id, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault(group => group.Count() > 1);
-        if (duplicate is not null)
-        {
-            throw new InvalidDataException(
-                $"Surface IDs must also be unique as Windows file names: {duplicate.Key}.");
-        }
-    }
-
-    private static CanonicalEvidenceDestination ResolveCanonicalDestination(
-        DirectoryInfo target,
-        CanonicalEvidenceRoot root,
-        string stateId,
-        string suffix)
-    {
-        ValidateCanonicalStateId(stateId);
-        var relativePath = $"{root.RelativePath.TrimEnd('/', '\\')}/{stateId}{suffix}";
-        if (!EnforcementStore.TryResolveContainedPath(
-                target,
-                relativePath,
-                out var fullPath,
-                out var error))
-        {
-            throw new InvalidDataException(
-                $"Canonical evidence path for surface {stateId} is invalid: {error}");
-        }
-        var rootPrefix = root.FullPath.TrimEnd(
-            Path.DirectorySeparatorChar,
-            Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (!fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException(
-                $"Canonical evidence for surface {stateId} must remain beneath the declared evidence root.");
-        }
-
-        return new CanonicalEvidenceDestination(relativePath, fullPath);
-    }
-
-    private static async Task WriteCanonicalEvidenceAsync(
-        DirectoryInfo target,
-        CanonicalEvidenceCopy copy,
-        CancellationToken cancellationToken)
-    {
-        var bytes = await File.ReadAllBytesAsync(copy.SourcePath, cancellationToken);
-        if (!Convert.ToHexString(SHA256.HashData(bytes)).Equals(copy.ExpectedHash, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Source evidence changed while materializing its canonical copy.");
-        if (copy.SourcePath.Equals(
-                copy.Destination.FullPath,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        Directory.CreateDirectory(
-            Path.GetDirectoryName(copy.Destination.FullPath)!);
-        if (!EnforcementStore.TryResolveContainedPath(
-                target,
-                copy.Destination.RelativePath,
-                out var destinationPath,
-                out var error) ||
-            !destinationPath.Equals(
-                copy.Destination.FullPath,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException(
-                $"Canonical evidence destination is no longer safe: {error}");
-        }
-
-        var tempPath = $"{destinationPath}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            await File.WriteAllBytesAsync(tempPath, bytes, cancellationToken);
-            File.Move(tempPath, destinationPath, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
-        }
-    }
-
-    private static void ValidateCanonicalStateId(string stateId)
-    {
-        if (string.IsNullOrWhiteSpace(stateId) ||
-            stateId is "." or ".." ||
-            stateId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
-            stateId.Contains('/') ||
-            stateId.Contains('\\'))
-        {
-            throw new InvalidDataException(
-                $"Surface ID '{stateId}' cannot be used as a canonical evidence file name.");
-        }
-    }
-
-    private sealed record CanonicalEvidenceRoot(
-        string RelativePath,
-        string FullPath);
-
-    private sealed record CanonicalEvidenceDestination(
-        string RelativePath,
-        string FullPath);
-
-    private sealed record CanonicalEvidenceCopy(
-        string SourcePath,
-        CanonicalEvidenceDestination Destination,
-        string ExpectedHash);
 
     private async Task RunBuildAsync(
         Workspace workspace,
@@ -1518,7 +887,8 @@ public sealed partial class UwpEnforcementRunner
             cancellationToken);
         await AuthenticateOperationAsync(workspace, snapshot, attestation.Id, EnforcementStore.BuildAttestationPath, cancellationToken);
         EnforcementTrace.Mark("build.attested", new { id, success });
-        if (!success)
+        if (!success && (result.ExitCode != 0 || !string.IsNullOrWhiteSpace(parsed.Error) ||
+            diagnostics.Any(item => item.Severity == "error")))
         {
             await RecordAttemptAsync(
                 workspace,
@@ -1620,7 +990,7 @@ public sealed partial class UwpEnforcementRunner
             processId = attestation.ProcessId,
             processStartedAt = attestation.ProcessStartedAt
         });
-        if (!success)
+        if (!success && (result.ExitCode != 0 || !string.IsNullOrWhiteSpace(parsed.Error)))
         {
             await RecordAttemptAsync(
                 workspace,
@@ -1794,11 +1164,6 @@ public sealed partial class UwpEnforcementRunner
                 target,
                 report.Validation.StatePlan,
                 cancellationToken);
-        var (findings, findingsError) =
-            await EnforcementStore.TryLoadAsync<SemanticFindingLedger>(
-                target,
-                EnforcementStore.FindingLedgerPath,
-                cancellationToken);
         string? requiredHash = null;
         string? requiredError = null;
         if (statePlan is not null)
@@ -1832,6 +1197,27 @@ public sealed partial class UwpEnforcementRunner
             persistedState.SchemaVersion != EnforcementSnapshot.CurrentSchemaVersion)
             stateError = $"Unsupported enforcement snapshot schema {persistedState.SchemaVersion}; only {EnforcementSnapshot.CurrentSchemaVersion} is supported.";
         stateError ??= WorkflowValidation.DispositionError(persistedState?.Disposition);
+        var (findings, findingsError) = await EnforcementStore.TryLoadAsync<SemanticFindingLedger>(
+            target, EnforcementStore.FindingLedgerPath, cancellationToken);
+        var (importedReport, importError) = await ImportLegacyFindingsAsync(reportPath, report, findings, findingsError, cancellationToken);
+        report = importedReport;
+        if (findingsError is null && stateError is null && persistedState?.Findings is { Count: > 0 } legacySnapshot)
+        {
+            var snapshotFindings = new SemanticFindingLedger
+            {
+                Findings = legacySnapshot.Where(finding => finding is null ||
+                    findings?.Findings?.Any(existing => existing?.Id == finding.Id) != true).ToList()
+            };
+            var snapshotFindingError = EnforcementStore.LegacyFindingError(snapshotFindings, null);
+            if (snapshotFindingError is null)
+            {
+                (report, snapshotFindingError) = await ImportLegacyFindingsAsync(reportPath, report, snapshotFindings, null,
+                    cancellationToken, EnforcementStore.StatePath);
+                importError ??= snapshotFindingError;
+            }
+            else
+                findingsError = $"{EnforcementStore.StatePath}: {snapshotFindingError}";
+        }
         var artifactError = buildError ?? replayError ?? attemptsError ??
             diagnosticError ?? stateError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
             WorkflowValidation.DiagnosticError(diagnostic);
@@ -1842,7 +1228,6 @@ public sealed partial class UwpEnforcementRunner
             (progress, workflowError) = await WorkflowPersistence.LoadAsync(
                 target, build is not null || replay is not null || diagnostic is not null ||
                     attempts.Attempts.Count > 0 ||
-                    persistedState?.Workflow is { OperationsStartedAt: not null } ||
                     persistedState?.Workflow?.Operations.Count > 0,
                 generatedAt, cancellationToken);
         if (workflowError is null && progress is not null &&
@@ -1869,17 +1254,13 @@ public sealed partial class UwpEnforcementRunner
             incompatibleUwpResiduals.Count == 0;
         EnforcementTrace.Mark("workspace.report-closure.begin");
         var (reportClosureReady, reportClosureReason) =
-            await AssessReportClosureAsync(
+            AssessReportClosure(
                 target,
                 report,
                 statePlan,
                 statePlanError,
                 build,
-                fingerprint,
-                replay,
-                generatedAt,
-                windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
-                cancellationToken);
+                fingerprint);
         EnforcementTrace.Mark("workspace.report-closure.end");
         var input = new EnforcementEvaluationInput
         {
@@ -1899,8 +1280,7 @@ public sealed partial class UwpEnforcementRunner
             AnalyzerPrivateAssets = analyzer.PrivateAssets,
             StatePlan = statePlan,
             StatePlanError = statePlanError,
-            FindingLedger = findings,
-            FindingLedgerError = findingsError,
+            FindingLedgerError = importError ?? EnforcementStore.LegacyFindingError(findings, findingsError),
             ArtifactError = artifactError ?? workflowError,
             Build = build,
             Replay = replay,
@@ -1908,6 +1288,7 @@ public sealed partial class UwpEnforcementRunner
             Attempts = attempts,
             Progress = progress,
             PersistedDisposition = persistedState?.Disposition,
+            PersistedGates = persistedState?.Gates ?? [],
             ReportValidation = summary,
             ReportClosureReady = reportClosureReady,
             ReportClosureReason = reportClosureReason,
@@ -1989,7 +1370,6 @@ public sealed partial class UwpEnforcementRunner
             EnforcementStore.StatePath,
             snapshot,
             cancellationToken);
-        await SurfaceComparisonArtifacts.WriteIndexAsync(target, snapshot, cancellationToken);
     }
 
     private static async Task RequireNonterminalAsync(
@@ -2034,10 +1414,8 @@ public sealed partial class UwpEnforcementRunner
         var progress = snapshot.Workflow!;
         progress.LastObservedAt = observedAt;
         snapshot.GeneratedAt = observedAt;
-        var unit = WorkflowController.CurrentUnit(progress, snapshot.ActiveSlice);
         const string kind = "infrastructure-failure";
-        WorkflowController.CloseActiveEpochs(progress, observedAt, $"terminal:{kind}");
-        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, unit, observedAt);
+        snapshot.Telemetry = WorkflowTelemetry.Measure(progress, observedAt);
         snapshot.Disposition = new RunDisposition
         {
             Kind = kind,
@@ -2081,16 +1459,6 @@ public sealed partial class UwpEnforcementRunner
         await WriteSnapshotAsync(workspace.Target, snapshot, cancellationToken);
         WorkflowOperationAuthentication.CommitHead(workspace.Target, previousHead, snapshot.Workflow!.Operations);
         return true;
-    }
-
-    private static string NormalizeSignature(string kind, string signature)
-    {
-        if (signature.Length == 64 &&
-            signature.All(char.IsAsciiHexDigit))
-        {
-            return signature.ToLowerInvariant();
-        }
-        return DiagnosticGrouper.CreateSignature(kind, [], signature);
     }
 
     private static string? FirstNonEmpty(params string?[] values) =>

@@ -10,11 +10,12 @@ public sealed partial class RunnerAcceptanceTests
     [TestMethod]
     [DataRow("source", "-ui.json")]
     [DataRow("target", "-ui.json")]
-    public async Task CanonicalConsistency_ReplacedValidCanonicalCopiesInvalidateCompletion(string side, string suffix)
+    public async Task EvidenceConsistency_DerivedMirrorChangesDoNotInvalidateOriginalProof(string side, string suffix)
     {
         using var fixture = await CompletedConsistencyFixtureAsync();
         var fingerprint = await TargetFingerprint.ComputeAsync(fixture.Root);
         var path = $".migration-evidence/{side}/state-1{suffix}";
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.Path(path))!);
         await File.WriteAllTextAsync(
             fixture.Path(path),
             ClosureTree.Replace(
@@ -25,13 +26,27 @@ public sealed partial class RunnerAcceptanceTests
 
         var changed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
 
+        Assert.AreEqual("passed", changed.Status);
+        Assert.AreEqual("complete", changed.Disposition?.Kind);
+        File.Delete(fixture.Path(path));
+        Assert.AreEqual("passed", (await UwpEnforcementRunner.AssessAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared)).Status);
+    }
+
+    [TestMethod]
+    [DataRow("source")]
+    [DataRow("target")]
+    public async Task EvidenceConsistency_ModifiedOriginalTreesReopenCompletion(string side)
+    {
+        using var fixture = await CompletedConsistencyFixtureAsync();
+        var plan = await fixture.LoadAsync<StatePlanDocument>(ClosurePlan);
+        var tree = side == "source" ? plan.States[0].Source.TreeEvidence! : plan.States[0].Target.TreeEvidence!;
+        await File.AppendAllTextAsync(fixture.Path(tree), " ");
+
+        var changed = await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+
         Assert.AreNotEqual("passed", changed.Status);
-        Assert.AreNotEqual("complete", changed.Disposition?.Kind);
-        Assert.AreEqual("passed", changed.Gates.Single(gate => gate.Id == "state-closure").Status);
-        Assert.AreEqual("blocked", changed.Gates.Single(gate => gate.Id == "report-closure").Status);
-        StringAssert.Contains(changed.Gates.Single(gate => gate.Id == "report-closure").Reason, "evidence hashes");
-        Assert.AreEqual("passed", (await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared)).Status,
-            "Finalize must restore copies from the original derived evidence, not bless the edited copies.");
+        Assert.AreEqual("blocked", changed.Gates.Single(gate => gate.Id == "state-closure").Status);
     }
 
     [TestMethod]
@@ -46,6 +61,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.HasCount(plan.States[0].Source.Evidence.Count, proof.SourceEvidenceHashes);
         Assert.HasCount(plan.States[0].Target.Evidence.Count, proof.TargetEvidenceHashes);
         var canonical = $".migration-evidence/{side}/state-1-ui.json";
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.Path(canonical))!);
         await File.WriteAllTextAsync(fixture.Path(canonical), ClosureTree.Replace("Ready", "Injected", StringComparison.Ordinal));
         var manifest = side == "source" ? proof.SourceEvidenceHashes : proof.TargetEvidenceHashes;
         var index = manifest.FindIndex(item => File.ReadAllText(fixture.Path(item.Path)).Contains("windows", StringComparison.Ordinal));

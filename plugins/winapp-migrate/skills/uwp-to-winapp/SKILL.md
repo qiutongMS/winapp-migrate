@@ -69,7 +69,7 @@ winapp-migrate uwp todo assess "<target>" "<todo-id>"
 winapp-migrate uwp todo record "<target>" "<todo-id>" --outcome implemented --summary "<change>" --evidence "<path>"
 ```
 
-Implementation records and optional `todo select-approach` decisions are bookkeeping, not verification. Read `implementationStatus`, `verificationStatus`, and `verificationScope` independently.
+Implementation and failure records are bookkeeping, not verification. Read `implementationStatus`, `verificationStatus`, and `verificationScope` independently. Follow each surface's `comparisonDiagnostics`: tool or capture faults require collecting trustworthy comparable evidence, not speculative application edits.
 
 When a UI obligation lacks its proof mapping, bind the smallest existing required surface to the fixed checks that actually prove it. A `surface-binding` completion check is an unresolved obligation, not a surface ID; binding resolves it against the actual inventory without weakening its checks:
 
@@ -94,7 +94,7 @@ Ensure the target references `Microsoft.Windows.SDK.BuildTools.WinUIAnalyzer` wi
 winapp-migrate uwp closure attest "<target>"
 ```
 
-Repair actual failures and retry as needed. `closure diagnose`, `record-failure`, and `record-diagnosis` retain optional diagnostics; they are not retry prerequisites. After target changes, obtain a fresh build and replay before capturing target evidence.
+Repair actual failures and retry as needed. Use `closure diagnose` for raw diagnostics and `todo record --outcome failed` to attach the repair summary and evidence to the existing TODO; discover a new TODO only for a new obligation. Diagnostics are not retry prerequisites. Collection or input-review failures require fixing the collection or inputs, not application code. After target changes, obtain a fresh build and replay before capturing target evidence.
 
 ## 6. Capture and record surface checks
 
@@ -117,5 +117,7 @@ winapp-migrate uwp closure finalize "<target>" --strict
 ```
 
 For an incomplete handoff, use `closure assess` and non-strict `closure finalize` to preserve honest current results. Report the product's `completion` checkpoint and remaining obligations; a model's final response does not mean migration completion, and `tool-blocked` does not mean parity passed.
+
+When the host decides to end iteration, record its budget, no-progress, or external-blocker decision with `closure stop --reason <reason>`. The stopped result remains incomplete, retains outstanding gates, and returns nonzero; the tool does not choose the host's limits or treat stopping as success.
 
 Report the `ui-surface-parity` verification scope, every human-validation item, remaining implementation obligations and findings, and excluded surfaces with their reasons. Out-of-scope obligations do not block UI acceptance or become verified when the app passes. Do not claim complete app equivalence from this bounded result.

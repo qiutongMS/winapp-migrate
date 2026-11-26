@@ -72,6 +72,18 @@ public sealed partial class SourceGatewayTests
     }
 
     [TestMethod]
+    public async Task Run_SourceRemainsObservableWhileTargetProjectXmlIsIncomplete()
+    {
+        using var fixture = await SourceFixture.CreateAsync();
+        await File.WriteAllTextAsync(Path.Combine(fixture.Target.FullName, "Target.csproj"), "<Project");
+
+        var run = await CreateGateway(LaunchedProcess(), fixture).RunAsync(fixture.Target, TestOptions());
+
+        Assert.AreEqual(0, run.ExitCode);
+        Assert.HasCount(1, run.AuthorizedWindows);
+    }
+
+    [TestMethod]
     public async Task Run_UnrelatedNewWindowsDoNotEndSourcePolling()
     {
         using var fixture = await SourceFixture.CreateAsync();
@@ -202,6 +214,30 @@ public sealed partial class SourceGatewayTests
 
         StringAssert.Contains(exception.Message, "was not created");
         Assert.HasCount(3, process.Calls);
+    }
+
+    [TestMethod]
+    public async Task Capture_AuthenticatedGatewayBindsCurrentSourceNavigation()
+    {
+        using var fixture = await SourceFixture.CreateAsync(sourceVerified: true);
+        const string tree = """{"windows":[{"elements":[{"type":"Window","name":"Source"}]}]}""";
+        var process = LaunchedProcess(new EnforcementProcessResult(0, tree, ""));
+        var gateway = CreateGateway(process, fixture, windowOwnerResolver: new SourcePickerWindowOwnerResolver());
+        await gateway.RunAsync(fixture.Target, TestOptions());
+        var probe = await gateway.CaptureAsync(fixture.Target, "winapp", ["inspect", "-w", "20", "--json"]);
+        const string planPath = ".migration-evidence/state-plan.json";
+        var (plan, error) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(fixture.Target, planPath);
+        Assert.IsNull(error);
+        plan!.States.Single().Verification = new StateVerificationContract { TreeProbeIndex = 0 };
+        await EnforcementStore.WriteAtomicAsync(fixture.Target, planPath, plan);
+
+        var navigation = await UwpEnforcementRunner.BindSourceAsync(
+            fixture.Target, "source-state", [probe.ArtifactPath]);
+        var (boundPlan, _) = await EnforcementStore.TryLoadAsync<StatePlanDocument>(fixture.Target, planPath);
+
+        Assert.AreEqual(probe.SourceRunAttestationId, navigation.SourceRunId);
+        Assert.AreEqual("captured", boundPlan!.States.Single().Source.Status);
+        SourceNavigationContracts.Require(fixture.Target, boundPlan.States.Single());
     }
 
     [TestMethod]

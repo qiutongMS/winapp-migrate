@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation and Contributors. All rights reserved.
 // Licensed under the MIT License.
 
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace WinAppMigration.Enforcement;
@@ -100,6 +101,7 @@ public sealed class StateComparison
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class SemanticFindingLedger
 {
+    // Read-only legacy input. Unfinished obligations belong to migration-report TODOs.
     public const string CurrentSchemaVersion = "1.0";
 
     [JsonPropertyName("schemaVersion")]
@@ -408,43 +410,7 @@ public sealed class EnforcementAttempt
     public List<string> Evidence { get; set; } = [];
 
     [JsonPropertyName("diagnosis")]
-    public FailureDiagnosis? Diagnosis { get; set; }
-}
-
-public sealed class FailureDiagnosis
-{
-    [JsonPropertyName("targetFingerprint")]
-    public string? TargetFingerprint { get; set; }
-
-    [JsonPropertyName("signature")]
-    public string? Signature { get; set; }
-
-    [JsonPropertyName("stateId")]
-    public string? StateId { get; set; }
-
-    [JsonPropertyName("sliceId")]
-    public string? SliceId { get; set; }
-
-    [JsonPropertyName("recordedAt")]
-    public DateTimeOffset RecordedAt { get; set; }
-
-    [JsonPropertyName("sourceLocations")]
-    public List<string> SourceLocations { get; set; } = [];
-
-    [JsonPropertyName("targetLocations")]
-    public List<string> TargetLocations { get; set; } = [];
-
-    [JsonPropertyName("sourceInvariant")]
-    public required string SourceInvariant { get; set; }
-
-    [JsonPropertyName("hypothesis")]
-    public required string Hypothesis { get; set; }
-
-    [JsonPropertyName("discriminatingTest")]
-    public required string DiscriminatingTest { get; set; }
-
-    [JsonPropertyName("evidence")]
-    public List<string> Evidence { get; set; } = [];
+    public JsonElement? LegacyDiagnosis { get; set; }
 }
 
 public sealed class DiagnosticRunAttestation
@@ -613,7 +579,7 @@ public sealed class UiDevelopmentProbe
     public required string StandardErrorPath { get; set; }
 }
 
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Skip)]
 public sealed class EnforcementSnapshot
 {
     [JsonPropertyName("completion")]
@@ -625,7 +591,7 @@ public sealed class EnforcementSnapshot
     [JsonPropertyName("humanValidationItems")]
     public List<HumanValidationItem> HumanValidationItems { get; set; } = [];
 
-    [JsonPropertyName("findings")]
+    [JsonPropertyName("findings"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWriting)]
     public List<SemanticFinding> Findings { get; set; } = [];
 
     [JsonPropertyName("stateVerifications")]
@@ -777,8 +743,8 @@ public sealed record EnforcementEvaluationInput
     public required bool AnalyzerPrivateAssets { get; init; }
     public string? StatePlanError { get; init; }
     public StatePlanDocument? StatePlan { get; init; }
+    // Legacy import diagnostics produce human handoffs, not acceptance or artifact gates.
     public string? FindingLedgerError { get; init; }
-    public SemanticFindingLedger? FindingLedger { get; init; }
     public string? ArtifactError { get; init; }
     public BuildAttestation? Build { get; init; }
     public ReplayAttestation? Replay { get; init; }
@@ -786,6 +752,7 @@ public sealed record EnforcementEvaluationInput
     public AttemptLedger Attempts { get; init; } = new();
     public WorkflowProgress? Progress { get; init; }
     public RunDisposition? PersistedDisposition { get; init; }
+    public IReadOnlyList<EnforcementGate> PersistedGates { get; init; } = [];
     public required PipelineValidationSummary ReportValidation { get; init; }
     public required bool ReportClosureReady { get; init; }
     public required string ReportClosureReason { get; init; }

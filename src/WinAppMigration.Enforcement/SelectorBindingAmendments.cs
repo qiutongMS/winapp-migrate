@@ -87,12 +87,6 @@ public static class SelectorBindingAmendments
                 $"Surface {state.Id} has no required action {actionId}.");
         var existing = await LoadAsync(root, requiredHash, cancellationToken);
         var anchorName = AnchorName(root);
-        if (existing is null &&
-            StateClosureSeal.ReadContractAnchor(anchorName) is not null)
-        {
-            throw new InvalidDataException(
-                "The anchored selector-binding generation exists but its current document is missing.");
-        }
         var baseline = action.Command;
         var replacement = replacementCommand.ToList();
         ValidateSelectorOnlyChange(baseline, replacement);
@@ -135,21 +129,24 @@ public static class SelectorBindingAmendments
     internal static IReadOnlyList<string> ResolveCommand(
         DirectoryInfo root,
         MigrationState state,
-        RequiredStateAction action)
-    {
-        var requiredHash = RequiredStateContracts.Require(root, state);
-        var document = Load(root, requiredHash);
-        ValidateStateAmendments(document, state);
-        return ResolveCommand(document, state.Id, action);
-    }
+        RequiredStateAction action) =>
+        ResolveCommand(Read(root, state), state.Id, action);
 
-    internal static string? StateHash(
+    internal static SelectorBindingAmendmentDocument? Read(
         DirectoryInfo root,
         MigrationState state)
     {
         var requiredHash = RequiredStateContracts.Require(root, state);
         var document = Load(root, requiredHash);
         ValidateStateAmendments(document, state);
+        return document;
+    }
+
+    internal static string? StateHash(
+        DirectoryInfo root,
+        MigrationState state)
+    {
+        var document = Read(root, state);
         var amendments = document?.Amendments
             .Where(item => item.StateId == state.Id)
             .ToList();
@@ -160,7 +157,7 @@ public static class SelectorBindingAmendments
                 EnforcementStore.JsonOptions));
     }
 
-    private static List<string> ResolveCommand(
+    internal static List<string> ResolveCommand(
         SelectorBindingAmendmentDocument? document,
         string stateId,
         RequiredStateAction action) =>
@@ -184,8 +181,7 @@ public static class SelectorBindingAmendments
                     cancellationToken);
         if (error is not null)
             throw new InvalidDataException(error);
-        if (document is not null)
-            Verify(root, document, requiredHash);
+        VerifyLoaded(root, document, requiredHash);
         return document;
     }
 
@@ -202,9 +198,20 @@ public static class SelectorBindingAmendments
                 .GetResult();
         if (error is not null)
             throw new InvalidDataException(error);
+        VerifyLoaded(root, document, requiredHash);
+        return document;
+    }
+
+    private static void VerifyLoaded(
+        DirectoryInfo root,
+        SelectorBindingAmendmentDocument? document,
+        string requiredHash)
+    {
         if (document is not null)
             Verify(root, document, requiredHash);
-        return document;
+        else if (StateClosureSeal.ReadContractAnchor(AnchorName(root)) is not null)
+            throw new InvalidDataException(
+                "The anchored selector-binding generation exists but its current document is missing.");
     }
 
     private static void Verify(

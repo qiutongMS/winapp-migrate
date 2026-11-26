@@ -103,7 +103,6 @@ public sealed partial class RunnerAcceptanceTests
         var command = new UwpTodoCommand(TestWindowOwnerResolver.Shared);
         Assert.AreEqual(0, await command.Parse(["status", fixture.Root.FullName]).InvokeAsync());
         var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        Assert.IsNull(progress.OperationsStartedAt);
         Assert.IsEmpty(progress.Operations);
 
         var contract = await UwpEnforcementRunner.SealContractAsync(fixture.Root);
@@ -114,7 +113,7 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
-    public void SemanticFindingContract_UsesSurfaceTerminology()
+    public void LegacySemanticFindingInput_PreservesExactSurfaceTerminology()
     {
         var json = JsonSerializer.Serialize(
             new SemanticFindingLedger
@@ -538,6 +537,7 @@ public sealed partial class RunnerAcceptanceTests
                         Id = "surface-contract",
                         Category = "surface",
                         StateIds = ["state-1"],
+                        TodoIds = ["SURFACE-REQUIRED"],
                         Status = "open",
                         SourceInvariant =
                             "Preserve the complete semantic UIA surface.",

@@ -52,7 +52,6 @@ public static class RequiredStateContracts
                 (surface.Source.Status != "not-run" ||
                  surface.Source.Evidence.Count != 0 ||
                  surface.Source.TreeEvidence is not null)) ||
-            progress?.OperationsStartedAt is not null ||
             progress?.Operations is { Count: > 0 } ||
             !WorkflowOperationAuthentication.VerifyAnchored(
                 root, progress?.Operations ?? []) ||

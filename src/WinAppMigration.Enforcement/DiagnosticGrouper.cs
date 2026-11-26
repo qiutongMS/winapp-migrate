@@ -45,6 +45,8 @@ public static partial class DiagnosticGrouper
 
             group.Count++;
             var location = match.Groups["location"].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(location) && match.Groups["line"].Success)
+                location += ":" + match.Groups["line"].Value;
             if (!string.IsNullOrWhiteSpace(location) &&
                 !group.Locations.Contains(location, StringComparer.OrdinalIgnoreCase))
             {

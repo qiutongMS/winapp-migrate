@@ -11,55 +11,6 @@ public sealed partial class EnforcementEvaluatorTests
     private static readonly DateTimeOffset LifecycleNow = new(2026, 10, 26, 0, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
-    public void Accounts_ReentryTracksActiveEpochsAndOperationCounts()
-    {
-        var progress = new WorkflowProgress
-        {
-            LastTargetFingerprint = "target", LastObservedAt = LifecycleNow,
-            StartedAt = LifecycleNow, Stage = WorkflowStage.SemanticConvergence, ActiveSliceId = "A",
-            Disposition = new RunDisposition
-            {
-                Kind = "continue", ReasonCode = "workflow-active", Terminal = false,
-                Retryable = true, Finalization = "not-ready"
-            }
-        };
-        var a = WorkflowController.CurrentUnit(progress, "A");
-        WorkflowController.Activate(progress, a, LifecycleNow, "target");
-        a.Operations.Builds = 1;
-        progress.OperationsStartedAt = LifecycleNow;
-        progress.Operations.Add(new WorkflowOperationRecord
-        {
-            Kind = WorkflowOperation.Build, Stage = progress.Stage, SliceId = "A",
-            TargetFingerprint = "target", RecordedAt = LifecycleNow
-        });
-        progress.ActiveSliceId = "B";
-        var b = WorkflowController.CurrentUnit(progress, "B");
-        WorkflowController.Activate(progress, b, LifecycleNow.AddMinutes(5), "target");
-        Assert.AreEqual(5, a.ActiveMinutes(LifecycleNow.AddMinutes(25)));
-        Assert.AreEqual(20, b.ActiveMinutes(LifecycleNow.AddMinutes(25)));
-        progress.ActiveSliceId = "A";
-        WorkflowController.Activate(progress, a, LifecycleNow.AddMinutes(25), "target");
-        Assert.AreEqual(5, a.ActiveMinutes(LifecycleNow.AddMinutes(25)));
-        var budget = WorkflowTelemetry.Measure(
-            progress, a, LifecycleNow.AddMinutes(28));
-        Assert.AreEqual(8, budget.ElapsedMinutes);
-        Assert.AreEqual(28, budget.TotalElapsedMinutes);
-        Assert.AreEqual(1, budget.Operations.Builds);
-        Assert.HasCount(2, a.Epochs);
-        Assert.AreEqual(LifecycleNow.AddMinutes(5), a.Epochs[0].ExitedAt);
-        Assert.AreEqual("account-switched", a.Epochs[0].ExitReason);
-        progress.LastObservedAt = LifecycleNow.AddMinutes(28);
-        Assert.IsNull(WorkflowValidation.ProgressError(progress, progress.LastObservedAt));
-
-        WorkflowController.CloseActiveEpochs(progress, progress.LastObservedAt, "paused");
-        WorkflowController.Activate(progress, a, progress.LastObservedAt.AddMinutes(20), "corrected");
-        var reopened = WorkflowTelemetry.Measure(
-            progress, a, progress.LastObservedAt.AddMinutes(20));
-        Assert.AreEqual(8, reopened.ElapsedMinutes);
-        Assert.AreEqual(1, reopened.Operations.Builds);
-    }
-
-    [TestMethod]
     public void Resolution_TargetChangeAndFreshReplayKeepSchedulerOnUnresolvedCategory()
     {
         using var fixture = new EvaluatorFixture();
@@ -72,8 +23,6 @@ public sealed partial class EnforcementEvaluatorTests
             Progress = before.Workflow, TargetFingerprint = "changed", GeneratedAt = LifecycleNow.AddMinutes(1)
         });
         Assert.AreEqual("category", changed.ActiveSlice);
-        Assert.IsTrue(changed.Workflow!.Slices.Single(slice => slice.SliceId == "state-1").Resolved);
-        Assert.IsFalse(changed.Workflow.Slices.Single(slice => slice.SliceId == "state-1").EvidenceFresh);
         input.Build!.TargetFingerprint = "changed";
         input.Replay!.TargetFingerprint = "changed";
         input.Replay.StartedAt = LifecycleNow.AddMinutes(2);
@@ -86,51 +35,12 @@ public sealed partial class EnforcementEvaluatorTests
         });
         Assert.AreEqual("category", replayed.ActiveSlice);
         Assert.AreEqual(WorkflowStage.SemanticConvergence, replayed.Stage);
-        Assert.IsTrue(replayed.Workflow!.Slices.Single(slice => slice.SliceId == "state-1").Resolved);
-        Assert.IsFalse(replayed.Workflow.Slices.Single(slice => slice.SliceId == "state-1").EvidenceFresh);
-        Assert.AreEqual("replay-1", replayed.Workflow.Slices[0].EvidenceGeneration);
         input.StatePlan.States[1].Dependencies = ["state-1"];
         var dependent = EnforcementEvaluator.Evaluate(input with
         {
             Progress = replayed.Workflow, TargetFingerprint = "changed", GeneratedAt = LifecycleNow.AddMinutes(4)
         });
         Assert.AreEqual("category", dependent.ActiveSlice);
-    }
-
-    [TestMethod]
-    public void Accounts_SemanticReducerReopensFiveMinuteSliceAfterTwentyMinutesElsewhere()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = LifecycleInput(fixture);
-        input.StatePlan!.States[0].Target.Status = "unverified";
-        input.StatePlan.States.Add(State("B"));
-        var a = EnforcementEvaluator.Evaluate(input);
-        Assert.IsTrue(WorkflowOperations.TryBegin(input, a, WorkflowOperation.Build, [], null, out var reason), reason);
-        var accountId = a.Workflow!.Units.Single().AccountId;
-        input.StatePlan.States[0].Target.Status = "passed";
-        var b = EnforcementEvaluator.Evaluate(input with
-        {
-            Progress = a.Workflow, GeneratedAt = LifecycleNow.AddMinutes(5)
-        });
-        Assert.AreEqual("B", b.ActiveSlice);
-        input.StatePlan.States[0].Comparison.Status = "failed";
-        var reopened = EnforcementEvaluator.Evaluate(input with
-        {
-            Progress = b.Workflow, GeneratedAt = LifecycleNow.AddMinutes(25)
-        });
-        Assert.AreEqual("state-1", reopened.ActiveSlice);
-        Assert.AreEqual(5, reopened.Telemetry!.ElapsedMinutes);
-        Assert.AreEqual(1, reopened.Telemetry.Operations.Builds);
-        Assert.AreEqual(20, reopened.Workflow!.Units.Single(unit => unit.SliceId == "B")
-            .ActiveMinutes(LifecycleNow.AddMinutes(25)));
-        Assert.AreEqual(accountId, reopened.Workflow.Units.Single(unit => unit.SliceId == "state-1").AccountId);
-        var running = EnforcementEvaluator.Evaluate(input with
-        {
-            Progress = reopened.Workflow, GeneratedAt = LifecycleNow.AddMinutes(28)
-        });
-        Assert.AreEqual(8, running.Telemetry!.ElapsedMinutes);
-        Assert.AreEqual(28, running.Telemetry.TotalElapsedMinutes);
-        Assert.AreEqual(1, running.Telemetry.Operations.Builds);
     }
 
     [TestMethod]
@@ -169,28 +79,7 @@ public sealed partial class EnforcementEvaluatorTests
         });
         Assert.AreEqual(WorkflowStage.SemanticConvergence, failed.Stage);
         Assert.AreEqual("state-1", failed.ActiveSlice);
-        Assert.IsFalse(failed.Workflow!.Slices.Single().Resolved);
-        Assert.IsTrue(failed.Workflow.Units.Single(unit => unit.Stage == WorkflowStage.Closure)
-            .Epochs.All(epoch => epoch.ExitedAt is not null));
-    }
-
-    [TestMethod]
-    public void Accounts_GlobalElapsedTimeIncludesInactiveWallClockAsTelemetry()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = LifecycleInput(fixture);
-        input.StatePlan!.States[0].Target.Status = "unverified";
-        var observed = EnforcementEvaluator.Evaluate(input);
-        WorkflowController.CloseActiveEpochs(observed.Workflow!, LifecycleNow.AddMinutes(5), "paused");
-        observed.Workflow!.LastObservedAt = LifecycleNow.AddMinutes(5);
-        var observedLater = EnforcementEvaluator.Evaluate(input with
-        {
-            Progress = observed.Workflow, GeneratedAt = LifecycleNow.AddMinutes(150)
-        });
-        Assert.AreEqual("continue", observedLater.Disposition?.Kind);
-        Assert.IsFalse(observedLater.Disposition!.Terminal);
-        Assert.AreEqual(5, observedLater.Telemetry!.ElapsedMinutes);
-        Assert.AreEqual(150, observedLater.Telemetry.TotalElapsedMinutes);
+        Assert.AreEqual("state", failed.Frontier?.Kind);
     }
 
     [TestMethod]
@@ -220,7 +109,6 @@ public sealed partial class EnforcementEvaluatorTests
             Assert.IsFalse(WorkflowOperations.TryBegin(observation, observed, operation, [], null, out var reason));
             StringAssert.Contains(reason, "terminal");
         }
-        Assert.IsFalse(WorkflowOperations.TryObserveEvidence(observation, observed, [], out _));
     }
 
     [TestMethod]

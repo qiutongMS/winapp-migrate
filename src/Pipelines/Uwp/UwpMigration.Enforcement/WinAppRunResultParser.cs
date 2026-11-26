@@ -38,6 +38,7 @@ internal static class WinAppRunResultParser
                 : null;
             int? processId =
                 root.TryGetProperty("ProcessId", out var processValue) &&
+                processValue.ValueKind == JsonValueKind.Number &&
                 processValue.TryGetInt32(out var parsedProcessId)
                     ? parsedProcessId
                     : null;

@@ -37,7 +37,6 @@ public sealed partial class EnforcementEvaluatorTests
         });
         Assert.AreEqual(WorkflowStage.TargetBootstrap, bootstrap.Stage);
         Assert.AreEqual("replay", bootstrap.Frontier?.Kind);
-        Assert.IsTrue(bootstrap.Workflow!.Events.Any(item => item.Kind == "mechanical-stabilized"));
 
         var fresh = fixture.ClosedInput();
         fresh.StatePlan!.States[0].Target.Status = "unverified";
@@ -66,7 +65,7 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Workflow_SemanticCorrectionKeepsStageAndSliceBudget()
+    public void Workflow_SemanticCorrectionKeepsWorkAndElapsedHistory()
     {
         using var fixture = new EvaluatorFixture();
         var input = SemanticInput(fixture);
@@ -78,8 +77,7 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual(WorkflowStage.SemanticConvergence, changed.Stage);
         Assert.AreEqual("build", changed.Frontier?.Kind);
         Assert.AreEqual("state-1", changed.ActiveSlice);
-        Assert.AreEqual(before.Workflow!.Units[0].StartedAt, changed.Workflow!.Units[0].StartedAt);
-        Assert.IsTrue(changed.Workflow.Events.Any(item => item.Kind == "target-changed"));
+        Assert.AreEqual(before.Workflow!.StartedAt, changed.Workflow!.StartedAt);
     }
 
     [TestMethod]
@@ -130,114 +128,6 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    [DataRow(16)]
-    [DataRow(26)]
-    [DataRow(151)]
-    public void Telemetry_ElapsedTimeDoesNotChangeAuthorization(int minutes)
-    {
-        using var fixture = new EvaluatorFixture();
-        var snapshot = EnforcementEvaluator.Evaluate(ExpiredInput(fixture, minutes));
-        Assert.AreEqual("state", snapshot.Frontier?.Kind);
-        Assert.IsFalse(snapshot.Telemetry!.MeasuredProgress);
-        Assert.AreEqual(minutes, snapshot.Telemetry.ElapsedMinutes);
-        Assert.AreEqual(minutes, snapshot.Telemetry.TotalElapsedMinutes);
-        Assert.IsFalse(snapshot.Disposition!.Terminal);
-    }
-
-    [TestMethod]
-    public void Telemetry_TargetChangeIsActivityNotAcceptanceProgress()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = ExpiredInput(fixture, 16);
-        var observed = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.IsFalse(observed.Telemetry!.MeasuredProgress);
-        Assert.IsTrue(observed.Telemetry.ActivityObserved);
-        Assert.AreEqual("build", observed.Frontier?.Kind);
-    }
-
-    [TestMethod]
-    public void Telemetry_OnlyNewSurfaceEvidenceCountsAsAcceptanceProgress()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        var first = new StateVerificationSummary(
-            "first", StateVerificationLevel.SurfaceReachable, "Reachable; parity not established.");
-        var second = first with { Id = "second" };
-        var covered = WorkflowController.Observe(input, true, true, true, [], [first, second]);
-        Assert.IsTrue(covered.Telemetry.CoverageProgress);
-        Assert.IsFalse(covered.Telemetry.ParityProgress);
-
-        var verified = first with
-        {
-            Level = StateVerificationLevel.SurfaceParityVerified,
-            Result = SurfaceVerificationResult.Verified
-        };
-        var parity = WorkflowController.Observe(
-            input with { Progress = covered.Progress }, true, true, true, [], [verified, second]);
-        Assert.IsFalse(parity.Telemetry.CoverageProgress);
-        Assert.IsTrue(parity.Telemetry.ParityProgress);
-
-        var lost = WorkflowController.Observe(
-            input with { Progress = parity.Progress }, true, true, true, [], [verified]);
-        Assert.IsFalse(lost.Telemetry.MeasuredProgress);
-        var restored = WorkflowController.Observe(
-            input with { Progress = lost.Progress }, true, true, true, [], [verified, second]);
-        Assert.IsFalse(restored.Telemetry.MeasuredProgress);
-
-        var expanded = WorkflowController.Observe(
-            input with { Progress = restored.Progress }, true, true, true, [],
-            [verified, second, verified with { Id = "third" }]);
-        Assert.IsTrue(expanded.Telemetry.CoverageProgress);
-        Assert.IsTrue(expanded.Telemetry.ParityProgress);
-        var repeated = WorkflowController.Observe(
-            input with { Progress = expanded.Progress }, true, true, true, [],
-            [verified, second, verified with { Id = "third" }]);
-        Assert.IsFalse(repeated.Telemetry.MeasuredProgress);
-    }
-
-    [TestMethod]
-    public void Telemetry_CompletedDiagnosisIsActivityNotAcceptanceProgress()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = ExpiredInput(fixture, 16);
-        var recorded = input.GeneratedAt.AddSeconds(-2);
-        File.SetLastWriteTimeUtc(fixture.Path("evidence.txt"), input.GeneratedAt.UtcDateTime);
-        input.Attempts.Attempts.Add(new EnforcementAttempt
-        {
-            Kind = "runtime", Signature = "failure", TargetFingerprint = input.TargetFingerprint,
-            RecordedAt = recorded,
-            Diagnosis = Diagnosis(recorded.AddSeconds(1))
-        });
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("state", snapshot.Frontier?.Kind);
-        Assert.IsTrue(snapshot.Workflow!.Events.Any(item => item.Kind == "diagnosis-completed"));
-        Assert.IsFalse(snapshot.Telemetry!.MeasuredProgress);
-        Assert.IsTrue(snapshot.Telemetry.ActivityObserved);
-    }
-
-    [TestMethod]
-    public void Telemetry_OperationTotalsDoNotAuthorizeSemanticUnits()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = SemanticInput(fixture) with { TargetFingerprint = "corrected" };
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("build", snapshot.Frontier?.Kind);
-        Assert.IsFalse(snapshot.Disposition!.Terminal);
-        Assert.AreEqual(0, snapshot.Telemetry!.Operations.Builds);
-    }
-
-    [TestMethod]
-    public void Slices_DefaultMetadataPreservesSchema10()
-    {
-        using var fixture = new EvaluatorFixture();
-        var snapshot = EnforcementEvaluator.Evaluate(SemanticInput(fixture));
-        Assert.AreEqual("1.0", snapshot.SchemaVersion);
-        Assert.AreEqual("state-1", snapshot.ActiveSlice);
-        CollectionAssert.AreEqual(new[] { "state-1" }, snapshot.ActiveStateIds);
-        Assert.AreEqual("state-1", snapshot.Frontier?.SliceId);
-    }
-
-    [TestMethod]
     public void Slices_SelectsFirstDependencyReadyIncompleteSlice()
     {
         using var fixture = new EvaluatorFixture();
@@ -254,9 +144,7 @@ public sealed partial class EnforcementEvaluatorTests
         AttestState(input, prerequisite);
         var second = EnforcementEvaluator.Evaluate(input with { Progress = first.Workflow });
         Assert.AreEqual("dependent", second.ActiveSlice);
-        Assert.IsTrue(second.Workflow!.Events.Any(item =>
-            item.Kind == "slice-completed" && item.Key == "prerequisite"));
-        Assert.AreEqual(2, second.Workflow.Units.Count);
+        CollectionAssert.AreEqual(new[] { dependent.Id }, second.ActiveStateIds);
     }
 
     [TestMethod]
@@ -284,113 +172,6 @@ public sealed partial class EnforcementEvaluatorTests
         Assert.AreEqual("blocked", snapshot.Status);
         Assert.AreEqual("verified", input.StatePlan.States[0].Comparison.Status);
         Assert.AreEqual("blocked", input.StatePlan.States[0].Target.Status);
-    }
-
-    [TestMethod]
-    public void Diagnosis_NotesDoNotReplaceCurrentSurfaceVerification()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        var recorded = input.GeneratedAt.AddSeconds(-2);
-        input.Attempts.Attempts.Add(new EnforcementAttempt
-        {
-            Kind = "runtime", Signature = "older-unresolved", TargetFingerprint = input.TargetFingerprint,
-            RecordedAt = recorded
-        });
-        input.Attempts.Attempts.Add(new EnforcementAttempt
-        {
-            Kind = "runtime", Signature = "newer-diagnosed", TargetFingerprint = input.TargetFingerprint,
-            RecordedAt = recorded.AddSeconds(1), Diagnosis = Diagnosis(input.GeneratedAt)
-        });
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("passed", snapshot.Status);
-        Assert.IsNull(snapshot.Frontier);
-    }
-
-    [TestMethod]
-    public void Diagnosis_TargetChangesRequireFreshBuildRatherThanANewDiagnosis()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = SemanticInput(fixture);
-        input.Attempts.Attempts.Add(new EnforcementAttempt
-        {
-            Kind = "runtime", Signature = "crash", TargetFingerprint = input.TargetFingerprint,
-            RecordedAt = input.GeneratedAt.AddSeconds(-1), Diagnosis = Diagnosis(input.GeneratedAt)
-        });
-        var diagnosed = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual("state", diagnosed.Frontier?.Kind);
-        var corrected = EnforcementEvaluator.Evaluate(input with
-        {
-            TargetFingerprint = "corrected", Progress = diagnosed.Workflow
-        });
-        Assert.AreEqual("build", corrected.Frontier?.Kind);
-        Assert.AreEqual(WorkflowStage.SemanticConvergence, corrected.Stage);
-    }
-
-    [TestMethod]
-    public void Telemetry_ElapsedTimeCannotFreezeCompletedSlice()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = ExpiredInput(fixture, 26);
-        var observed = EnforcementEvaluator.Evaluate(input);
-        input.StatePlan!.States[0].Target.Status = "passed";
-        var completed = EnforcementEvaluator.Evaluate(input with { Progress = observed.Workflow });
-        Assert.AreEqual(WorkflowStage.Closure, completed.Stage);
-        Assert.AreNotEqual("blocked-required", completed.Disposition?.Kind);
-        Assert.AreNotEqual("total-budget-exhausted", completed.Disposition?.Kind);
-        Assert.IsTrue(completed.Workflow!.Units.Any(unit => unit.Stage == WorkflowStage.Closure));
-    }
-
-    [TestMethod]
-    public void Telemetry_EachSliceTracksElapsedTimeWithoutExtensions()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = ExpiredInput(fixture, 16);
-        input.StatePlan!.States.Add(State("second"));
-        var observed = EnforcementEvaluator.Evaluate(input with { TargetFingerprint = "correction" });
-        Assert.AreEqual(16, observed.Telemetry!.ElapsedMinutes);
-        input.StatePlan.States[0].Target.Status = "passed";
-        var next = EnforcementEvaluator.Evaluate(input with { Progress = observed.Workflow });
-        Assert.AreEqual("second", next.ActiveSlice);
-        var observedAgain = EnforcementEvaluator.Evaluate(input with
-        {
-            Progress = next.Workflow, TargetFingerprint = "another-correction",
-            GeneratedAt = input.GeneratedAt.AddMinutes(16)
-        });
-        Assert.AreEqual(16, observedAgain.Telemetry!.ElapsedMinutes);
-        Assert.IsFalse(observedAgain.Telemetry.MeasuredProgress);
-        Assert.IsTrue(observedAgain.Telemetry.ActivityObserved);
-        Assert.IsNull(WorkflowValidation.ProgressError(observedAgain.Workflow, input.GeneratedAt.AddMinutes(16)));
-    }
-
-    [TestMethod]
-    public void Slices_BusinessFindingDoesNotReopenVerifiedSurfaceWork()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        var second = State("second");
-        input.StatePlan!.States.Add(second);
-        AttestState(input);
-        AttestState(input, second);
-        input = input with
-        {
-            FindingLedger = new SemanticFindingLedger
-            {
-                Findings =
-                [
-                    new()
-                    {
-                        Id = "open-finding", Category = "behavior", StateIds = ["second"],
-                        SourceInvariant = "Preserve state", Status = "open", CompletionCondition = "Observe the fix"
-                    }
-                ]
-            }
-        };
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-        Assert.AreEqual(WorkflowStage.Closure, snapshot.Stage);
-        Assert.IsNull(snapshot.ActiveSlice);
-        Assert.AreEqual("report-sync", snapshot.Frontier?.Kind);
-        Assert.AreEqual("open", snapshot.Findings.Single().Status);
     }
 
     [TestMethod]
@@ -428,35 +209,28 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    [DataRow(WorkflowStage.SourceOracle)]
-    [DataRow(WorkflowStage.MechanicalStabilization)]
-    [DataRow(WorkflowStage.TargetBootstrap)]
-    [DataRow(WorkflowStage.SemanticConvergence)]
-    [DataRow(WorkflowStage.Closure)]
-    public void Operations_StagesDoNotAuthorizeOperations(WorkflowStage stage)
+    public void Operations_StagesDoNotAuthorizeOperations()
     {
         using var fixture = new EvaluatorFixture();
         var input = SemanticInput(fixture);
         var snapshot = EnforcementEvaluator.Evaluate(input);
-        snapshot.Workflow!.Stage = stage;
-        foreach (var operation in Enum.GetValues<WorkflowOperation>())
+        snapshot.Workflow!.Stage = WorkflowStage.SourceOracle;
+        foreach (var operation in new[] { WorkflowOperation.Build, WorkflowOperation.Replay,
+            WorkflowOperation.DiagnosticRun, WorkflowOperation.UiAction })
         {
             Assert.IsTrue(WorkflowOperations.TryBegin(input, snapshot, operation, [], null, out var reason), reason);
         }
-        Assert.HasCount(Enum.GetValues<WorkflowOperation>().Length, snapshot.Workflow.Operations);
     }
 
     [TestMethod]
-    [DataRow(WorkflowOperation.DiagnosticRun)]
-    [DataRow(WorkflowOperation.Hypothesis)]
-    public void Operations_DiagnosticsDoNotRequireARecordedRuntimeFailure(WorkflowOperation operation)
+    public void Operations_DiagnosticsDoNotRequireARecordedRuntimeFailure()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput() with { Replay = null };
         var snapshot = EnforcementEvaluator.Evaluate(input);
         Assert.AreEqual(WorkflowStage.TargetBootstrap, snapshot.Stage);
-        Assert.IsTrue(WorkflowOperations.TryBegin(input, snapshot, operation, [], null, out var reason), reason);
-        Assert.AreEqual(operation, snapshot.Workflow!.Operations.Single().Kind);
+        Assert.IsTrue(WorkflowOperations.TryBegin(input, snapshot, WorkflowOperation.DiagnosticRun, [], null, out var reason), reason);
+        Assert.AreEqual(WorkflowOperation.DiagnosticRun, snapshot.Workflow!.Operations.Single().Kind);
     }
 
     [TestMethod]
@@ -485,11 +259,6 @@ public sealed partial class EnforcementEvaluatorTests
         var input = SemanticInput(fixture);
         var snapshot = EnforcementEvaluator.Evaluate(input);
         snapshot.Workflow!.StartedAt = input.GeneratedAt.AddMinutes(-minutes);
-        snapshot.Workflow.Units[0].StartedAt = snapshot.Workflow.StartedAt;
-        snapshot.Workflow.Units[0].Epochs[0] = snapshot.Workflow.Units[0].Epochs[0] with
-        {
-            EnteredAt = snapshot.Workflow.StartedAt.Value
-        };
         return input with { Progress = snapshot.Workflow };
     }
 
@@ -507,14 +276,5 @@ public sealed partial class EnforcementEvaluatorTests
         },
         Target = new StateObservation { Status = "unverified", Evidence = ["evidence.txt"] },
         Comparison = new StateComparison { Status = "unverified" }
-    };
-
-    private static FailureDiagnosis Diagnosis(DateTimeOffset at) => new()
-    {
-        RecordedAt = at, SourceLocations = ["source.cs:1"], TargetLocations = ["target.cs:1"],
-        SourceInvariant = "Preserve source invariant",
-        Hypothesis = "Removing the guard causes the crash",
-        DiscriminatingTest = "Restore only the guard and observe",
-        Evidence = ["evidence.txt"]
     };
 }

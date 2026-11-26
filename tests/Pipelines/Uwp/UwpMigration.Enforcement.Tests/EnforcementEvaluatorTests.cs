@@ -150,77 +150,6 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Evaluate_OptionalDiagnosisDoesNotRequireATargetChange()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        var recordedAt = LifecycleNow.AddSeconds(-1);
-        File.SetLastWriteTimeUtc(
-            fixture.Path("evidence.txt"),
-            LifecycleNow.UtcDateTime);
-        input.Attempts.Attempts =
-        [
-            new()
-            {
-                Kind = "runtime",
-                TargetFingerprint = input.TargetFingerprint,
-                Signature = "runtime:0x800f1000",
-                RecordedAt = recordedAt,
-                Evidence = ["evidence.txt"],
-                Diagnosis = new FailureDiagnosis
-                {
-                    RecordedAt = LifecycleNow,
-                    SourceLocations = ["OuterNavPage.xaml.cs:100"],
-                    TargetLocations = ["OuterNavPage.xaml.cs:90"],
-                    SourceInvariant = "Preserve the selection workaround.",
-                    Hypothesis = "Removing the guard causes the crash.",
-                    DiscriminatingTest = "Restore only the guard.",
-                    Evidence = ["evidence.txt"]
-                }
-            }
-        ];
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("passed", snapshot.Status);
-    }
-
-    [TestMethod]
-    public void Evaluate_StaleDiagnosticNotesDoNotReplaceAcceptanceEvidence()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        var recordedAt = LifecycleNow;
-        File.SetLastWriteTimeUtc(
-            fixture.Path("evidence.txt"),
-            recordedAt.AddSeconds(-1).UtcDateTime);
-        input.Attempts.Attempts =
-        [
-            new()
-            {
-                Kind = "runtime",
-                TargetFingerprint = input.TargetFingerprint,
-                Signature = "runtime:crash",
-                RecordedAt = recordedAt,
-                Diagnosis = new FailureDiagnosis
-                {
-                    RecordedAt = recordedAt.AddSeconds(1),
-                    SourceLocations = ["source.cs:1"],
-                    TargetLocations = ["target.cs:1"],
-                    SourceInvariant = "Invariant",
-                    Hypothesis = "Hypothesis",
-                    DiscriminatingTest = "Test",
-                    Evidence = ["evidence.txt"]
-                }
-            }
-        ];
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("passed", snapshot.Status);
-    }
-
-    [TestMethod]
     public void Evaluate_InvalidComparisonStatusListsAllowedValues()
     {
         using var fixture = new EvaluatorFixture();
@@ -282,92 +211,20 @@ public sealed partial class EnforcementEvaluatorTests
     }
 
     [TestMethod]
-    public void Evaluate_OutOfScopeFindingIsRetainedWithoutBlockingSurfaceParity()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        input = input with { FindingLedger = new SemanticFindingLedger
-        {
-            Findings =
-            [
-                new()
-                {
-                    Id = "finding-1",
-                    Category = "behavior",
-                    SourceInvariant = "Activation remains correct.",
-                    Status = "blocked",
-                    CompletionCondition = "Activation is validated.",
-                    AppOwnedLocations = ["App.xaml.cs:10"],
-                    NextActions = ["Inspect activation."]
-                }
-            ]
-        } };
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("passed", snapshot.Status);
-        Assert.AreSame(input.FindingLedger!.Findings[0], snapshot.Findings.Single());
-        Assert.AreEqual("blocked", snapshot.Findings.Single().Status);
-        Assert.AreEqual("finding-finding-1-scope-review", snapshot.HumanValidationItems.Single().CheckId);
-        CollectionAssert.AreEqual(new[] { "Inspect activation." }, snapshot.HumanValidationItems.Single().Actions);
-    }
-
-    [TestMethod]
-    [DataRow("open")]
-    [DataRow("failed")]
-    public void Evaluate_OutOfScopeFindingStatusDoesNotAuthorizeAcceptance(string status)
+    public void Evaluate_UnreadableLegacyFindingsRequireHandoffNotAnAcceptanceGate()
     {
         using var fixture = new EvaluatorFixture();
         var input = fixture.ClosedInput() with
         {
-            FindingLedger = new SemanticFindingLedger
-            {
-                Findings =
-                [
-                    new()
-                    {
-                        Id = "finding-1",
-                        Category = "behavior",
-                        SourceInvariant = "Activation remains correct.",
-                        Status = status,
-                        CompletionCondition = "Activation is validated."
-                    }
-                ]
-            }
+            FindingLedgerError = "The original legacy file could not be read."
         };
 
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
         Assert.AreEqual("passed", snapshot.Status);
-        Assert.AreEqual(status, snapshot.Findings.Single().Status);
-    }
-
-    [TestMethod]
-    public void Evaluate_ResolvedBusinessFindingDoesNotClaimMachineVerification()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        input = input with { FindingLedger = new SemanticFindingLedger
-        {
-            Findings =
-            [
-                new()
-                {
-                    Id = "finding-1",
-                    Category = "behavior",
-                    SourceInvariant = "Activation remains correct.",
-                    Status = "resolved",
-                    CompletionCondition = "Activation is validated."
-                }
-            ]
-        } };
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("passed", snapshot.Status);
-        Assert.AreEqual("behavior", snapshot.Findings.Single().Category);
-        Assert.AreEqual("Activation remains correct.", snapshot.HumanValidationItems.Single().Behavior);
-        StringAssert.Contains(snapshot.Gates.Single(gate => gate.Id == "findings").Reason, "human-validation");
+        Assert.IsFalse(snapshot.Gates.Any(gate => gate.Id == "findings"));
+        Assert.AreEqual("legacy-findings-input-review", snapshot.HumanValidationItems.Single().CheckId);
+        CollectionAssert.Contains(snapshot.HumanValidationItems.Single().Evidence, EnforcementStore.FindingLedgerPath);
     }
 
     [TestMethod]
@@ -395,62 +252,6 @@ public sealed partial class EnforcementEvaluatorTests
         var snapshot = EnforcementEvaluator.Evaluate(input);
 
         Assert.AreEqual("report-sync", snapshot.Frontier?.Kind);
-    }
-
-    [TestMethod]
-    public void Evaluate_RepeatedFailureHistoryDoesNotSetAnOperationBudget()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        input = input with { Build = null, Replay = null };
-        input.Attempts.Attempts =
-        [
-            Attempt(input.TargetFingerprint, "same"),
-            Attempt(input.TargetFingerprint, "same")
-        ];
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("build", snapshot.Frontier?.Kind);
-        Assert.IsFalse(snapshot.Disposition!.Terminal);
-    }
-
-    [TestMethod]
-    public void Evaluate_TargetChangeResetsRetryBudget()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        input = input with { Build = null, Replay = null };
-        input.Attempts.Attempts =
-        [
-            Attempt("old-fingerprint", "same"),
-            Attempt("old-fingerprint", "same")
-        ];
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("build", snapshot.Frontier?.Kind);
-        Assert.IsFalse(snapshot.Disposition!.Terminal);
-    }
-
-    [TestMethod]
-    public void Evaluate_LaterSuccessfulBuildSupersedesFailureBudget()
-    {
-        using var fixture = new EvaluatorFixture();
-        var input = fixture.ClosedInput();
-        input.Attempts.Attempts =
-        [
-            Attempt(input.TargetFingerprint, "same"),
-            Attempt(input.TargetFingerprint, "same")
-        ];
-        foreach (var attempt in input.Attempts.Attempts)
-        {
-            attempt.RecordedAt = input.Build!.CompletedAt.AddSeconds(-1);
-        }
-
-        var snapshot = EnforcementEvaluator.Evaluate(input);
-
-        Assert.AreEqual("passed", snapshot.Status);
     }
 
     [TestMethod]

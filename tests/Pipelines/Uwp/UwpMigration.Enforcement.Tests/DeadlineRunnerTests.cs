@@ -7,6 +7,30 @@ namespace UwpMigration.Enforcement.Tests;
 
 public sealed partial class RunnerAcceptanceTests
 {
+    [TestMethod]
+    public async Task ElapsedTime_DoesNotCancelLateBuildOrReplay()
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var clock = new ManualTimeProvider(DeadlineNow);
+        var invocation = 0;
+        var process = new DelegateProcessRunner(token =>
+        {
+            Assert.IsFalse(token.IsCancellationRequested);
+            clock.Advance(TimeSpan.FromMinutes(6));
+            invocation++;
+            return Task.FromResult(invocation == 1 ? BuildSuccess() : ReplaySuccess());
+        });
+
+        var snapshot = await new UwpEnforcementRunner(process, clock).RunAsync(
+            fixture.Root, new UwpEnforcementOptions());
+
+        Assert.AreEqual(2, process.CallCount);
+        Assert.IsTrue(File.Exists(fixture.Path(EnforcementStore.BuildAttestationPath)));
+        Assert.IsTrue(File.Exists(fixture.Path(EnforcementStore.ReplayAttestationPath)));
+        Assert.AreEqual(12, snapshot.Telemetry!.ElapsedMinutes);
+        Assert.IsFalse(snapshot.Disposition!.Terminal);
+    }
+
     private static readonly DateTimeOffset DeadlineNow = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
@@ -35,12 +59,7 @@ public sealed partial class RunnerAcceptanceTests
         Assert.AreEqual("infrastructure-failure", snapshot.Disposition?.Kind);
         Assert.AreEqual(failedAt, snapshot.GeneratedAt);
         Assert.AreEqual(failedAt, snapshot.Workflow!.LastObservedAt);
-        Assert.AreEqual(failedAt, snapshot.Workflow.Units.Single().Epochs.Single().ExitedAt);
-        Assert.AreEqual("terminal:infrastructure-failure", snapshot.Workflow.Units.Single().Epochs.Single().ExitReason);
         Assert.AreEqual(5, snapshot.Telemetry!.ElapsedMinutes);
-        Assert.AreEqual(5, snapshot.Telemetry.TotalElapsedMinutes);
-        Assert.AreEqual(1, snapshot.Telemetry.Operations.Builds);
-        Assert.AreEqual(1, snapshot.Telemetry.TotalOperations.Builds);
         Assert.IsNull(WorkflowValidation.ProgressError(snapshot.Workflow, failedAt));
     }
 
@@ -67,73 +86,8 @@ public sealed partial class RunnerAcceptanceTests
         var snapshot = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
         Assert.IsFalse(snapshot.Disposition!.Terminal);
         Assert.IsFalse(File.Exists(fixture.Path(EnforcementStore.BuildAttestationPath)));
-        Assert.AreEqual(1, snapshot.Workflow!.Units.Single().Operations.Builds);
-        Assert.IsNull(snapshot.Workflow.Units.Single().Epochs.Single().ExitedAt);
+        Assert.AreEqual(WorkflowOperation.Build, snapshot.Workflow!.Operations.Single().Kind);
         Assert.AreEqual(1, process.CallCount);
-    }
-
-    [TestMethod]
-    [DataRow("total-budget-exhausted", "total-hard-limit")]
-    [DataRow("blocked-required", "unit-hard-limit")]
-    [DataRow("blocked-required", "operation-ceiling")]
-    public async Task Progress_RetiredAuthorizationTerminalFailsWithoutRewritingArtifacts(
-        string kind, string reasonCode)
-    {
-        using var fixture = await RunnerFixture.CreateAsync();
-        await SeedElapsedTimeAsync(fixture, 151);
-        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        progress.SchemaVersion = "2.0";
-        var disposition = new RunDisposition
-        {
-            Kind = kind,
-            ReasonCode = reasonCode,
-            Terminal = true,
-            Retryable = false,
-            Finalization = "blocked"
-        };
-        progress.Disposition = disposition;
-        WorkflowController.CloseActiveEpochs(progress, DeadlineNow, $"terminal:{kind}");
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
-        var state = await fixture.LoadAsync<EnforcementSnapshot>(EnforcementStore.StatePath);
-        state.GeneratedAt = DeadlineNow;
-        state.Status = "blocked";
-        state.Workflow = progress;
-        state.Disposition = disposition;
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.StatePath, state);
-        var progressJson = await File.ReadAllTextAsync(fixture.Path(EnforcementStore.ProgressPath));
-        var stateJson = await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath));
-        var process = SuccessfulLaunch();
-
-        var resumed = await new UwpEnforcementRunner(process, new ManualTimeProvider(DeadlineNow))
-            .RunAsync(fixture.Root, new UwpEnforcementOptions());
-
-        var artifactGate = resumed.Gates.Single(
-            gate => gate.Id == "enforcement-artifacts");
-        Assert.AreEqual("blocked", artifactGate.Status, artifactGate.Reason);
-        Assert.AreEqual("infrastructure-failure", resumed.Disposition?.Kind);
-        Assert.IsNull(resumed.Workflow);
-        Assert.AreEqual(progressJson, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.ProgressPath)));
-        Assert.AreEqual(stateJson, await File.ReadAllTextAsync(fixture.Path(EnforcementStore.StatePath)));
-        Assert.AreEqual(0, process.CallCount);
-    }
-
-    private static async Task SeedElapsedTimeAsync(RunnerFixture fixture, int previousMinutes)
-    {
-        if (!File.Exists(fixture.Path(EnforcementStore.ProgressPath)))
-            await UwpEnforcementRunner.AssessAsync(fixture.Root, TestWindowOwnerResolver.Shared);
-        var progress = await fixture.LoadAsync<WorkflowProgress>(EnforcementStore.ProgressPath);
-        progress.StartedAt = DeadlineNow.AddMinutes(-previousMinutes);
-        progress.LastObservedAt = DeadlineNow;
-        foreach (var unit in progress.Units)
-        {
-            unit.StartedAt = DeadlineNow;
-            unit.Epochs = unit.Epochs.Select(epoch => epoch with
-            {
-                EnteredAt = DeadlineNow,
-                ExitedAt = epoch.ExitedAt is null ? null : DeadlineNow
-            }).ToList();
-        }
-        await EnforcementStore.WriteAtomicAsync(fixture.Root, EnforcementStore.ProgressPath, progress);
     }
 
     private sealed class DelegateProcessRunner(Func<CancellationToken, Task<EnforcementProcessResult>> invoke)
