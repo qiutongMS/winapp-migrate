@@ -115,6 +115,16 @@ public static partial class MechanicalMigration
             var activeDeclarations = document.Descendants().Where(element =>
                 element.Name.LocalName is "Compile" or "Page" or "ApplicationDefinition"
                 && element.Attribute("Include") is not null).ToArray();
+            var defaultCompileOwnershipKnown = (string?)document.Root?.Attribute("Sdk") == "Microsoft.NET.Sdk"
+                && !document.Descendants().Any(element =>
+                    element.Name.LocalName is "DefaultItemExcludes" or "DefaultItemExcludesInProjectFolder"
+                        or "DefaultExcludesInProjectFolder" or "DisableDefaultItemsInProjectFolder"
+                    || element.Name.LocalName is "EnableDefaultItems" or "EnableDefaultCompileItems"
+                        && (HasConditionalOrChooseContext(element)
+                            || !element.Value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase))
+                    || element.Name.LocalName == "Import" && !IsKnownUwpInfrastructureImport(element))
+                && !files.Any(file => Path.GetFileName(file).Equals("Directory.Build.props", StringComparison.OrdinalIgnoreCase)
+                    || Path.GetFileName(file).Equals("Directory.Build.targets", StringComparison.OrdinalIgnoreCase));
             foreach (var file in files.Where(IsActiveBuildFile))
             {
                 var relative = Path.GetRelativePath(sourceRoot, file);
@@ -125,10 +135,7 @@ public static partial class MechanicalMigration
                     (item.Name.LocalName == expectedKind || expectedKind == "Page" && item.Name.LocalName == "ApplicationDefinition")
                     && !HasRawCondition(item) && !HasChooseAncestry(item) && !HasRawProjectExpression(item)
                     && SourceItemMatchesFile(item, relative));
-                var sdkDefaults = (string?)document.Root?.Attribute("Sdk") == "Microsoft.NET.Sdk" && expectedKind == "Compile"
-                    && !document.Descendants().Any(element => element.Name.LocalName == "EnableDefaultItems" && element.Value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase));
-                sdkDefaults &= !document.Descendants().Any(element => element.Name.LocalName == "EnableDefaultCompileItems"
-                    && (HasRawCondition(element) || element.Value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase)));
+                var sdkDefaults = defaultCompileOwnershipKnown && expectedKind == "Compile";
                 var explicitlyExcluded = document.Descendants().Any(item =>
                     item.Name.LocalName == expectedKind && item.Attribute("Remove") is { } remove
                         && (remove.Value.IndexOfAny(['*', '?', ';']) >= 0
@@ -190,7 +197,7 @@ public static partial class MechanicalMigration
             {
                 Id = "UWMIG018", Category = "source-build-contract", Priority = "required",
                 Summary = "Resolve preserved source build ownership and custom build controls",
-                Reason = "Files with uncertain source Compile/Page ownership, startup collisions and source build-control files are preserved as references, not activated by target SDK globs. Custom imports/properties require a target-owned semantic decision, not decide-project-item.",
+                Reason = "Files with uncertain source Compile/Page ownership, startup collisions and source build-control files are preserved as references, not activated by target SDK globs. Source exclusion properties, conditional/default-item switches and custom build controls prevent inference of default Compile ownership. Custom imports/properties require a target-owned semantic decision, not decide-project-item.",
                 Locations = locations.DistinctBy(location => (location.Path, location.Line)).ToList(),
                 Guidance = new MigrationRepairGuidance
                 {

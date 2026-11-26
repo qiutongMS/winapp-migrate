@@ -177,6 +177,8 @@ internal static class CSharpPlatformIdentity
     {
         var root = Parse(text);
         var spans = root.DescendantNodes().Where(node => node is NameSyntax or MemberAccessExpressionSyntax)
+            .Where(node => !node.Ancestors().OfType<BaseNamespaceDeclarationSyntax>()
+                .Any(declaration => declaration.Name.Span.Contains(node.Span)))
             .Where(node => CanonicalName(node) is "Microsoft.UI" or "Microsoft.Windows")
             .Select(node => node.DescendantTokens().First(token => token.ValueText == "Microsoft").Span)
             .Distinct().OrderByDescending(span => span.Start).ToArray();

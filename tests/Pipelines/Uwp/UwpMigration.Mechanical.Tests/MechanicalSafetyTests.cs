@@ -3,6 +3,8 @@
 
 using System.Text;
 using System.Xml.Linq;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using UwpMigration.Contracts;
 using UwpMigration.Mechanical;
 
@@ -94,6 +96,43 @@ public sealed class MechanicalSafetyTests : MigrateCommandTestBase
     }
 
     [TestMethod]
+    [DataRow("namespace Microsoft.Windows.Demo;", "")]
+    [DataRow("namespace Microsoft.UI.Demo {", "}")]
+    [DataRow("namespace Microsoft { namespace Windows.Demo {", "} }")]
+    public void ScaffoldRootingPreservesNamespaceDeclarations(string declaration, string end)
+    {
+        var text = declaration + """
+
+            public class App : Microsoft.UI.Xaml.Application
+            {
+                Microsoft.Windows.AppLifecycle.AppInstance Instance => Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent();
+            }
+            """ + end;
+
+        var rooted = CSharpPlatformIdentity.RootScaffoldPlatformReferences(text);
+
+        StringAssert.Contains(rooted, declaration);
+        StringAssert.Contains(rooted, ": global::Microsoft.UI.Xaml.Application");
+        StringAssert.Contains(rooted, "global::Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent()");
+        Assert.AreEqual(rooted, CSharpPlatformIdentity.RootScaffoldPlatformReferences(rooted));
+        var compilation = CSharpCompilation.Create("ScaffoldIdentity",
+            [
+                CSharpSyntaxTree.ParseText(rooted),
+                CSharpSyntaxTree.ParseText("""
+                    namespace Microsoft.UI.Xaml { public class Application {} }
+                    namespace Microsoft.Windows.AppLifecycle
+                    {
+                        public class AppInstance { public static AppInstance GetCurrent() => null; }
+                    }
+                    """)
+            ],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        Assert.IsEmpty(compilation.GetDiagnostics().Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error),
+            string.Join(Environment.NewLine, compilation.GetDiagnostics()));
+    }
+
+    [TestMethod]
     public async Task EmptyAssemblyInfoDoesNotDisableUnrelatedGeneratedAttributes()
     {
         var source = _tempDirectory.CreateSubdirectory("empty-assembly-source");
@@ -125,6 +164,47 @@ public sealed class MechanicalSafetyTests : MigrateCommandTestBase
     }
 
     [TestMethod]
+    [DataRow("DefaultItemExcludes")]
+    [DataRow("DefaultItemExcludesInProjectFolder")]
+    [DataRow("DefaultExcludesInProjectFolder")]
+    public async Task DefaultCompileExclusionsPreserveUnprovenFilesAsReferences(string property)
+    {
+        var source = _tempDirectory.CreateSubdirectory("default-exclude-source");
+        await WriteAsync(source, "Source.csproj", $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetPlatformIdentifier>UAP</TargetPlatformIdentifier>
+                <TargetFramework>net10.0</TargetFramework>
+                <{property}>$({property});Scratch.cs;Owned.cs</{property}>
+              </PropertyGroup>
+              <ItemGroup><Compile Include="Owned.cs"/></ItemGroup>
+            </Project>
+            """);
+        const string scratch = "THIS EXCLUDED SOURCE MUST NOT COMPILE";
+        await WriteAsync(source, "Scratch.cs", scratch);
+        const string owned = "class Owned {}";
+        await WriteAsync(source, "Owned.cs", owned);
+        var target = NewTarget("default-exclude-target");
+        ArrangeBasicTemplateCreation("ExcludedSource");
+
+        var (exit, output) = await InvokeMigrateAsync(source, target);
+
+        Assert.AreEqual(0, exit, output);
+        Assert.IsFalse(File.Exists(Path.Combine(target.FullName, "Scratch.cs")));
+        Assert.AreEqual(scratch, await ReadAsync(target, ".uwp-source", "Scratch.cs.reference"));
+        Assert.AreEqual(owned, await ReadAsync(target, "Owned.cs"));
+        var report = await MigrationReportStore.LoadAsync(
+            Path.Combine(target.FullName, "migration-report.json"), TestContext.CancellationToken);
+        Assert.IsTrue(report.Todos.Single(todo => todo.Id == "UWMIG018").Locations.Any(location =>
+            location.Path.EndsWith("Source.csproj.reference", StringComparison.Ordinal) && location.Line == 5));
+        var evaluated = await new MsBuildProjectItemEvaluator(new ProcessRunner()).EvaluateAsync(
+            new FileInfo(Path.Combine(target.FullName, "ExcludedSource.csproj")), TestContext.CancellationToken);
+        Assert.IsTrue(evaluated.Succeeded, evaluated.Error);
+        Assert.IsFalse(evaluated.Items.Any(item => item.Kind == "Compile" && item.Identity.Contains("Scratch", StringComparison.Ordinal)));
+        Assert.IsTrue(evaluated.Items.Any(item => item.Kind == "Compile" && item.Identity == "Owned.cs"));
+    }
+
+    [TestMethod]
     [DataRow("category")]
     [DataRow("summary")]
     [DataRow("reason")]
@@ -145,7 +225,7 @@ public sealed class MechanicalSafetyTests : MigrateCommandTestBase
     }
 
     [TestMethod]
-    public void PersistedTodoRejectsDuplicateFactsAndUiaOnlyResourceClosure()
+    public void PersistedTodoRejectsDuplicateFactsButKeepsLegacyResourceContractsReadable()
     {
         var todo = ValidTodo();
         todo.Guidance!.Facts = [new() { Id = "same", Summary = "A" }, new() { Id = "same", Summary = "B" }];
@@ -154,7 +234,7 @@ public sealed class MechanicalSafetyTests : MigrateCommandTestBase
         todo.Id = "UWMIG001";
         todo.Guidance!.ReasonCode = "preserved-uwp-resource-contract-requires-merge";
         todo.Guidance.CompletionChecks = [new() { Id = "uia", Summary = "Visual structure", VerificationKind = "surface-binding", Target = todo.Id, Expected = "passed", AssertionIds = ["target-reachable", "uia-structure-match"] }];
-        Assert.ThrowsExactly<InvalidDataException>(() => MigrationTodoValidator.ValidatePersisted([todo]));
+        MigrationTodoValidator.ValidatePersisted([todo]);
     }
 
     [TestMethod]

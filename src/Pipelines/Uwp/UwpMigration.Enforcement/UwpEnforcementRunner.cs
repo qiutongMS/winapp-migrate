@@ -1035,7 +1035,7 @@ public sealed partial class UwpEnforcementRunner
                 TodoCompletionContract.StateChecksAreBound(todo, plan);
             if (projectChecksPass &&
                 stateChecksBound &&
-                todo.Guidance?.CompletionChecks.All(TodoCompletionContract.IsMachineCheck) == true &&
+                TodoExecutionService.OutOfScopeHandoffs(todo).Count == 0 &&
                 ((requiredStateIds.Count == 0 &&
                     TodoCompletionContract.UsesProjectClosureOnly(todo)) ||
                 requiredStateIds.Count > 0 &&

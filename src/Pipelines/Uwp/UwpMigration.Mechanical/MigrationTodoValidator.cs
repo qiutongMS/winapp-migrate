@@ -51,13 +51,6 @@ internal static class MigrationTodoValidator
             if (todo is not null && todo.Guidance?.CompletionChecks is not { Count: > 0 })
                 issues.Add(new("missing-completion-contract",
                     $"TODO '{todo.Id}' requires current structured completion checks; persisted contracts cannot be inferred."));
-            if (todo?.Guidance?.ReasonCode is "preserved-uwp-resource-contract-requires-merge" or "preserved-uwp-startup-contract-requires-port"
-                && todo.Guidance.CompletionChecks?.Any(check => check is not null
-                    && check.VerificationKind == "todo-resolution-evidence" && check.Target == todo.Id
-                    && check.Id == (todo.Guidance.ReasonCode == "preserved-uwp-resource-contract-requires-merge"
-                        ? "source-resource-contract-review" : "source-startup-contract-review")) != true)
-                issues.Add(new("missing-semantic-completion-contract",
-                    $"TODO '{todo.Id}' requires separate resource/lifecycle semantic evidence; UIA structure is not behavioral equality. Regenerate its current contract from preserved source evidence."));
         }
         ThrowIfInvalid(issues);
     }

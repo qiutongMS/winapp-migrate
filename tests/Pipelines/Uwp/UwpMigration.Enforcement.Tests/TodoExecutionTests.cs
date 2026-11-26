@@ -566,6 +566,59 @@ public sealed partial class RunnerAcceptanceTests
     }
 
     [TestMethod]
+    [DataRow("UWMIG001", "preserved-uwp-resource-contract-requires-merge", "app-resource-replay-passed")]
+    [DataRow("UWMIG004", "preserved-uwp-startup-contract-requires-port", "startup-replay-passed")]
+    public async Task TodoExecution_LegacySemanticObligationsRemainReadableAndRequireHumanValidation(
+        string todoId, string reasonCode, string checkId)
+    {
+        using var fixture = await RunnerFixture.CreateAsync();
+        var report = await fixture.LoadReportAsync();
+        var todo = Uwmig014();
+        todo.Id = todoId;
+        todo.Guidance!.ReasonCode = reasonCode;
+        todo.Guidance.CompletionChecks =
+        [
+            new()
+            {
+                Id = checkId, Summary = "Bind the actual startup surface.",
+                VerificationKind = "surface-binding", Target = todoId, Expected = "passed",
+                AssertionIds = [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]
+            }
+        ];
+        report.Todos.Add(todo);
+        await fixture.SaveReportAsync(report);
+        var source = (await fixture.LoadAsync<StatePlanDocument>(ClosurePlan)).States.Single().Source;
+        var sourceBefore = JsonSerializer.Serialize(source, EnforcementStore.JsonOptions);
+        var sourceTreeHash = StateClosureProtocol.FileHash(fixture.Root, source.TreeEvidence!);
+
+        var pending = (await TodoExecutionService.AssessAsync(fixture.Root, todoId)).Single();
+        Assert.AreEqual("bind-surface", pending.NextOperation);
+        Assert.HasCount(1, pending.HumanValidationItems);
+        await TodoExecutionService.BindStateAsync(fixture.Root, todoId, "state-1", checkId,
+            "The actual startup surface.", [SurfaceCheckIds.TargetReachable, SurfaceCheckIds.StructureMatch]);
+        await TodoExecutionService.RecordImplementationAsync(fixture.Root, todoId, "implemented", "Ported the preserved source.");
+        var probe = await CaptureClosureProbeAsync(fixture);
+        await UwpEnforcementRunner.RecordSurfaceAsync(
+            fixture.Root, TestWindowOwnerResolver.Shared, "state-1", [probe.ArtifactPath]);
+
+        var snapshot = await UwpEnforcementRunner.SynchronizeReportAsync(fixture.Root, TestWindowOwnerResolver.Shared);
+        var assessment = (await TodoExecutionService.AssessAsync(
+            fixture.Root, todoId, TestWindowOwnerResolver.Shared)).Single();
+
+        Assert.AreEqual("implemented", assessment.ImplementationStatus);
+        Assert.AreEqual("verified", assessment.Surfaces.Single().Status);
+        Assert.AreEqual("human-validation-required", assessment.VerificationStatus);
+        Assert.AreEqual(todoId, snapshot.HumanValidationItems.Single().TodoId);
+        var current = (await fixture.LoadReportAsync()).Todos.Single();
+        Assert.AreEqual("pending", current.Status);
+        Assert.HasCount(1, current.Guidance!.CompletionChecks);
+        Assert.AreEqual("surface-check", current.Guidance.CompletionChecks.Single().VerificationKind);
+        Assert.AreEqual(sourceBefore, JsonSerializer.Serialize(
+            (await fixture.LoadAsync<StatePlanDocument>(ClosurePlan)).States.Single().Source, EnforcementStore.JsonOptions));
+        Assert.AreEqual(sourceTreeHash, StateClosureProtocol.FileHash(fixture.Root, source.TreeEvidence!));
+    }
+
+    [TestMethod]
     [DataRow(false, false)]
     [DataRow(false, true)]
     [DataRow(true, false)]

@@ -402,6 +402,22 @@ public static class TodoExecutionService
                 Behavior = todo.Summary, ExpectedOutcome = todo.Reason,
                 Reason = "No machine-verifiable completion scope is declared; review the source obligation without inventing a surface binding."
             });
+        if (todo.Guidance?.ReasonCode is "preserved-uwp-resource-contract-requires-merge" or "preserved-uwp-startup-contract-requires-port"
+            && !checks.Any(check => check.VerificationKind == "todo-resolution-evidence" && check.Target == todo.Id))
+        {
+            var resources = todo.Guidance.ReasonCode == "preserved-uwp-resource-contract-requires-merge";
+            handoffs.Add(new HumanValidationItem
+            {
+                TodoId = todo.Id,
+                CheckId = resources ? "source-resource-contract-review" : "source-startup-contract-review",
+                Behavior = todo.Summary,
+                Actions = todo.Guidance.Classification?.DiscriminatingTests ?? [],
+                ExpectedOutcome = resources
+                    ? "Review resource lookup, theme and override precedence against the preserved source."
+                    : "Review launch/activation payloads, ownership, ordering and side effects against the preserved source.",
+                Reason = "The persisted contract lacks separate semantic review; UIA structure does not prove resource or lifecycle behavior."
+            });
+        }
         return handoffs;
     }
 
