@@ -9,9 +9,9 @@ using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement;
 
-public sealed partial class UwpEnforcementRunner
+internal static class LegacyFindingImporter
 {
-    private static async Task<(MigrationReport Report, string? Error)> ImportLegacyFindingsAsync(
+    internal static async Task<(MigrationReport Report, string? Error)> ImportAsync(
         string reportPath, MigrationReport report, SemanticFindingLedger? ledger, string? loadError,
         CancellationToken cancellationToken, string legacyPath = EnforcementStore.FindingLedgerPath)
     {

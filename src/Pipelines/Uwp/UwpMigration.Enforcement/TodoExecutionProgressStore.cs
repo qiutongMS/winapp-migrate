@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 using UwpMigration.Contracts;
-using UwpMigration.Mechanical;
 using WinAppMigration.Enforcement;
 
 namespace UwpMigration.Enforcement;
@@ -13,47 +12,15 @@ internal static class TodoExecutionProgressStore
         DirectoryInfo target,
         CancellationToken cancellationToken)
     {
-        var reportPath = Path.Combine(
-            target.FullName,
-            "migration-report.json");
-        if (!File.Exists(reportPath))
-        {
-            throw new FileNotFoundException(
-                "migration-report.json was not found in the target directory.",
-                reportPath);
-        }
-        var report = await MigrationReportStore.LoadAsync(
-            reportPath,
-            cancellationToken);
-        var (plan, planError) =
-            await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                target,
-                report.Validation.StatePlan,
-                cancellationToken);
-        if (planError is not null)
-        {
-            throw new InvalidDataException(planError);
-        }
-        var (build, buildError) =
-            await EnforcementStore.TryLoadAsync<BuildAttestation>(
-                target,
-                EnforcementStore.BuildAttestationPath,
-                cancellationToken);
-        if (buildError is not null)
-        {
-            throw new InvalidDataException(buildError);
-        }
-        var (replay, replayError) =
-            await EnforcementStore.TryLoadAsync<ReplayAttestation>(
-                target,
-                EnforcementStore.ReplayAttestationPath,
-                cancellationToken);
-        if (replayError is not null)
-        {
-            throw new InvalidDataException(replayError);
-        }
+        var files = await UwpWorkspaceStore.LoadAsync(target, cancellationToken);
+        if (files.StatePlanError is not null)
+            throw new InvalidDataException(files.StatePlanError);
+        var runtime = await UwpWorkspaceStore.LoadRuntimeEvidenceAsync(files.Target, cancellationToken);
+        if (runtime.BuildError is not null || runtime.ReplayError is not null)
+            throw new InvalidDataException(runtime.BuildError ?? runtime.ReplayError);
         return new TodoExecutionContext(
-            report, plan, build, replay, await LoadProgressAsync(target, cancellationToken));
+            files.Report, files.StatePlan, runtime.Build, runtime.Replay,
+            await LoadProgressAsync(files.Target, cancellationToken));
     }
 
     internal static async Task<TodoExecutionProgressDocument> LoadProgressAsync(

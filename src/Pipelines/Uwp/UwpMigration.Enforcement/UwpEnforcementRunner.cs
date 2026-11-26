@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using UwpMigration.Contracts;
 using UwpMigration.Mechanical;
 using WinAppMigration.Enforcement;
+using Workspace = UwpMigration.Enforcement.UwpEnforcementWorkspace;
 
 namespace UwpMigration.Enforcement;
 
@@ -64,7 +65,7 @@ public sealed partial class UwpEnforcementRunner
             await EnforcementStore.AcquireLockAsync(
                 ResolveLockTarget(target),
                 cancellationToken);
-        var workspace = await LoadWorkspaceAsync(
+        var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken);
         await RequireNonterminalAsync(
@@ -124,7 +125,7 @@ public sealed partial class UwpEnforcementRunner
         await using var enforcementLock = await EnforcementStore.AcquireLockAsync(
             ResolveLockTarget(target), cancellationToken);
         using var verification = StateClosureSeal.BeginVerification();
-        var workspace = await LoadWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
+        var workspace = await PrepareWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         var context = new TodoExecutionContext(workspace.Report, workspace.Input.StatePlan,
             workspace.Build, workspace.Input.Replay,
@@ -143,7 +144,7 @@ public sealed partial class UwpEnforcementRunner
             throw new ArgumentException("Stop reason must be budget-exhausted, no-progress, or external-blocker.", nameof(reason));
         await using var enforcementLock = await EnforcementStore.AcquireLockAsync(
             ResolveLockTarget(target), cancellationToken);
-        var workspace = await LoadWorkspaceAsync(target, cancellationToken);
+        var workspace = await PrepareWorkspaceAsync(target, cancellationToken);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         if (WorkflowDispositions.RejectTerminal(snapshot, out _))
             return snapshot;
@@ -174,7 +175,7 @@ public sealed partial class UwpEnforcementRunner
             await EnforcementStore.AcquireLockAsync(
                 lockTarget,
                 cancellationToken);
-        var workspace = await LoadWorkspaceAsync(
+        var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken,
             timeProvider, windowOwnerResolver);
@@ -197,7 +198,7 @@ public sealed partial class UwpEnforcementRunner
                 lockTarget,
                 cancellationToken);
         EnforcementTrace.Mark("lock.acquired");
-        var workspace = await LoadWorkspaceAsync(
+        var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken, _timeProvider, _windowOwnerResolver);
         if (workspace.Build is not null &&
@@ -223,7 +224,7 @@ public sealed partial class UwpEnforcementRunner
                 return snapshot;
             }
             await RunBuildAsync(workspace, snapshot, options, cancellationToken);
-            workspace = await LoadWorkspaceAsync(
+            workspace = await PrepareWorkspaceAsync(
                 target,
                 cancellationToken, _timeProvider, _windowOwnerResolver);
             snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
@@ -245,7 +246,7 @@ public sealed partial class UwpEnforcementRunner
                 return snapshot;
             }
             await RunReplayAsync(workspace, snapshot, options, cancellationToken);
-            workspace = await LoadWorkspaceAsync(
+            workspace = await PrepareWorkspaceAsync(
                 target,
                 cancellationToken, _timeProvider, _windowOwnerResolver);
             snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
@@ -266,7 +267,7 @@ public sealed partial class UwpEnforcementRunner
             await EnforcementStore.AcquireLockAsync(
                 lockTarget,
                 cancellationToken);
-        var workspace = await LoadWorkspaceAsync(
+        var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken, _timeProvider, _windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
@@ -349,7 +350,7 @@ public sealed partial class UwpEnforcementRunner
         await AuthenticateOperationAsync(workspace, snapshot, attestation.Id, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
         if (result.ExitCode != 0 && failure is null)
             await RecordAttemptAsync(workspace, "runtime", attestation.Signature!, snapshot.Workflow.Operations[^1], [stdout, stderr], cancellationToken);
-        var updated = await LoadWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
+        var updated = await PrepareWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
         await WriteSnapshotAsync(updated.Target, EnforcementEvaluator.Evaluate(updated.Input), cancellationToken);
         return attestation;
     }
@@ -390,7 +391,7 @@ public sealed partial class UwpEnforcementRunner
             await EnforcementStore.AcquireLockAsync(
                 lockTarget,
                 cancellationToken);
-        var workspace = await LoadWorkspaceAsync(
+        var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken, _timeProvider, _windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
@@ -641,7 +642,7 @@ public sealed partial class UwpEnforcementRunner
         CancellationToken cancellationToken = default)
     {
         await using var enforcementLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken);
-        var workspace = await LoadWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
+        var workspace = await PrepareWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(workspace.Input);
         await RequireNonterminalAsync(workspace.Target, snapshot, cancellationToken);
         if (snapshot.Gates.First(gate => gate.Id == "state-plan").Status != "passed" ||
@@ -655,7 +656,7 @@ public sealed partial class UwpEnforcementRunner
             windowOwnerResolver, cancellationToken);
         var report = await MigrationReportStore.LoadAsync(workspace.ReportPath, cancellationToken);
         await EnforcementStore.WriteAtomicAsync(workspace.Target, report.Validation.StatePlan, plan, cancellationToken);
-        var updated = await LoadWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
+        var updated = await PrepareWorkspaceAsync(target, cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var recorded = EnforcementEvaluator.Evaluate(updated.Input);
         await WriteSnapshotAsync(updated.Target, recorded, cancellationToken);
         await SurfaceComparisonArtifacts.WriteIndexAsync(updated.Target, recorded, cancellationToken);
@@ -676,7 +677,7 @@ public sealed partial class UwpEnforcementRunner
             await EnforcementStore.AcquireLockAsync(
                 lockTarget,
                 cancellationToken);
-        var workspace = await LoadWorkspaceAsync(
+        var workspace = await PrepareWorkspaceAsync(
             target,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         if (workspace.Input.StatePlan is null ||
@@ -731,7 +732,7 @@ public sealed partial class UwpEnforcementRunner
             workspace.ReportPath,
             report,
             cancellationToken);
-        var updated = await LoadWorkspaceAsync(
+        var updated = await PrepareWorkspaceAsync(
             target,
             cancellationToken, windowOwnerResolver: windowOwnerResolver);
         var snapshot = EnforcementEvaluator.Evaluate(updated.Input);
@@ -775,46 +776,6 @@ public sealed partial class UwpEnforcementRunner
                 todo.Status = "pending";
             }
         }
-    }
-
-    private static (bool Ready, string Reason) AssessReportClosure(
-        DirectoryInfo target,
-        MigrationReport report,
-        StatePlanDocument? plan,
-        string? statePlanError,
-        BuildAttestation? build,
-        string targetFingerprint,
-        Dictionary<(string Kind, string Target, string Expected), bool> projectChecks,
-        DateTimeOffset now)
-    {
-        if (plan is null || !string.IsNullOrWhiteSpace(statePlanError))
-        {
-            return (false,
-                statePlanError ?? "A valid surface plan is required to validate report closure.");
-        }
-
-        var duplicate = report.Todos
-            .GroupBy(todo => todo.Id, StringComparer.Ordinal)
-            .FirstOrDefault(group =>
-                string.IsNullOrWhiteSpace(group.Key) || group.Count() > 1);
-        if (duplicate is not null)
-        {
-            return (false,
-                "migration-report.json TODO IDs must be non-empty and unique before closure.");
-        }
-
-        foreach (var todo in report.Todos.Where(todo =>
-            string.Equals(todo.Priority, "required", StringComparison.OrdinalIgnoreCase)))
-        {
-            if (!TodoCompletionContract.ProjectClosureChecksPass(target, todo, report, build, targetFingerprint, projectChecks, now))
-                return (false, $"Required TODO {todo.Id} has an unsatisfied current project completion check.");
-            if (!TodoCompletionContract.StateChecksAreBound(todo, plan))
-                return (false,
-                    $"Required TODO {todo.Id} must map to declared required surfaces with supported exact surface check IDs.");
-        }
-
-        return (true,
-            "Required TODO project checks and surface mappings are satisfied; original surface evidence is assessed by the surface gate.");
     }
 
     private async Task RunBuildAsync(
@@ -1114,239 +1075,22 @@ public sealed partial class UwpEnforcementRunner
         }
     }
 
-    private static async Task<Workspace> LoadWorkspaceAsync(
+    private static async Task<Workspace> PrepareWorkspaceAsync(
         DirectoryInfo requestedTarget,
         CancellationToken cancellationToken,
         TimeProvider? timeProvider = null, IWindowOwnerResolver? windowOwnerResolver = null)
     {
-        using var timing = EnforcementTrace.Measure("workspace.load");
         using var verification = StateClosureSeal.BeginVerification();
-        if (!MigrationPathResolver.TryCanonicalizeRoot(
-                requestedTarget.FullName,
-                out var targetRoot,
-                out var targetError))
-        {
-            throw new InvalidDataException(targetError);
-        }
-
-        var target = new DirectoryInfo(targetRoot);
-        var reportPath = Path.Combine(targetRoot, "migration-report.json");
-        if (!File.Exists(reportPath))
-        {
-            throw new FileNotFoundException(
-                "migration-report.json was not found in the target directory.",
-                reportPath);
-        }
-        var report = await MigrationReportStore.LoadAsync(
-            reportPath,
-            cancellationToken);
-        if (report.SchemaVersion != MigrationReport.CurrentSchemaVersion)
-        {
-            throw new InvalidDataException(
-                $"Unsupported migration-report schema {report.SchemaVersion}; expected {MigrationReport.CurrentSchemaVersion}.");
-        }
-        var projectError = "The recorded target project does not exist.";
-        if (string.IsNullOrWhiteSpace(report.Target.ProjectFile) ||
-            !MigrationPathResolver.TryResolveContainedRelativePath(
-                targetRoot,
-                report.Target.ProjectFile,
-                out var targetProject,
-                out _,
-                out projectError) ||
-            !File.Exists(targetProject))
-        {
-            throw new InvalidDataException(
-                string.IsNullOrWhiteSpace(report.Target.ProjectFile)
-                    ? "migration-report.json does not identify a target project."
-                    : projectError ?? "The recorded target project does not exist.");
-        }
-
-        var analyzer = AnalyzerReferenceInspector.Inspect(targetProject);
-        string fingerprint;
-        using (EnforcementTrace.Measure("workspace.fingerprint"))
-            fingerprint = await TargetFingerprint.ComputeAsync(target, cancellationToken);
-        var (statePlan, statePlanError) =
-            await EnforcementStore.TryLoadAsync<StatePlanDocument>(
-                target,
-                report.Validation.StatePlan,
-                cancellationToken);
-        string? requiredHash = null;
-        string? requiredError = null;
-        if (statePlan is not null)
-        {
-            try { requiredHash = RequiredStateContracts.Freeze(target, statePlan); }
-            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
-            { requiredError = exception.Message; }
-        }
-        var (build, buildError) =
-            await EnforcementStore.TryLoadAsync<BuildAttestation>(
-                target,
-                EnforcementStore.BuildAttestationPath,
-                cancellationToken);
-        var (replay, replayError) =
-            await EnforcementStore.TryLoadAsync<ReplayAttestation>(
-                target,
-                EnforcementStore.ReplayAttestationPath,
-                cancellationToken);
-        var (attempts, attemptsError) =
-            await EnforcementStore.TryLoadAsync<AttemptLedger>(
-                target,
-                EnforcementStore.AttemptLedgerPath,
-                cancellationToken);
-        attempts ??= new AttemptLedger();
-        var (diagnostic, diagnosticError) =
-            await EnforcementStore.TryLoadAsync<DiagnosticRunAttestation>(
-                target, EnforcementStore.DiagnosticAttestationPath, cancellationToken);
-        var (persistedState, stateError) = await EnforcementStore.TryLoadAsync<EnforcementSnapshot>(
-            target, EnforcementStore.StatePath, cancellationToken);
-        if (stateError is null && persistedState is not null &&
-            persistedState.SchemaVersion != EnforcementSnapshot.CurrentSchemaVersion)
-            stateError = $"Unsupported enforcement snapshot schema {persistedState.SchemaVersion}; only {EnforcementSnapshot.CurrentSchemaVersion} is supported.";
-        stateError ??= WorkflowValidation.DispositionError(persistedState?.Disposition);
-        var (findings, findingsError) = await EnforcementStore.TryLoadAsync<SemanticFindingLedger>(
-            target, EnforcementStore.FindingLedgerPath, cancellationToken);
-        var (importedReport, importError) = await ImportLegacyFindingsAsync(reportPath, report, findings, findingsError, cancellationToken);
-        report = importedReport;
-        if (findingsError is null && stateError is null && persistedState?.Findings is { Count: > 0 } legacySnapshot)
-        {
-            var snapshotFindings = new SemanticFindingLedger
-            {
-                Findings = legacySnapshot.Where(finding => finding is null ||
-                    findings?.Findings?.Any(existing => existing?.Id == finding.Id) != true).ToList()
-            };
-            var snapshotFindingError = EnforcementStore.LegacyFindingError(snapshotFindings, null);
-            if (snapshotFindingError is null)
-            {
-                (report, snapshotFindingError) = await ImportLegacyFindingsAsync(reportPath, report, snapshotFindings, null,
-                    cancellationToken, EnforcementStore.StatePath);
-                importError ??= snapshotFindingError;
-            }
-            else
-                findingsError = $"{EnforcementStore.StatePath}: {snapshotFindingError}";
-        }
-        var artifactError = buildError ?? replayError ?? attemptsError ??
-            diagnosticError ?? stateError ?? WorkflowValidation.EvidenceArtifactError(attempts, build, replay) ??
-            WorkflowValidation.DiagnosticError(diagnostic);
-        var generatedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
-        WorkflowProgress? progress = null;
-        string? workflowError = null;
-        if (artifactError is null)
-            (progress, workflowError) = await WorkflowPersistence.LoadAsync(
-                target, build is not null || replay is not null || diagnostic is not null ||
-                    attempts.Attempts.Count > 0 ||
-                    persistedState?.Workflow?.Operations.Count > 0,
-                generatedAt, cancellationToken);
-        if (workflowError is null && progress is not null &&
-            !WorkflowOperationAuthentication.VerifyAnchored(target, progress.Operations))
-            workflowError = "Operation history does not match the independently committed local head (rollback, omission, or legacy unordered history).";
-        var summary = new PipelineValidationSummary(
-            report.Validation.SourceBaseline.Status,
-            report.Validation.SourceBaseline.States.Select(state => state.Id).ToArray(),
-            report.Validation.TargetReplay.Status,
-            report.Validation.TargetReplay.States.Select(state => state.Id).ToArray(),
-            report.Validation.ParityStatus,
-            report.Validation.Reason)
-        {
-            SourceObservations = report.Validation.SourceBaseline.States.Select(state =>
-                new PipelineValidationState(state.Id, state.Status, state.Reason)).ToArray(),
-            TargetObservations = report.Validation.TargetReplay.States.Select(state =>
-                new PipelineValidationState(state.Id, state.Status, state.Reason)).ToArray()
-        };
-        var incompatibleUwpResiduals =
-            MechanicalMigration.Engine.FindIncompatibleUwpResiduals(targetRoot);
-        var mechanicalReady =
-            report.Status == "mechanical-migration-complete" &&
-            report.MechanicalVerification.Status == "passed" &&
-            incompatibleUwpResiduals.Count == 0;
-        EnforcementTrace.Mark("workspace.report-closure.begin");
-        var projectChecks = new Dictionary<(string Kind, string Target, string Expected), bool>
-        {
-            [("target-uwp-compatibility", "target-source", "passed")] = incompatibleUwpResiduals.Count == 0
-        };
-        var (reportClosureReady, reportClosureReason) =
-            AssessReportClosure(
-                target,
-                report,
-                statePlan,
-                statePlanError,
-                build,
-                fingerprint,
-                projectChecks,
-                generatedAt);
-        EnforcementTrace.Mark("workspace.report-closure.end");
-        var input = new EnforcementEvaluationInput
-        {
-            HumanValidationItems = report.Todos.SelectMany(TodoExecutionService.OutOfScopeHandoffs).ToList(),
-            RequiredContractHash = requiredHash,
-            RequiredContractError = requiredError,
-            WindowOwnerResolver = windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance,
-            TargetRoot = target,
-            TargetFingerprint = fingerprint,
-            MechanicalReady = mechanicalReady,
-            MechanicalReason = mechanicalReady
-                ? "Mechanical verification passed."
-                : incompatibleUwpResiduals.Count > 0
-                    ? $"Incompatible UWP residue in current target files: {string.Join(" ", incompatibleUwpResiduals.Take(5).Select(issue => $"{issue.RuleId} {issue.Location.Path}:{issue.Location.Line}: {issue.Reason} {issue.RequiredResolution}"))} Run 'winapp-migrate uwp verify' for the current report and repair TODO."
-                    : $"Mechanical status is report={report.Status}, verification={report.MechanicalVerification.Status}.",
-            AnalyzerReferencePresent = analyzer.Present,
-            AnalyzerPrivateAssets = analyzer.PrivateAssets,
-            StatePlan = statePlan,
-            StatePlanError = statePlanError,
-            FindingLedgerError = importError ?? EnforcementStore.LegacyFindingError(findings, findingsError),
-            ArtifactError = artifactError ?? workflowError,
-            Build = build,
-            Replay = replay,
-            Diagnostic = diagnostic,
-            Attempts = attempts,
-            Progress = progress,
-            PersistedDisposition = persistedState?.Disposition,
-            PersistedGates = persistedState?.Gates ?? [],
-            ReportValidation = summary,
-            ReportClosureReady = reportClosureReady,
-            ReportClosureReason = reportClosureReason,
-            GeneratedAt = generatedAt
-        };
-        if (persistedState?.Disposition is not { Terminal: true } && input.ArtifactError is null)
-        {
-            try
-            {
-                StateAttribution.ValidateFailures(input);
-                if (RuntimeFailureRecovery.Recover(attempts, replay, diagnostic, input))
-                    await EnforcementStore.WriteAtomicAsync(target, EnforcementStore.AttemptLedgerPath, attempts, cancellationToken);
-            }
-            catch (InvalidDataException exception) { input = input with { ArtifactError = exception.Message }; }
-        }
-        return new Workspace(
-            target,
-            reportPath,
-            report,
-            targetProject,
-            fingerprint,
-            analyzer,
-            attempts,
-            build,
-            input,
-            projectChecks);
+        var loaded = await UwpEnforcementWorkspaceLoader.LoadAsync(
+            requestedTarget, timeProvider ?? TimeProvider.System, cancellationToken);
+        var prepared = await UwpEnforcementWorkspacePreparation.PrepareAsync(loaded, cancellationToken);
+        return UwpEnforcementWorkspaceAssessment.Assess(
+            prepared, windowOwnerResolver ?? WindowsWindowOwnerResolver.Instance);
     }
 
     private static DirectoryInfo ResolveLockTarget(DirectoryInfo requestedTarget)
     {
-        ArgumentNullException.ThrowIfNull(requestedTarget);
-        if (!MigrationPathResolver.TryCanonicalizeRoot(
-                requestedTarget.FullName,
-                out var targetRoot,
-                out var targetError))
-        {
-            throw new InvalidDataException(targetError);
-        }
-        var reportPath = Path.Combine(targetRoot, "migration-report.json");
-        if (!File.Exists(reportPath))
-        {
-            throw new FileNotFoundException(
-                "migration-report.json was not found in the target directory.",
-                reportPath);
-        }
-        return new DirectoryInfo(targetRoot);
+        return UwpWorkspaceStore.ResolveTarget(requestedTarget);
     }
 
     private static async Task WriteProcessOutputAsync(
@@ -1481,15 +1225,4 @@ public sealed partial class UwpEnforcementRunner
     private static string CreateId(string prefix) =>
         $"{prefix}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}";
 
-    private sealed record Workspace(
-        DirectoryInfo Target,
-        string ReportPath,
-        MigrationReport Report,
-        string TargetProject,
-        string Fingerprint,
-        AnalyzerReferenceStatus Analyzer,
-        AttemptLedger Attempts,
-        BuildAttestation? Build,
-        EnforcementEvaluationInput Input,
-        Dictionary<(string Kind, string Target, string Expected), bool> ProjectChecks);
 }

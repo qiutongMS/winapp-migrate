@@ -14,7 +14,7 @@ public sealed partial class UwpEnforcementRunner
         CancellationToken cancellationToken = default)
     {
         await using var enforcementLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken);
-        var workspace = await LoadWorkspaceAsync(target, cancellationToken);
+        var workspace = await PrepareWorkspaceAsync(target, cancellationToken);
         await RequireNonterminalAsync(workspace.Target, EnforcementEvaluator.Evaluate(workspace.Input), cancellationToken);
         var plan = workspace.Input.StatePlan ?? throw new InvalidDataException("A valid surface inventory is required.");
         var state = plan.States.SingleOrDefault(item => item.Id == stateId) ??
@@ -133,7 +133,7 @@ public sealed partial class UwpEnforcementRunner
         MigrationState state;
         await using (var enforcementLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken))
         {
-            var workspace = await LoadWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
+            var workspace = await PrepareWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
             state = workspace.Input.StatePlan?.States.SingleOrDefault(item => item.Id == stateId) ??
                 throw new InvalidDataException($"Unknown planned surface: {stateId}.");
             if (SourceNavigationContracts.Require(workspace.Target, state) is null)
@@ -153,7 +153,7 @@ public sealed partial class UwpEnforcementRunner
             return probes;
         await using (var enforcementLock = await EnforcementStore.AcquireLockAsync(ResolveLockTarget(target), cancellationToken))
         {
-            var workspace = await LoadWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
+            var workspace = await PrepareWorkspaceAsync(target, cancellationToken, _timeProvider, _windowOwnerResolver);
             SourceNavigationContracts.ValidateTargetStart(workspace.Target, state, workspace.Input.Replay!,
                 initial, workspace.Input.Progress!, _timeProvider.GetUtcNow(), _windowOwnerResolver);
         }
